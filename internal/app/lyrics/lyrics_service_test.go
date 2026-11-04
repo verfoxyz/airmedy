@@ -342,6 +342,109 @@ func TestResolveForMobileSyncCachesAndInvalidatesLocalLyrics(t *testing.T) {
 	}
 }
 
+type stubPluginLyrics struct {
+	lyric   *domain.Lyric
+	handled bool
+	err     error
+	calls   int
+}
+
+func (s *stubPluginLyrics) FetchForTrack(context.Context, *domain.TrackDTO) (*domain.Lyric, bool, error) {
+	s.calls++
+	return s.lyric, s.handled, s.err
+}
+
+type stubLyricsProvider struct {
+	lyric *domain.Lyric
+	calls int
+}
+
+func (p *stubLyricsProvider) Name() string { return "lrclib" }
+func (p *stubLyricsProvider) Search(context.Context, string, string, int) ([]*domain.LyricsSearchResult, error) {
+	return nil, nil
+}
+func (p *stubLyricsProvider) Fetch(_ context.Context, track *domain.TrackDTO) (*domain.Lyric, error) {
+	p.calls++
+	l := *p.lyric
+	l.TrackID = track.ID
+	return &l, nil
+}
+
+func TestFetchFromProviders_UsesThePluginFirst(t *testing.T) {
+	provider := &stubLyricsProvider{lyric: &domain.Lyric{Content: "[00:01.00]builtin", Source: "lrclib"}}
+	service := NewLyricsService(
+		&stubRepo{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		[]domain.LyricsProvider{provider},
+		nil, nil, nil,
+	)
+	service.SetPluginLyricsFetcher(&stubPluginLyrics{
+		lyric:   &domain.Lyric{Content: "[00:01.00]plugin", Source: "wy"},
+		handled: true,
+	})
+
+	got, err := service.FetchFromProviders(context.Background(), &domain.TrackDTO{
+		Track: domain.Track{ID: "t1", Provider: "wy", ExternalID: "1"},
+	}, true, false)
+	if err != nil {
+		t.Fatalf("FetchFromProviders: %v", err)
+	}
+	if got == nil || got.Content != "[00:01.00]plugin" || got.Source != "wy" {
+		t.Fatalf("lyric = %+v, want the plugin answer", got)
+	}
+	if provider.calls != 0 {
+		t.Fatal("the built-in provider must not be called when the plugin answered")
+	}
+}
+
+func TestFetchFromProviders_FallsBackToBuiltinsWhenThePluginFails(t *testing.T) {
+	provider := &stubLyricsProvider{lyric: &domain.Lyric{Content: "[00:01.00]builtin", Source: "lrclib"}}
+	service := NewLyricsService(
+		&stubRepo{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		[]domain.LyricsProvider{provider},
+		nil, nil, nil,
+	)
+	service.SetPluginLyricsFetcher(&stubPluginLyrics{
+		handled: true,
+		err:     errors.New("platform unavailable"),
+	})
+
+	got, err := service.FetchFromProviders(context.Background(), &domain.TrackDTO{
+		Track: domain.Track{ID: "t1", Provider: "wy", ExternalID: "1"},
+	}, true, false)
+	if err != nil {
+		t.Fatalf("FetchFromProviders: %v", err)
+	}
+	if got == nil || got.Content != "[00:01.00]builtin" || got.Source != "lrclib" {
+		t.Fatalf("lyric = %+v, want the built-in fallback", got)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("built-in provider calls = %d, want 1", provider.calls)
+	}
+}
+
+func TestFetchFromProviders_NoPluginOwnerKeepsBuiltins(t *testing.T) {
+	provider := &stubLyricsProvider{lyric: &domain.Lyric{Content: "[00:01.00]builtin", Source: "lrclib"}}
+	service := NewLyricsService(
+		&stubRepo{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		[]domain.LyricsProvider{provider},
+		nil, nil, nil,
+	)
+	service.SetPluginLyricsFetcher(&stubPluginLyrics{handled: false})
+
+	got, err := service.FetchFromProviders(context.Background(), &domain.TrackDTO{
+		Track: domain.Track{ID: "t1", Provider: "wy"},
+	}, true, false)
+	if err != nil {
+		t.Fatalf("FetchFromProviders: %v", err)
+	}
+	if got == nil || got.Source != "lrclib" {
+		t.Fatalf("lyric = %+v, want the built-in answer", got)
+	}
+}
+
 func TestResolveForMobileSyncUsesNormalizedMacOSSidecarName(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS normalizes equivalent Unicode filenames")

@@ -116,6 +116,7 @@ type stubSettings struct {
 	dir        string
 	autoAdd    bool
 	withLyrics bool
+	withCover  bool
 }
 
 // stubDurationProbe stands in for the ffmpeg container probe. Its default is an
@@ -143,6 +144,7 @@ func (s stubSettings) GetSettings(context.Context) (*domain.AppSettings, error) 
 		DownloadQuality:           domain.Quality320k,
 		AutoDownloadOnPlaylistAdd: s.autoAdd,
 		DownloadWithLyrics:        s.withLyrics,
+		DownloadWithCover:         s.withCover,
 	}, nil
 }
 
@@ -466,6 +468,42 @@ func TestService_ApplyDecodedDurationPrefersTheProbe(t *testing.T) {
 
 	imported := h.downloadAndImport(t, 271, 2235)
 	assert.Equal(t, 271, imported.Duration, "the probe value must replace the taglib value")
+}
+
+// TestService_EnqueueWithCoverStoresBeforeEnqueue pins the playlist auto-download
+// race: the hook may already have queued the job, so EnqueueWithCover returns
+// ErrDownloadAlreadyQueued. The cover must still reach finalize.
+func TestService_EnqueueWithCoverStoresBeforeEnqueue(t *testing.T) {
+	h := newHarness(t)
+	h.settings = stubSettings{dir: h.dir, withCover: true}
+	h.rebuild()
+	track := h.seedRemote(t, "cover-race")
+	ctx := context.Background()
+
+	// The playlist auto-download hook has already queued this track without a
+	// cover. The catalog action then calls EnqueueWithCover with the URL.
+	require.NoError(t, h.svc.Enqueue(ctx, track.ID, "", ""))
+
+	var finalizedCover string
+	h.finalizer.onFinalize = func(in download.FinalizeInput) (download.FinalizeResult, error) {
+		finalizedCover = in.CoverURL
+		return download.FinalizeResult{
+			TrackID: in.Track.ID, TargetPath: filepath.Join(h.dir, "cover-race.mp3"),
+			DurationSeconds: 200, Bitrate: 320,
+		}, nil
+	}
+	err := h.svc.EnqueueWithCover(ctx, track.ID, "", "", "https://p1.music.126.net/cover.jpg")
+	require.ErrorIs(t, err, domain.ErrDownloadAlreadyQueued)
+
+	require.NoError(t, h.svc.Start(ctx))
+	t.Cleanup(func() { _ = h.svc.Stop(context.Background()) })
+	waitFor(t, "the queued job to finish", func() bool {
+		jobs, listErr := h.svc.List(ctx)
+		return listErr == nil && len(jobs) == 1 && jobs[0].State == domain.DownloadStateDone
+	})
+
+	require.Equal(t, "https://p1.music.126.net/cover.jpg", finalizedCover,
+		"the cover must be stored before the already-queued job finishes")
 }
 
 // TestService_MergeReplacingTheRemoteRowLeavesTheJobDone pins the P0-1 fix: the

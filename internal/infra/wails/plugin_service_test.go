@@ -108,7 +108,7 @@ func newPluginFixture(t *testing.T) (*PluginService, *stubSettings) {
 	}
 	_ = lyricsPath
 
-	return NewPluginService(svc), settings
+	return NewPluginService(svc, nil), settings
 }
 
 // TestListPluginsDTO is the frontend contract: the JSON field names and the flat
@@ -261,7 +261,7 @@ func TestGetPluginStatusDTO(t *testing.T) {
 // frontend even when the plugin also declares a capability the host does not
 // understand.
 func TestToPluginInfoDTOKeepsProviders(t *testing.T) {
-	dto := toPluginInfoDTO(plugin.PluginInfo{
+	dto := (&PluginService{}).toPluginInfoDTO(context.Background(), plugin.PluginInfo{
 		Manifest: domain.PluginManifest{
 			ID:           "lx.ikun",
 			Providers:    []string{"wy", "kg", "kw"},
@@ -284,7 +284,7 @@ func TestToPluginInfoDTOKeepsProviders(t *testing.T) {
 // enables the plugin. No manifest entry must still marshal as [] so the frontend
 // can decide "no badge" without a nil check.
 func TestToPluginInfoDTOKeepsNetworkDeclaration(t *testing.T) {
-	declared := toPluginInfoDTO(plugin.PluginInfo{
+	declared := (&PluginService{}).toPluginInfoDTO(context.Background(), plugin.PluginInfo{
 		Manifest: domain.PluginManifest{
 			ID:          "lx",
 			Permissions: domain.PluginPermissions{Network: []string{"api.example.com", "*"}},
@@ -294,7 +294,7 @@ func TestToPluginInfoDTOKeepsNetworkDeclaration(t *testing.T) {
 		t.Fatalf("Network = %v, want the declared hosts in order", declared.Network)
 	}
 
-	quiet := toPluginInfoDTO(plugin.PluginInfo{
+	quiet := (&PluginService{}).toPluginInfoDTO(context.Background(), plugin.PluginInfo{
 		Manifest: domain.PluginManifest{ID: "io.airmedy.quiet"},
 	})
 	if quiet.Network == nil {
@@ -308,7 +308,7 @@ func TestToPluginInfoDTOKeepsNetworkDeclaration(t *testing.T) {
 // TestToPluginInfoDTOKeepsUnknownCapabilities: a plugin may declare a capability
 // the host does not understand, and the UI still shows it.
 func TestToPluginInfoDTOKeepsUnknownCapabilities(t *testing.T) {
-	dto := toPluginInfoDTO(plugin.PluginInfo{
+	dto := (&PluginService{}).toPluginInfoDTO(context.Background(), plugin.PluginInfo{
 		Manifest: domain.PluginManifest{
 			ID:           "io.airmedy.odd",
 			Name:         "Odd",

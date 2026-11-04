@@ -20,9 +20,14 @@ import (
 var Module = fx.Module("catalog",
 	fx.Provide(
 		NewPluginSources,
-		func(sources *PluginSources, logger *slog.Logger) *PluginSearcher {
-			return NewPluginSearcher(sources, logger)
-		},
+		fx.Annotate(
+			func(sources *PluginSources, settings PluginSettingReader, logger *slog.Logger) *PluginSearcher {
+				return NewPluginSearcher(sources, settings, logger)
+			},
+			// The setting store lives in plugin.Module; a graph without plugins
+			// keeps the default (covers requested).
+			fx.ParamTags(``, `optional:"true"`, ``),
+		),
 		// The two ports the service consumes, bound from the adapters above.
 		func(sources *PluginSources) domain.CatalogSearchSourceRegistry { return sources },
 		func(searcher *PluginSearcher) domain.CatalogSearcher { return searcher },

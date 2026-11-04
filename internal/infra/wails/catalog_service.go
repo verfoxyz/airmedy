@@ -49,6 +49,13 @@ type CatalogRowDTO struct {
 	Artists    []string `json:"artists"`
 	AlbumName  string   `json:"album_name"`
 	Duration   int      `json:"duration"`
+	// CoverURL is the thumbnail the source reported, or "" when covers are
+	// hidden or the source has none. The page loads it lazily; the host never
+	// fetches it during search.
+	CoverURL string `json:"cover_url"`
+	// CoverURLLarge is the 500×500 (or original) rendition for the file's
+	// embedded artwork. The save action prefers it; empty falls back to CoverURL.
+	CoverURLLarge string `json:"cover_url_large"`
 	// Downloadable is whether the host can fetch this track. When false the
 	// action is disabled and BlockedReason says why.
 	Downloadable  bool   `json:"downloadable"`
@@ -142,6 +149,8 @@ func (s *CatalogService) SearchCatalog(request CatalogSearchRequest) (CatalogSea
 			Artists:       append([]string{}, row.Artists...),
 			AlbumName:     row.AlbumName,
 			Duration:      row.Duration,
+			CoverURL:      row.CoverURL,
+			CoverURLLarge: row.CoverURLLarge,
 			Downloadable:  row.Downloadable,
 			BlockedReason: row.DownloadBlockedReason,
 			State:         row.State,

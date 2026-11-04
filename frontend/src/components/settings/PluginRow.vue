@@ -18,6 +18,8 @@ const props = defineProps<{
   plugin: PluginInfo
   busy?: boolean
   labels: PluginRowLabels
+  /** Active UI locale, used to pick a label from the plugin's declaration map. */
+  locale?: string
   /**
    * Whether this plugin manages its own sub-list. True only for the Lx plugin:
    * it owns a user-editable source list, and its row opens that page instead of
@@ -29,6 +31,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   toggle: [enabled: boolean]
   open: []
+  'setting-change': [key: string, value: boolean]
 }>()
 
 const expanded = ref(false)
@@ -91,6 +94,12 @@ const networkText = computed(() => {
 // meaning in every theme. A disabled plugin's declaration is dimmer but still
 // legible — it is exactly what the user is deciding about.
 const networkClass = computed(() => (props.plugin.enabled ? 'opacity-100' : 'opacity-40'))
+
+/** settingLabel picks the declaration's label for the active locale. */
+function settingLabel(setting: PluginInfo['settings'][number]): string {
+  const label = setting.label ?? {}
+  return label[props.locale ?? ''] || label.en || label.zh || setting.key
+}
 </script>
 
 <template>
@@ -121,12 +130,29 @@ const networkClass = computed(() => (props.plugin.enabled ? 'opacity-100' : 'opa
           {{ plugin.author }}
         </div>
 
+        <div v-if="plugin.description" class="text-xs text-dim mt-1" data-test="plugin-description">
+          {{ plugin.description }}
+        </div>
+
         <div class="flex items-center gap-1.5 flex-wrap mt-2" data-test="plugin-capabilities">
           <span
             v-for="capability in plugin.capabilities"
             :key="capability"
             class="px-2 py-0.5 rounded-md bg-foreground/[0.04] text-[11px] text-dim"
           >{{ capability }}</span>
+        </div>
+
+        <!-- The online sources this plugin serves without a stream route. -->
+        <div
+          v-if="plugin.sources && plugin.sources.length > 0"
+          class="flex items-center gap-1.5 flex-wrap mt-1.5"
+          data-test="plugin-sources"
+        >
+          <span
+            v-for="source in plugin.sources"
+            :key="source"
+            class="px-2 py-0.5 rounded-md border border-[var(--border-glass)] text-[11px] text-dim"
+          >{{ source }}</span>
         </div>
 
         <!-- The routing declaration, shown so the user can tell which plugin
@@ -179,6 +205,25 @@ const networkClass = computed(() => (props.plugin.enabled ? 'opacity-100' : 'opa
           :disabled="!canToggle"
           :data-test="`plugin-toggle-${plugin.id}`"
           @update:model-value="(value: boolean) => emit('toggle', value)"
+        />
+      </div>
+    </div>
+
+    <!-- Declared switches. The value is owned by the host (plugin KV), so the
+         plugin stays stateless and receives it on the call it affects. -->
+    <div v-if="plugin.settings && plugin.settings.length > 0" class="mt-3 space-y-2" data-test="plugin-settings">
+      <div
+        v-for="setting in plugin.settings"
+        :key="setting.key"
+        class="flex items-center justify-between gap-4"
+      >
+        <span class="text-xs text-dim">{{ settingLabel(setting) }}</span>
+        <Switch
+          v-if="setting.type === 'switch'"
+          :model-value="setting.value"
+          :disabled="!plugin.enabled || busy"
+          :data-test="`plugin-setting-${setting.key}`"
+          @update:model-value="(value: boolean) => emit('setting-change', setting.key, value)"
         />
       </div>
     </div>

@@ -48,6 +48,8 @@ function row(externalId: string, overrides: Record<string, unknown> = {}) {
     artists: ['周杰伦'],
     album_name: '专辑',
     duration: 200,
+    cover_url: '',
+    cover_url_large: '',
     downloadable: true,
     blocked_reason: '',
     state: '',
@@ -164,6 +166,37 @@ describe('catalog store', () => {
       playlist_id: '',
     }))
     expect(store.rows[0].state).toBe('downloading')
+  })
+
+  it('prefers the large cover URL when saving', async () => {
+    api.SearchCatalog.mockResolvedValue(page([row('1', {
+      cover_url: 'https://x/cover-100.jpg',
+      cover_url_large: 'https://x/cover-500.jpg',
+    })]))
+    api.SaveCatalogResult.mockResolvedValue({ track_id: 't1', state: 'downloading' })
+    const store = useCatalogStore()
+
+    store.search('周杰伦')
+    await vi.advanceTimersByTimeAsync(300)
+    await store.save(store.rows[0], { favorite: true })
+
+    expect(api.SaveCatalogResult).toHaveBeenCalledWith(expect.objectContaining({
+      cover_url: 'https://x/cover-500.jpg',
+    }))
+  })
+
+  it('falls back to the thumbnail when the source has no large cover', async () => {
+    api.SearchCatalog.mockResolvedValue(page([row('1', { cover_url: 'https://x/cover-100.jpg' })]))
+    api.SaveCatalogResult.mockResolvedValue({ track_id: 't1', state: 'downloading' })
+    const store = useCatalogStore()
+
+    store.search('周杰伦')
+    await vi.advanceTimersByTimeAsync(300)
+    await store.save(store.rows[0], { favorite: true })
+
+    expect(api.SaveCatalogResult).toHaveBeenCalledWith(expect.objectContaining({
+      cover_url: 'https://x/cover-100.jpg',
+    }))
   })
 
   it('reuses a matched local row unless the user forces a download', async () => {

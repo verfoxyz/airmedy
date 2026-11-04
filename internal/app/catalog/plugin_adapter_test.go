@@ -115,7 +115,7 @@ func TestSearchSource_RoutesToTheOwningPlugin(t *testing.T) {
 	}}
 	registry := &fakeRegistry{hosts: []domain.PluginHost{host}}
 	adapter := NewPluginSources(registry, quietLogger())
-	searcher := NewPluginSearcher(adapter, quietLogger())
+	searcher := NewPluginSearcher(adapter, nil, quietLogger())
 
 	result, err := searcher.SearchSource(context.Background(), "WY", domain.PluginSearchRequest{
 		Query: "晴天", Limit: 999,
@@ -135,6 +135,44 @@ func TestSearchSource_RoutesToTheOwningPlugin(t *testing.T) {
 	}
 }
 
+// TestSearchSource_ForwardsTheCoverSetting pins that the host reads the
+// plugin's declared switch and sends it as include_cover.
+func TestSearchSource_ForwardsTheCoverSetting(t *testing.T) {
+	for _, include := range []bool{true, false} {
+		host := searchPlugin("wy-search", domain.CatalogSearchSource{ID: "wy"})
+		adapter := NewPluginSources(&fakeRegistry{hosts: []domain.PluginHost{host}}, quietLogger())
+		searcher := NewPluginSearcher(adapter, fakeSettingReader{include: include}, quietLogger())
+
+		if _, err := searcher.SearchSource(context.Background(), "wy", domain.PluginSearchRequest{Limit: 1}); err != nil {
+			t.Fatalf("SearchSource: %v", err)
+		}
+		if host.lastSearch.IncludeCover != include {
+			t.Fatalf("include_cover = %v, want %v", host.lastSearch.IncludeCover, include)
+		}
+	}
+}
+
+// TestSearchSource_ForceCoverOverridesTheSwitch: the save-time lookup must be
+// able to ask for covers even when the user hid thumbnails.
+func TestSearchSource_ForceCoverOverridesTheSwitch(t *testing.T) {
+	host := searchPlugin("wy-search", domain.CatalogSearchSource{ID: "wy"})
+	adapter := NewPluginSources(&fakeRegistry{hosts: []domain.PluginHost{host}}, quietLogger())
+	searcher := NewPluginSearcher(adapter, fakeSettingReader{include: false}, quietLogger())
+
+	if _, err := searcher.SearchSource(context.Background(), "wy", domain.PluginSearchRequest{
+		Query: "晴天", Limit: 1, ForceCover: true,
+	}); err != nil {
+		t.Fatalf("SearchSource: %v", err)
+	}
+	if !host.lastSearch.IncludeCover {
+		t.Fatal("force cover did not reach the plugin")
+	}
+}
+
+type fakeSettingReader struct{ include bool }
+
+func (r fakeSettingReader) GetBool(context.Context, string, string, bool) bool { return r.include }
+
 // TestSearchSource_CapsTheRowCount: a plugin that ignores Limit cannot make one
 // answer enormous.
 func TestSearchSource_CapsTheRowCount(t *testing.T) {
@@ -146,7 +184,7 @@ func TestSearchSource_CapsTheRowCount(t *testing.T) {
 	host.searchResult = domain.PluginSearchResult{Rows: rows}
 
 	adapter := NewPluginSources(&fakeRegistry{hosts: []domain.PluginHost{host}}, quietLogger())
-	searcher := NewPluginSearcher(adapter, quietLogger())
+	searcher := NewPluginSearcher(adapter, nil, quietLogger())
 
 	result, err := searcher.SearchSource(context.Background(), "wy", domain.PluginSearchRequest{Limit: 50})
 	if err != nil {
@@ -161,7 +199,7 @@ func TestSearchSource_CapsTheRowCount(t *testing.T) {
 // a routing miss that names the source.
 func TestSearchSource_UnknownSourceNamesIt(t *testing.T) {
 	adapter := NewPluginSources(&fakeRegistry{}, quietLogger())
-	searcher := NewPluginSearcher(adapter, quietLogger())
+	searcher := NewPluginSearcher(adapter, nil, quietLogger())
 
 	_, err := searcher.SearchSource(context.Background(), "tx", domain.PluginSearchRequest{Limit: 50})
 	if !errors.Is(err, domain.ErrCatalogSourceUnavailable) {
@@ -185,7 +223,7 @@ func TestSearchSource_MapsStructuredKinds(t *testing.T) {
 			host.searchErr = &domain.RPCError{Code: -32000, Message: "whatever", Data: data}
 
 			adapter := NewPluginSources(&fakeRegistry{hosts: []domain.PluginHost{host}}, quietLogger())
-			searcher := NewPluginSearcher(adapter, quietLogger())
+			searcher := NewPluginSearcher(adapter, nil, quietLogger())
 
 			_, err := searcher.SearchSource(context.Background(), "wy", domain.PluginSearchRequest{})
 			if !errors.Is(err, domain.ErrCatalogSearchFailed) {
@@ -202,7 +240,7 @@ func TestSearchSource_MissingMethodIsExplained(t *testing.T) {
 	host.searchErr = fmt.Errorf("%w: catalog.search", domain.ErrPluginMethodNotFound)
 
 	adapter := NewPluginSources(&fakeRegistry{hosts: []domain.PluginHost{host}}, quietLogger())
-	searcher := NewPluginSearcher(adapter, quietLogger())
+	searcher := NewPluginSearcher(adapter, nil, quietLogger())
 
 	_, err := searcher.SearchSource(context.Background(), "wy", domain.PluginSearchRequest{})
 	if !errors.Is(err, domain.ErrCatalogSearchFailed) {

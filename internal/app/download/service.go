@@ -279,15 +279,17 @@ func (s *Service) EnqueueTrack(ctx context.Context, trackID string) error {
 // The URL is kept in memory only: if the app restarts the file is downloaded
 // without a cover instead of the job failing.
 func (s *Service) EnqueueWithCover(ctx context.Context, trackID, playlistID, quality, coverURL string) error {
-	if err := s.Enqueue(ctx, trackID, playlistID, quality); err != nil {
-		return err
-	}
-	if strings.TrimSpace(coverURL) != "" {
+	// Store the cover before enqueueing: the playlist auto-download hook may have
+	// already created the job, in which case Enqueue returns
+	// ErrDownloadAlreadyQueued (success for the user) and a later store would be
+	// skipped. finalize reads the cover only after the download finishes, so
+	// writing it first is safe for both paths.
+	if trimmed := strings.TrimSpace(coverURL); trimmed != "" {
 		s.coverMu.Lock()
-		s.coverURLs[trackID] = coverURL
+		s.coverURLs[trackID] = trimmed
 		s.coverMu.Unlock()
 	}
-	return nil
+	return s.Enqueue(ctx, trackID, playlistID, quality)
 }
 
 func (s *Service) coverURL(trackID string) string {

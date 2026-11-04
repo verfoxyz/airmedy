@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { AlertTriangle, Check, Heart, ListPlus, Loader2, Music, Download } from '@lucide/vue'
 import ContextMenu from '@/components/ContextMenu.vue'
@@ -43,6 +43,21 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const playlistsStore = usePlaylistsStore()
 const playlistMenu = useContextMenu()
+
+/** Covers that failed to load, so the row falls back to the placeholder icon. */
+const failedCovers = reactive(new Set<string>())
+
+function coverKey(row: CatalogRowDTO): string {
+  return `${row.provider}/${row.external_id}`
+}
+
+function hasCover(row: CatalogRowDTO): boolean {
+  return !!row.cover_url && !failedCovers.has(coverKey(row))
+}
+
+function onCoverError(row: CatalogRowDTO) {
+  failedCovers.add(coverKey(row))
+}
 
 const isAllSources = computed(() => props.activeSource === '')
 const showList = computed(() => props.hasQuery && !props.loading && props.rows.length > 0)
@@ -202,8 +217,17 @@ defineExpose({ failureText, subtitle, canAct })
         :data-identity="`${row.provider}/${row.external_id}`"
         class="group flex items-center gap-3 rounded-xl p-2 transition-colors hover:bg-foreground/[0.04]"
       >
-        <div class="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-lg bg-foreground/[0.06] ring-1 ring-foreground/[0.06]">
-          <Music class="h-5 w-5 text-dimmer" />
+        <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg bg-foreground/[0.06] ring-1 ring-foreground/[0.06]">
+          <img
+            v-if="hasCover(row)"
+            :src="row.cover_url"
+            :alt="row.title"
+            loading="lazy"
+            data-test="catalog-cover"
+            class="h-full w-full object-cover"
+            @error="onCoverError(row)"
+          />
+          <Music v-else class="h-5 w-5 text-dimmer" data-test="catalog-cover-placeholder" />
         </div>
 
         <div class="min-w-0 flex-1">

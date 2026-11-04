@@ -90,9 +90,13 @@ cached one is exactly why a naive retry "does nothing".
    is removed.
 2. Validate the partial file: byte count, signature, decoded duration within ±3s of the
    expected duration.
-3. Write tags with taglib, including the cover when the enqueue carried one. Cover URLs
-   live in memory only: a restart loses the cover, never the download. Tags are read back
-   afterwards; an empty title or artist is logged as a warning.
+3. Write tags with taglib, including the cover when the enqueue carried one. The cover URL
+   is the source's large rendition (500×500 or original), not the 100×100 search
+   thumbnail; a source that does not distinguish sizes falls back to its thumbnail. It is
+   stored **before** the job is enqueued: the playlist auto-download hook may already have
+   created the job, and an `ErrDownloadAlreadyQueued` answer must not drop the cover.
+   Cover URLs live in memory only: a restart loses the cover, never the download. Tags are
+   read back afterwards; an empty title or artist is logged as a warning.
 4. Atomically rename the validated part file into place.
 5. `LibraryService.ImportFileWithID(path)` → the track id this file became.
 6. Attach to `playlist_id` when the job carries one (it may be NULL: deleting the playlist

@@ -93,12 +93,13 @@ func HasCapability(capabilities []Capability, c Capability) bool {
 
 // PluginManifest is a parsed and validated airmedy-plugin.json.
 type PluginManifest struct {
-	ID         string        `json:"id"`
-	Name       string        `json:"name"`
-	Version    string        `json:"version"`
-	Author     string        `json:"author,omitempty"`
-	APIVersion string        `json:"apiVersion"`
-	Runtime    PluginRuntime `json:"runtime"`
+	ID          string        `json:"id"`
+	Name        string        `json:"name"`
+	Description string        `json:"description,omitempty"`
+	Version     string        `json:"version"`
+	Author      string        `json:"author,omitempty"`
+	APIVersion  string        `json:"apiVersion"`
+	Runtime     PluginRuntime `json:"runtime"`
 	// Capabilities are the features the plugin declares. Unknown values are
 	// kept verbatim so the UI can show them without the host pretending to
 	// understand them.
@@ -111,7 +112,13 @@ type PluginManifest struct {
 	// Declaring a provider is a routing contract, not a hint: two plugins
 	// claiming the same id are both marked invalid, because the app refuses to
 	// guess which one the user meant (see app/plugin's conflict rule).
-	Providers   []string          `json:"providers,omitempty"`
+	Providers []string `json:"providers,omitempty"`
+	// Sources lists the online source ids this plugin can serve without
+	// producing a playable URL (search and lyrics). It is separate from
+	// Providers because a search-only plugin must not claim a stream route.
+	// The settings row shows them as tags; lyric routing matches a track's
+	// provider id against this list.
+	Sources     []string          `json:"sources,omitempty"`
 	Permissions PluginPermissions `json:"permissions"`
 	// Dir is the directory the manifest was read from; runtime paths resolve
 	// relative to it. It is not part of the file.
@@ -128,7 +135,6 @@ type PluginRuntime struct {
 
 // PluginPermissions is the declarative permission block, and it is now split
 // between a declaration and an enforced right:
-//
 //   - Network is **declared only**. Plugins are ordinary child processes that
 //     fetch directly, so the host sees no request and cannot allow or deny one.
 //     The UI shows it as "may contact", never "is allowed to" (see
@@ -141,6 +147,64 @@ type PluginRuntime struct {
 type PluginPermissions struct {
 	Network []string `json:"network,omitempty"`
 	KV      bool     `json:"kv,omitempty"`
+}
+
+// PluginSettingType is the control a declaration renders. Today only a switch
+// exists; the type is a string so an older host can ignore an unknown control
+// instead of refusing the whole declaration.
+const PluginSettingTypeSwitch = "switch"
+
+// PluginSettingDeclaration is one setting a plugin reports through describe.
+//
+// The host owns the value (plugin KV) and passes it to the plugin on the call it
+// affects; the plugin never reads the KV for this. Label is a locale map so the
+// translation travels with the declaration.
+type PluginSettingDeclaration struct {
+	Key     string `json:"key"`
+	Type    string `json:"type"`
+	Default bool   `json:"default"`
+	// Label maps a locale tag ("en", "zh") to the text. The frontend falls back
+	// to Key when its locale is absent.
+	Label map[string]string `json:"label,omitempty"`
+}
+
+// PluginSettingValue is a declaration plus the value the host currently stores.
+type PluginSettingValue struct {
+	PluginSettingDeclaration
+	Value bool `json:"value"`
+}
+
+// MethodLyricFetch is the plugin method that returns lyrics for a track it
+// searched. It is separate from stream.resolve: a search plugin can provide
+// lyrics without ever producing a playable URL.
+const MethodLyricFetch = "lyric.fetch"
+
+// PluginLyricRequest is the params object of lyric.fetch.
+type PluginLyricRequest struct {
+	Provider   string   `json:"provider"`
+	ExternalID string   `json:"external_id"`
+	Title      string   `json:"title,omitempty"`
+	Artists    []string `json:"artists,omitempty"`
+	Album      string   `json:"album,omitempty"`
+	Duration   int      `json:"duration,omitempty"`
+}
+
+// PluginLyricResult is the result object of lyric.fetch.
+//
+// Synced is the plugin's own claim; the host still requires a timeline tag
+// before storing the lyric, because a plain text body cannot scroll.
+type PluginLyricResult struct {
+	Lyric  string `json:"lyric"`
+	TLyric string `json:"tlyric,omitempty"`
+	Source string `json:"source,omitempty"`
+	Synced bool   `json:"synced"`
+}
+
+// PluginLyricFetcher fetches lyrics through the plugin that owns a track's
+// source. A handled=false answer means no running plugin serves that provider,
+// so the caller should use the built-in providers.
+type PluginLyricFetcher interface {
+	FetchForTrack(ctx context.Context, track *TrackDTO) (*Lyric, bool, error)
 }
 
 // PluginHost is one running plugin process.

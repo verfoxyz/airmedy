@@ -86,6 +86,11 @@ type PluginDescribe struct {
 	// source" stays a plugin change and adds no protocol method
 	// (docs/plugin-api.md §6.1: reuse describe, never plugin-to-plugin calls).
 	SearchSources []CatalogSearchSource `json:"searchSources,omitempty"`
+	// Settings is the minimal settings declaration a plugin may report: today
+	// only switches, rendered in the plugin's settings row and stored in the
+	// host-owned KV. It is deliberately smaller than ui.settingsSchema, which
+	// remains a separate future capability.
+	Settings []PluginSettingDeclaration `json:"settings,omitempty"`
 }
 
 // Lx import limits. They live in the domain so the app and the binding enforce

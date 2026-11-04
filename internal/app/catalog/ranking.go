@@ -79,13 +79,15 @@ func fuseRanks(query string, sourceOrder []string, results map[string]domain.Plu
 		}
 		artists := trimAll(entry.row.Artists)
 		fused = append(fused, domain.CatalogSearchResult{
-			Provider:   entry.source,
-			ExternalID: entry.row.ExternalID,
-			Title:      strings.TrimSpace(entry.row.Title),
-			Artists:    artists,
-			AlbumName:  strings.TrimSpace(entry.row.AlbumName),
-			Duration:   entry.row.Duration,
-			Rank:       rank,
+			Provider:      entry.source,
+			ExternalID:    entry.row.ExternalID,
+			Title:         strings.TrimSpace(entry.row.Title),
+			Artists:       artists,
+			AlbumName:     strings.TrimSpace(entry.row.AlbumName),
+			Duration:      entry.row.Duration,
+			CoverURL:      strings.TrimSpace(entry.row.CoverURL),
+			CoverURLLarge: strings.TrimSpace(entry.row.CoverURLLarge),
+			Rank:          rank,
 		})
 	}
 

@@ -38,6 +38,8 @@ function row(overrides: Partial<CatalogRowDTO> = {}): CatalogRowDTO {
     artists: ['周杰伦'],
     album_name: '叶惠美',
     duration: 239,
+    cover_url: '',
+    cover_url_large: '',
     downloadable: true,
     blocked_reason: '',
     state: '',
@@ -95,6 +97,30 @@ describe('CatalogResults', () => {
     expect(listRow.text()).toContain('晴天')
     // The subtitle names the source, because the same track can come from two.
     expect(listRow.text()).toContain('周杰伦 · NetEase')
+    wrapper.unmount()
+  })
+
+  it('renders a cover thumbnail and falls back to the placeholder on load failure', async () => {
+    const wrapper = mountResults({
+      sources: SOURCES,
+      rows: [row({ cover_url: 'https://p1.music.126.net/cover.jpg?param=100y100' })],
+    })
+
+    const img = wrapper.get('[data-test="catalog-cover"]')
+    expect(img.attributes('src')).toContain('param=100y100')
+    expect(img.attributes('loading')).toBe('lazy')
+
+    await img.trigger('error')
+    expect(wrapper.find('[data-test="catalog-cover"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="catalog-cover-placeholder"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('renders the placeholder when the row has no cover', () => {
+    const wrapper = mountResults({ sources: SOURCES, rows: [row()] })
+
+    expect(wrapper.find('[data-test="catalog-cover"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="catalog-cover-placeholder"]').exists()).toBe(true)
     wrapper.unmount()
   })
 

@@ -142,20 +142,29 @@ func (p *PluginSources) pluginForSource(ctx context.Context, source string) (dom
 	return nil, false
 }
 
+// PluginSettingReader reads the host-owned value of a switch a plugin declared.
+// *plugin.SettingStore satisfies it; the interface keeps app/catalog free of an
+// app/plugin import.
+type PluginSettingReader interface {
+	GetBool(ctx context.Context, pluginID, key string, fallback bool) bool
+}
+
 // PluginSearcher implements domain.CatalogSearcher by calling the one plugin that
 // owns a source.
 type PluginSearcher struct {
-	sources *PluginSources
-	logger  *slog.Logger
+	sources  *PluginSources
+	settings PluginSettingReader
+	logger   *slog.Logger
 }
 
 // NewPluginSearcher builds the search adapter over the same source table, so
-// routing and rendering can never disagree about who owns a source.
-func NewPluginSearcher(sources *PluginSources, logger *slog.Logger) *PluginSearcher {
+// routing and rendering can never disagree about who owns a source. settings may
+// be nil, in which case covers are requested (the declared default).
+func NewPluginSearcher(sources *PluginSources, settings PluginSettingReader, logger *slog.Logger) *PluginSearcher {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &PluginSearcher{sources: sources, logger: logger}
+	return &PluginSearcher{sources: sources, settings: settings, logger: logger}
 }
 
 // SearchSource implements domain.CatalogSearcher.
@@ -184,6 +193,14 @@ func (s *PluginSearcher) SearchSource(
 	}
 	request.Source = provider
 	request.Limit = limit
+	// The plugin decides whether to include cover URLs. The host reads its
+	// declared switch from the plugin's KV; a plugin that never declared it keeps
+	// the default (true).
+	request.IncludeCover = true
+	if !request.ForceCover && s.settings != nil {
+		request.IncludeCover = s.settings.GetBool(ctx, host.Manifest().ID,
+			domain.CatalogSettingIncludeCover, true)
+	}
 
 	var result domain.PluginSearchResult
 	if err := host.Call(ctx, domain.MethodSearch, request, &result); err != nil {
@@ -203,6 +220,8 @@ func normalizeResult(result domain.PluginSearchResult) domain.PluginSearchResult
 		row.ExternalID = strings.TrimSpace(row.ExternalID)
 		row.Title = strings.TrimSpace(row.Title)
 		row.AlbumName = strings.TrimSpace(row.AlbumName)
+		row.CoverURL = strings.TrimSpace(row.CoverURL)
+		row.CoverURLLarge = strings.TrimSpace(row.CoverURLLarge)
 		rows = append(rows, row)
 	}
 	result.Rows = rows

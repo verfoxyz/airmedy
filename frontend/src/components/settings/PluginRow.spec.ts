@@ -32,10 +32,13 @@ function plugin(overrides: Partial<PluginInfo> = {}): PluginInfo {
   return {
     id: 'lx',
     name: 'Lx 自定义源',
+    description: '',
     version: '2.0.0',
     author: 'Airmedy',
     capabilities: ['stream.resolve'],
+    sources: [],
     providers: [],
+    settings: [],
     network: [],
     kv: false,
     enabled: false,
@@ -60,6 +63,24 @@ describe('PluginRow', () => {
     expect(wrapper.find('[data-test="plugin-name"]').text()).toBe('Lx 自定义源')
     expect(wrapper.text()).toContain('v2.0.0')
     expect(wrapper.find('[data-test="plugin-author"]').text()).toBe('Airmedy')
+  })
+
+  it('renders a declared switch with its stored value and emits the change', async () => {
+    const wrapper = mountRow({
+      enabled: true,
+      settings: [{
+        key: 'cover_in_results',
+        type: 'switch',
+        label: { en: 'Show covers in results' },
+        value: true,
+      }],
+    }, false)
+    // locale defaults to ''; the fallback picks the en label.
+    const row = wrapper.find('[data-test="plugin-settings"]')
+    expect(row.text()).toContain('Show covers in results')
+
+    await wrapper.get('[data-test="plugin-setting-cover_in_results"]').trigger('click')
+    expect(wrapper.emitted('setting-change')?.[0]).toEqual(['cover_in_results', false])
   })
 
   it('maps the status to a translated label', () => {

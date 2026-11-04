@@ -2,21 +2,23 @@
 
 > 只记**还没做**的接口形状与决策，外加**已做完那批的决策记录**（防止重提）。
 > 行为细节看 `catalog/plugins/README.md`：那份是现状的唯一真相，本文与它冲突时以它为准。
-> 最后更新：2026-11-03
+> 最后更新：2026-11-04
 
 ## 现状一句话
 
-已实现：`stream.resolve`、`describe`、`source.validate`、进程生命周期、provider 路由、
-`permissions.network`（**只声明不校验**）、`storage.*` + `permissions.kv`（**校验并默认拒绝**）、
-`lifecycle.unload`（`disabled` / `reload` / `shutdown`）、**`catalog.search`（在线目录搜索）**。
+已实现：`stream.resolve`、`describe`（含 `searchSources` 与最小 `settings` 声明）、
+`source.validate`、进程生命周期、provider 路由、`permissions.network`（**只声明不校验**）、
+`storage.*` + `permissions.kv`（**校验并默认拒绝**）、`lifecycle.unload`
+（`disabled` / `reload` / `shutdown`）、**`catalog.search`（在线目录搜索）**、
+**`lyric.fetch`（源插件提供歌词）**。
 宿主对**其余**入站请求仍回 `-32601`。
 
 ## 已否决（不再重提）
 
 - **播放地址不内置解析**：`stream.resolve` 只由插件提供；内置 `wy` 解析已退役，
   未声明该 provider 的音源一律不可下载/播放，由宿主给出可读错误。
-- **不提供 `lyric.fetch` / `pic.fetch` 路由**：歌词由内置酷狗 + LRCLIB + 本地 `.lrc`
-  提供，本轮不改歌词链路；封面暂无消费方（能力名保留，路线待有需求时再开）。
+- **不提供 `pic.fetch` 路由**：封面随搜索结果返回 URL，由前端按需加载；插件不需要
+  抓取图片字节。`lyric.fetch` 已改为由**拥有该 source 的搜索插件**提供，见下方实现记录。
 
 ## 待定（准备冻结，未实现）
 
@@ -26,6 +28,22 @@
 | 提权确认 | 更新新增权限时必须重新确认 | 不能静默通过；当前 `kv` 从关到开依赖用户重装插件，没有单独的确认 UI |
 
 ## 已实现（保留决策记录，防止重提）
+
+### `lyric.fetch`（源插件提供歌词）
+
+插件在 manifest 的 `sources` 里声明它服务的平台，并声明 `capability: lyric.fetch`。
+宿主按 `track.provider` 找到运行中的插件，调用
+`{provider, external_id, title, artists[], album, duration}`，返回
+`{lyric, tlyric, source, synced}`。**必须带 `[mm:ss]` 时间轴**，否则按失败处理；
+失败或没有时间轴时回落内置 LRCLIB/酷狗。这样搜索到的日文/翻唱曲目不再依赖第二次
+标题+歌手反查。
+
+### `describe.settings`（最小设置声明）
+
+插件可在 `describe` 返回 `settings: [{key, type:"switch", default, label}]`。宿主把开关
+渲染在该插件行内，值存插件 KV 的 `host.setting.` 前缀下，并在受影响的调用里下发
+（目前是 `catalog.search` 的 `include_cover`）。这不是完整的 `ui.settingsSchema`，
+等后者落地再迁移；插件不声明时按默认值处理。
 
 ### `catalog.search`（在线目录搜索）
 

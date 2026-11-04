@@ -19,6 +19,16 @@ type LyricsService struct {
 	localReader  domain.LocalLyricsReader
 	settingsRepo domain.SettingsRepository
 	tracks       domain.TrackRepository
+	// pluginLyrics is the optional plugin-backed route. It is attached after
+	// construction because plugin.Module is a sibling module and a nil is legal
+	// (zero plugins must still boot).
+	pluginLyrics domain.PluginLyricFetcher
+}
+
+// SetPluginLyricsFetcher installs the plugin-backed lyric route. A nil fetcher
+// keeps the built-in providers only.
+func (s *LyricsService) SetPluginLyricsFetcher(fetcher domain.PluginLyricFetcher) {
+	s.pluginLyrics = fetcher
 }
 
 func NewLyricsService(repo domain.LyricRepository, logger *slog.Logger, providers []domain.LyricsProvider, localReader domain.LocalLyricsReader, settingsRepo domain.SettingsRepository, tracks domain.TrackRepository) *LyricsService {
@@ -238,6 +248,21 @@ func (s *LyricsService) HasLocalLyrics(ctx context.Context, trackID, audioPath s
 // FetchFromProviders fetches lyrics from enabled providers concurrently.
 // When both are enabled, the first non-nil result wins and the other request is cancelled.
 func (s *LyricsService) FetchFromProviders(ctx context.Context, track *domain.TrackDTO, enableLrclib, enableKugou bool) (*domain.Lyric, error) {
+	// A source plugin that produced this search row knows the platform's lyric
+	// endpoint, so it gets the first attempt. A failed or non-timeline answer
+	// falls through to the built-in providers rather than failing the lookup.
+	if s.pluginLyrics != nil {
+		if lyric, handled, err := s.pluginLyrics.FetchForTrack(ctx, track); handled {
+			if lyric != nil {
+				return s.saveLyric(ctx, lyric.TrackID, lyric.Content, lyric.Source)
+			}
+			if err != nil {
+				s.logger.Warn("plugin lyrics unavailable; falling back to built-in providers",
+					"track_id", track.ID, "error", err)
+			}
+		}
+	}
+
 	var active []domain.LyricsProvider
 	for _, p := range s.providers {
 		if (p.Name() == "lrclib" && enableLrclib) || (p.Name() == "kugou" && enableKugou) {

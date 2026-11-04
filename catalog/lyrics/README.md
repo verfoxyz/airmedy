@@ -35,6 +35,14 @@
 
 Fetches and displays synchronized (LRC) or plain-text lyrics for the current track. Lyrics are sourced from **sibling local files** (`.lrc` / `.txt` next to the audio file, read live at play time), an optional **subfolder next to the track** (gated by `lyrics_subfolder_enabled` + `lyrics_subfolder_name`, e.g. `<album>/lyrics/Song.lrc`), an optional **dedicated lyrics folder** (a single user-chosen folder searched by track basename, gated by `lyrics_folder_enabled`), embedded **file metadata** (`LYRICS` tag, read at scan time), and the external providers **lrclib.net** and **KuGou Music** (cached in SQLite). The frontend parses LRC timestamps and auto-scrolls to the current line.
 
+**Plugin route.** A track with an online `provider` is first offered to the running plugin
+that declares that provider under `sources` and implements `lyric.fetch`. The plugin
+answers by platform id, which avoids the second title/artist lookup that misses Japanese
+titles and covers. Its answer must carry an LRC timeline and is validated again host-side;
+a failure, an empty answer or a non-timeline body falls back to the built-in providers
+above. A plugin has no priority over local files: local lyrics still resolve first when
+the user prefers them.
+
 ## Files
 
 | File                                        | Purpose                              |

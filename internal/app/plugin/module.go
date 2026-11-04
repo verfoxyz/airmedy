@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 
+	"airmedy/internal/domain"
+
 	"go.uber.org/fx"
 )
 
@@ -17,7 +19,16 @@ import (
 //
 // Running plugin processes are closed on shutdown through the same lifecycle.
 var Module = fx.Module("plugin",
-	fx.Provide(NewService),
+	fx.Provide(
+		NewService,
+		// Host-owned values for the switches a plugin declares through describe.
+		func(kv domain.PluginKVRepository) *SettingStore { return NewSettingStore(kv) },
+		// The plugin-backed lyric route consumes the same registry the stream
+		// router uses; app/lyrics sees only the port.
+		func(service *Service, logger *slog.Logger) domain.PluginLyricFetcher {
+			return NewLyricsAdapter(service, logger)
+		},
+	),
 	fx.Invoke(func(lifecycle fx.Lifecycle, service *Service, logger *slog.Logger) {
 		lifecycle.Append(fx.Hook{
 			OnStart: func(ctx context.Context) error {

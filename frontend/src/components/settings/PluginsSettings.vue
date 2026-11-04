@@ -31,7 +31,7 @@ function managesSources(plugin: PluginInfo) {
  * a flat list and the page renders it as-is: there is no grouping and no nested
  * row, because plugins no longer have children.
  */
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 const plugins = ref<PluginInfo[]>([])
 const loading = ref(true)
@@ -100,6 +100,19 @@ async function setEnabled(plugin: PluginInfo, enabled: boolean) {
   }
 }
 
+async function setSetting(plugin: PluginInfo, key: string, value: boolean) {
+  busyIds.value = [...busyIds.value, plugin.id]
+  actionError.value = ''
+  try {
+    await PluginService.SetPluginSetting(plugin.id, key, value)
+    await loadPlugins()
+  } catch (error) {
+    actionError.value = String(error)
+  } finally {
+    busyIds.value = busyIds.value.filter(id => id !== plugin.id)
+  }
+}
+
 function isBusy(id: string) {
   return busyIds.value.includes(id)
 }
@@ -155,8 +168,10 @@ onMounted(loadPlugins)
           :plugin="plugin"
           :busy="isBusy(plugin.id)"
           :labels="labels"
+          :locale="locale"
           :manage-sources="managesSources(plugin)"
           @toggle="enabled => setEnabled(plugin, enabled)"
+          @setting-change="(key, value) => setSetting(plugin, key, value)"
           @open="emit('openLxSources')"
         />
       </div>

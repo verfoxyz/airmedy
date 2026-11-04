@@ -161,6 +161,12 @@ func fxOptions(deps fxDeps) fx.Option {
 		fx.Provide(func(service *plugin.Service) appcatalog.PluginRegistry {
 			return service
 		}),
+		// The search call reads the plugin's "show covers" switch from the
+		// host-owned setting store. Binding it here keeps app/catalog free of an
+		// app/plugin import.
+		fx.Provide(func(store *plugin.SettingStore) appcatalog.PluginSettingReader {
+			return store
+		}),
 		fx.Provide(func() remoteserver.RemoteFS { return remoteserver.RemoteFS{FS: deps.RemoteFS} }),
 		// The download pipeline's two lyric ports: the lyrics service and the
 		// settings service are concrete app types from other modules, so main

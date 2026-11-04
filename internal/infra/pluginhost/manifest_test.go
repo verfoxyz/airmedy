@@ -38,6 +38,25 @@ func TestLoadManifestValid(t *testing.T) {
 	}
 }
 
+func TestLoadManifestSourcesAndDescription(t *testing.T) {
+	path := writeManifestFile(t, manifestJSON(t, map[string]any{
+		"sources":     []any{" WY ", "wy", "kg", ""},
+		"description": "  aggregate sources  ",
+	}))
+
+	manifest, err := LoadManifest(path)
+	if err != nil {
+		t.Fatalf("LoadManifest: %v", err)
+	}
+	if want := []string{"wy", "kg"}; len(manifest.Sources) != 2 ||
+		manifest.Sources[0] != want[0] || manifest.Sources[1] != want[1] {
+		t.Fatalf("Sources = %v, want %v", manifest.Sources, want)
+	}
+	if manifest.Description != "aggregate sources" {
+		t.Fatalf("Description = %q, want trimmed text", manifest.Description)
+	}
+}
+
 func TestLoadManifestMissingID(t *testing.T) {
 	path := writeManifestFile(t, manifestJSON(t, map[string]any{"id": nil}))
 

@@ -189,7 +189,9 @@ export const useCatalogStore = defineStore('catalog', () => {
         artists: row.artists,
         album_name: row.album_name,
         duration: row.duration,
-        cover_url: '',
+        // The file's embedded artwork must be the large rendition; a source that
+        // does not distinguish sizes falls back to the list thumbnail.
+        cover_url: row.cover_url_large || row.cover_url || '',
         playlist_id: options.playlistId ?? '',
         favorite: options.favorite ?? false,
         local_track_id: options.forceDownload ? '' : (row.local_track_id ?? ''),

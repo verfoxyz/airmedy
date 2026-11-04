@@ -164,6 +164,18 @@ func (s *Service) Act(ctx context.Context, request ActionRequest) (ActionOutcome
 		download = enabled
 	}
 
+	// The search row may have been rendered with thumbnails off, so the plugin
+	// omitted cover_url. The last URL seen for this identity still lets the
+	// finished download embed artwork; if this process never saw one, ask the
+	// plugin once more with covers forced on (the plan's "re-fetch on save").
+	coverURL := strings.TrimSpace(request.CoverURL)
+	if coverURL == "" {
+		coverURL = s.cachedCover(domain.CatalogIdentity{Provider: provider, ExternalID: externalID})
+	}
+	if coverURL == "" && s.searcher != nil && strings.TrimSpace(request.Title) != "" {
+		coverURL = s.fetchCoverForSave(ctx, provider, externalID, request.Title)
+	}
+
 	spec := domain.RemoteTrackSpec{
 		Provider:   provider,
 		ExternalID: externalID,
@@ -171,7 +183,7 @@ func (s *Service) Act(ctx context.Context, request ActionRequest) (ActionOutcome
 		Artists:    normaliseArtists(request.Artists),
 		AlbumName:  strings.TrimSpace(request.AlbumName),
 		Duration:   request.Duration,
-		CoverURL:   strings.TrimSpace(request.CoverURL),
+		CoverURL:   coverURL,
 	}
 
 	track, err := s.library.EnsureRemoteTrack(ctx, spec)
@@ -221,6 +233,37 @@ func (s *Service) Act(ctx context.Context, request ActionRequest) (ActionOutcome
 	}
 
 	return ActionOutcome{TrackID: track.ID, State: domain.CatalogRowStateDownloading}, nil
+}
+
+// fetchCoverForSave asks the source once more with covers forced on. It is the
+// fallback for "the user hid thumbnails before this process ever saw a cover":
+// the plugin otherwise omits cover_url, and the download would have no artwork.
+// The lookup is best-effort; a failure leaves the file without a cover.
+func (s *Service) fetchCoverForSave(ctx context.Context, provider, externalID, title string) string {
+	result, err := s.searcher.SearchSource(ctx, provider, domain.PluginSearchRequest{
+		Source:     provider,
+		Query:      title,
+		Limit:      domain.MaxCatalogSearchPageSize,
+		Offset:     0,
+		ForceCover: true,
+	})
+	if err != nil {
+		s.logger.Debug("catalog: cover lookup for save failed",
+			"provider", provider, "external_id", externalID, "error", err)
+		return ""
+	}
+	for _, row := range result.Rows {
+		if row.ExternalID != externalID {
+			continue
+		}
+		if cover := strings.TrimSpace(row.CoverURLLarge); cover != "" {
+			return cover
+		}
+		if cover := strings.TrimSpace(row.CoverURL); cover != "" {
+			return cover
+		}
+	}
+	return ""
 }
 
 // autoDownloadOnPlaylistAdd reports the user's "download when adding to a

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"airmedy/internal/app/plugin"
 	"airmedy/internal/domain"
@@ -17,13 +18,21 @@ import (
 type PluginInfoDTO struct {
 	ID           string   `json:"id"`
 	Name         string   `json:"name"`
+	Description  string   `json:"description"`
 	Version      string   `json:"version"`
 	Author       string   `json:"author"`
 	Capabilities []string `json:"capabilities"`
+	// Sources is the online source-id list the plugin serves without a stream
+	// route (search and lyrics). It is shown as tags; the search page's own
+	// buttons still come from describe.
+	Sources []string `json:"sources"`
 	// Providers is the routing declaration: the track provider ids this plugin
 	// serves. The UI shows them as tags so the user can tell which plugin will
 	// handle a given source.
 	Providers []string `json:"providers"`
+	// Settings are the switches the plugin declared through describe, with the
+	// values the host stores for them.
+	Settings []PluginSettingDTO `json:"settings"`
 	// Network is the manifest's declared network allow-list, shown before the
 	// plugin is enabled. It is a declaration, not an enforced sandbox: the
 	// plugin is an ordinary child process, so the row only tells the user what
@@ -50,15 +59,25 @@ type PluginStatusDTO struct {
 	LastError string `json:"last_error"`
 }
 
+// PluginSettingDTO is one declared switch and its stored value.
+type PluginSettingDTO struct {
+	Key   string            `json:"key"`
+	Type  string            `json:"type"`
+	Label map[string]string `json:"label"`
+	Value bool              `json:"value"`
+}
+
 // PluginService is the Wails binding for the plugin registry: translation only,
 // no logic (see AGENTS.md §3).
 type PluginService struct {
-	svc *plugin.Service
+	svc      *plugin.Service
+	settings *plugin.SettingStore
 }
 
-// NewPluginService binds the registry for the frontend.
-func NewPluginService(svc *plugin.Service) *PluginService {
-	return &PluginService{svc: svc}
+// NewPluginService binds the registry and the host-owned setting values for the
+// frontend.
+func NewPluginService(svc *plugin.Service, settings *plugin.SettingStore) *PluginService {
+	return &PluginService{svc: svc, settings: settings}
 }
 
 // GetPluginsDirectory returns the folder the registry scans. The frontend shows
@@ -74,9 +93,20 @@ func (s *PluginService) ListPlugins(ctx context.Context) ([]PluginInfoDTO, error
 	infos := s.svc.List()
 	dtos := make([]PluginInfoDTO, 0, len(infos))
 	for _, info := range infos {
-		dtos = append(dtos, toPluginInfoDTO(info))
+		dtos = append(dtos, s.toPluginInfoDTO(ctx, info))
 	}
 	return dtos, nil
+}
+
+// SetPluginSetting stores one declared switch value in the plugin's KV.
+func (s *PluginService) SetPluginSetting(ctx context.Context, id, key string, value bool) error {
+	if s.settings == nil {
+		return domain.ErrPluginSettingsUnavailable
+	}
+	if err := s.settings.Set(ctx, id, key, strconv.FormatBool(value)); err != nil {
+		return translatePluginError(err)
+	}
+	return nil
 }
 
 // SetPluginEnabled persists the user's choice and applies it immediately.
@@ -117,7 +147,7 @@ func (s *PluginService) RescanPlugins(ctx context.Context) ([]PluginInfoDTO, err
 }
 
 // toPluginInfoDTO flattens the registry entry into the JSON the UI reads.
-func toPluginInfoDTO(info plugin.PluginInfo) PluginInfoDTO {
+func (s *PluginService) toPluginInfoDTO(ctx context.Context, info plugin.PluginInfo) PluginInfoDTO {
 	capabilities := make([]string, 0, len(info.Capabilities))
 	for _, capability := range info.Capabilities {
 		capabilities = append(capabilities, string(capability))
@@ -126,9 +156,30 @@ func toPluginInfoDTO(info plugin.PluginInfo) PluginInfoDTO {
 	if providers == nil {
 		providers = []string{}
 	}
+	sources := info.Manifest.Sources
+	if sources == nil {
+		sources = []string{}
+	}
 	network := info.Manifest.Permissions.Network
 	if network == nil {
 		network = []string{}
+	}
+	settings := make([]PluginSettingDTO, 0, len(info.Settings))
+	for _, declaration := range info.Settings {
+		value := declaration.Default
+		if s.settings != nil {
+			value = s.settings.GetBool(ctx, info.Manifest.ID, declaration.Key, declaration.Default)
+		}
+		label := declaration.Label
+		if label == nil {
+			label = map[string]string{}
+		}
+		settings = append(settings, PluginSettingDTO{
+			Key:   declaration.Key,
+			Type:  declaration.Type,
+			Label: label,
+			Value: value,
+		})
 	}
 
 	status := string(info.Status)
@@ -139,10 +190,13 @@ func toPluginInfoDTO(info plugin.PluginInfo) PluginInfoDTO {
 	return PluginInfoDTO{
 		ID:           info.Manifest.ID,
 		Name:         info.Manifest.Name,
+		Description:  info.Manifest.Description,
 		Version:      info.Manifest.Version,
 		Author:       info.Manifest.Author,
 		Capabilities: capabilities,
+		Sources:      sources,
 		Providers:    providers,
+		Settings:     settings,
 		Network:      network,
 		KV:           info.Manifest.Permissions.KV,
 		Enabled:      info.Enabled,

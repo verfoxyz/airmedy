@@ -77,7 +77,10 @@ type PluginInfo struct {
 	// manifest itself is malformed, it declares a provider another plugin also
 	// declares, or it declares providers without stream.resolve. The entry
 	// stays in the list so the user can see why it does not work.
-	Invalid bool
+	Invalid bool `json:"invalid"`
+	// Settings is the switch list the running plugin reported through describe.
+	// Empty means it declared none (or is not running).
+	Settings []domain.PluginSettingDeclaration
 }
 
 // EffectiveEnabled reports whether the app will run this plugin.
@@ -105,6 +108,9 @@ type entry struct {
 	describable bool
 	// dynamicProviders is the last describe answer, normalised.
 	dynamicProviders []string
+	// dynamicSettings is the switch list the last describe answer declared. It
+	// is cached so the settings row can render the controls without a live call.
+	dynamicSettings []domain.PluginSettingDeclaration
 }
 
 // Service is the plugin registry: it discovers and validates manifests, owns the
@@ -497,6 +503,7 @@ func (s *Service) listLocked() []PluginInfo {
 			Enabled:   e.enabled,
 			Status:    e.status,
 			Providers: append([]string(nil), e.liveProvidersLocked()...),
+			Settings:  append([]domain.PluginSettingDeclaration(nil), e.dynamicSettings...),
 		}
 		if host, running := s.hosts[id]; running {
 			info.Running = true
@@ -566,6 +573,48 @@ func (s *Service) sortedEntryIDsLocked() []string {
 	return ids
 }
 
+// HostForLyricSource returns the running plugin that declared provider under
+// `sources` and implements lyric.fetch.
+//
+// Lyrics route by the manifest source list rather than by `providers`: the
+// search plugin never claims a stream route, but it is exactly the plugin that
+// knows the platform's lyric endpoint for the rows it produced.
+func (s *Service) HostForLyricSource(ctx context.Context, provider string) (domain.PluginHost, bool) {
+	if err := ctx.Err(); err != nil {
+		return nil, false
+	}
+	provider = domain.NormalizeProvider(provider)
+	if provider == "" {
+		return nil, false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range s.sortedEntryIDsLocked() {
+		e := s.entries[id]
+		if e.invalidReason != nil {
+			continue
+		}
+		if !domain.HasCapability(e.manifest.Capabilities, domain.CapabilityLyricFetch) {
+			continue
+		}
+		declared := false
+		for _, source := range e.manifest.Sources {
+			if domain.NormalizeProvider(source) == provider {
+				declared = true
+				break
+			}
+		}
+		if !declared {
+			continue
+		}
+		if host, running := s.hosts[id]; running {
+			return host, true
+		}
+	}
+	return nil, false
+}
+
 // Providers returns provider → plugin id for every registered plugin that claims
 // it, including plugins that are not running. The settings page shows the
 // ownership and the stream router's error messages name it.
@@ -607,10 +656,14 @@ func (s *Service) Describe(ctx context.Context, id string) (domain.PluginDescrib
 		describe.Sources = []domain.PluginSourceDescription{}
 	}
 	describe.Providers = providers
+	if describe.Settings == nil {
+		describe.Settings = []domain.PluginSettingDeclaration{}
+	}
 
 	s.mu.Lock()
 	if e, ok := s.entries[id]; ok {
 		e.dynamicProviders = providers
+		e.dynamicSettings = append([]domain.PluginSettingDeclaration(nil), describe.Settings...)
 		e.describable = true
 	}
 	s.mu.Unlock()
@@ -852,6 +905,7 @@ func (s *Service) Start(ctx context.Context, id string) error {
 		// list while the new process is still being asked.
 		if e.describable {
 			e.dynamicProviders = nil
+			e.dynamicSettings = nil
 		}
 	}
 	s.mu.Unlock()

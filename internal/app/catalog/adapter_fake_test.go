@@ -17,6 +17,9 @@ type fakeHost struct {
 	searchResult domain.PluginSearchResult
 	searchErr    error
 	calls        []string
+	// lastSearch keeps the normalised search request so a test can assert the
+	// cover preference the host forwarded.
+	lastSearch domain.PluginSearchRequest
 }
 
 func (h *fakeHost) Manifest() domain.PluginManifest { return h.manifest }
@@ -28,6 +31,9 @@ func (h *fakeHost) Call(_ context.Context, method string, params, result any) er
 	if method == domain.MethodSearch {
 		if h.searchErr != nil {
 			return h.searchErr
+		}
+		if request, ok := params.(domain.PluginSearchRequest); ok {
+			h.lastSearch = request
 		}
 		if target, ok := result.(*domain.PluginSearchResult); ok {
 			*target = h.searchResult

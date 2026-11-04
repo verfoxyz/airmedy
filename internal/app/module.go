@@ -153,6 +153,15 @@ var Module = fx.Module("app",
 	analytics.Module,
 	download.Module,
 	catalog.Module,
+	// Plugin lyrics are optional: plugin.Module is a sibling module and may be
+	// absent in tests. When present, the adapter gets the first lyric attempt
+	// ahead of the built-in providers.
+	fx.Invoke(fx.Annotate(
+		func(ls *lyrics.LyricsService, fetcher domain.PluginLyricFetcher) {
+			ls.SetPluginLyricsFetcher(fetcher)
+		},
+		fx.ParamTags(``, `optional:"true"`),
+	)),
 	fx.Invoke(func(lc fx.Lifecycle, db *sqlite.DB, search domain.SearchService, lib *library.LibraryService, playerSvc *player.PlayerService, eqSvc *eq.EQService, lastfmSvc *lastfm.LastFmService, analysisSvc *analysis.AnalysisService, settingsSvc *appsettings.SettingsService, playlistSvc *playlist.PlaylistService, pairingSvc *pairing.Service, mobileSyncSvc *mobilesync.Service, downloadSvc *download.Service, logger *slog.Logger) {
 		pairingSvc.AddDeviceConnectionListener(func(deviceID string, connected bool) {
 			if connected {

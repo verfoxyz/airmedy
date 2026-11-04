@@ -101,6 +101,7 @@ func validateManifest(manifest *domain.PluginManifest) error {
 	// Author is display-only and optional: a plugin without one is still
 	// installable, so it is trimmed rather than required.
 	manifest.Author = strings.TrimSpace(manifest.Author)
+	manifest.Description = strings.TrimSpace(manifest.Description)
 
 	// apiVersion is required and must be a range, not a bare feature flag:
 	// the handshake needs something to negotiate against.
@@ -118,6 +119,10 @@ func validateManifest(manifest *domain.PluginManifest) error {
 	// "wy" as two routes. The cross-plugin conflict rule lives in the registry,
 	// because no single file can see the other plugins.
 	manifest.Providers = normaliseProviders(manifest.Providers)
+	// Sources are the ids the plugin can search or provide lyrics for without
+	// claiming a stream route. They use the same normalisation so the settings
+	// tags and the lyric route agree on case.
+	manifest.Sources = normaliseProviders(manifest.Sources)
 
 	manifest.Runtime.Type = strings.TrimSpace(manifest.Runtime.Type)
 	if manifest.Runtime.Type == "" {

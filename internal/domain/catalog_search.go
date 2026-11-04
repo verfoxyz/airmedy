@@ -29,6 +29,11 @@ const MaxCatalogSearchSources = 32
 // short; a bound keeps a pasted document from becoming a request body.
 const MaxCatalogQueryLength = 200
 
+// CatalogSettingIncludeCover is the well-known switch key a search plugin may
+// declare through describe. The host stores its value in the plugin's KV and
+// sends it as the `include_cover` search parameter.
+const CatalogSettingIncludeCover = "cover_in_results"
+
 // CatalogSearchErrors. A plugin reports a failure kind in the JSON-RPC error's
 // `data` object, never by wording its message, so retry policy is not hostage to
 // free text — the same rule stream.resolve follows.
@@ -74,6 +79,15 @@ type PluginSearchRequest struct {
 	// Offset is the plugin-side offset, so a later page does not refetch the
 	// first one. It is advisory: the host also caps the returned row count.
 	Offset int `json:"offset"`
+	// IncludeCover asks the plugin to include cover URLs. The host sends the
+	// plugin's own "show covers" setting; when false the rows carry no cover and
+	// the UI renders a placeholder.
+	IncludeCover bool `json:"include_cover"`
+	// ForceCover overrides the switch for a save-time lookup: the user hides
+	// thumbnails but the downloaded file should still embed artwork, so the host
+	// may ask the plugin once more with covers included. It is not sent on the
+	// wire.
+	ForceCover bool `json:"-"`
 }
 
 // PluginSearchResultRow is one search hit as a plugin reports it.
@@ -90,6 +104,14 @@ type PluginSearchResultRow struct {
 	AlbumName  string   `json:"album,omitempty"`
 	// Duration is seconds; 0 when the source does not say.
 	Duration int `json:"duration,omitempty"`
+	// CoverURL is a thumbnail URL the source provides. Empty when the source has
+	// no artwork or the host asked not to include it. It is only handed to the
+	// browser; the host never fetches it during search.
+	CoverURL string `json:"cover_url,omitempty"`
+	// CoverURLLarge is the higher-resolution rendition used for the file's
+	// embedded artwork and the library cover. Sources that do not distinguish
+	// sizes leave it empty; the action then falls back to CoverURL.
+	CoverURLLarge string `json:"cover_url_large,omitempty"`
 	// Fee is the source's own "is this paid/VIP" hint when it has one. The
 	// host maps it onto Downloadable so a VIP-only row can be disabled with a
 	// reason instead of failing after the user acts.
@@ -131,6 +153,14 @@ type CatalogSearchResult struct {
 	Artists    []string
 	AlbumName  string
 	Duration   int
+	// CoverURL is the thumbnail the source reported, or "" when it was not
+	// requested or unavailable. The save action forwards it so the downloaded
+	// file can embed the artwork.
+	CoverURL string
+	// CoverURLLarge is the high-resolution rendition for the file's embedded
+	// artwork, or "" when the source does not distinguish sizes. The save action
+	// prefers it over CoverURL.
+	CoverURLLarge string
 	// Rank is the fused score the host computed; higher sorts first. It exists
 	// so ordering is explainable and testable, not because the UI shows it.
 	Rank float64

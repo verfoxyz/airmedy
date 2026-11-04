@@ -26,11 +26,11 @@
 ## Summary
 
 Airmedy is a plugin host. Plugins are child processes that speak newline-delimited
-JSON-RPC 2.0 over stdio and implement capabilities the app consumes (`stream.resolve`
-and `catalog.search` today; `auth` next). The app implements no **stream source**: it
-provides the ports, the lifecycle, the routing, and the plugin's key/value store
-(`storage.*`). Lyrics are the exception — they are a core feature served by the built-in
-Kugou and LRCLIB providers plus the local `.lrc` reader.
+JSON-RPC 2.0 over stdio and implement capabilities the app consumes (`stream.resolve`,
+`catalog.search` and `lyric.fetch` today; `auth` next). The app implements no **stream
+source**: it provides the ports, the lifecycle, the routing, and the plugin's key/value
+store (`storage.*`). Lyrics have built-in Kugou/LRCLIB/local `.lrc` providers, and a plugin
+that owns a search source may additionally answer `lyric.fetch` for its rows.
 
 The model is two levels, and only two:
 
@@ -67,7 +67,7 @@ plugins, not features to build in Go:
 | Streaming playback of a remote track | a plugin declaring `stream.resolve` and the providers it serves |
 | Sources (lx custom sources, catalog providers) | one plugin per *kind* of source; user-imported scripts are a managed list under that plugin (`plugins/lx`) |
 | Auth and artwork providers | plugins declaring `auth` / `pic.fetch` |
-| Lyrics | **built in** (Kugou + LRCLIB + local `.lrc`); `lyric.fetch` stays unimplemented |
+| Lyrics | **built in** (Kugou + LRCLIB + local `.lrc`); a source plugin may add `lyric.fetch` for its own rows |
 | Search over an online catalogue | a plugin behind a `catalog.*` capability |
 
 Rule of thumb for review: if a diff adds provider-specific logic — a URL shape, an API
@@ -88,7 +88,7 @@ URL** requires a plugin.
 |---|---|---|
 | Scan, import, playback, EQ, tags, cover, playlists, favorites, analytics | core | |
 | Local lyrics (`.lrc` / `.txt` beside the audio) | core | |
-| Network lyrics (Kugou / LRCLIB) | core | retained; no `lyric.fetch` route |
+| Network lyrics (Kugou / LRCLIB) | core | built-ins remain; a plugin owning the source gets the first attempt through `lyric.fetch` |
 | Search over an online catalogue | plugin | `catalog.search` |
 | Playback URL | plugin | `stream.resolve`; no built-in provider |
 | Download (bytes, validation, tags, naming, import) | core | the plugin supplies only the URL |
@@ -142,7 +142,7 @@ Adding a built-in stream provider to the core is an architecture violation.
 | `frontend/src/components/settings/PluginsSettings.vue` | plugins section (flat list) |
 | `frontend/src/components/settings/LxSourcesSettings.vue` | the lx source sub-page (import, enable, order, remove) |
 | `plugins/lx/` | the lx custom-source plugin (`id: lx`) that runs the imported scripts |
-| `plugins/wy/` | the search-only plugin (`id: wy`): `catalog.search` against the NetEase public endpoint |
+| `plugins/wy/` | the aggregate-source plugin (`id: wy`): `catalog.search` + `lyric.fetch`, cover URLs in rows |
 | `examples/plugins/` | minimal runnable plugin |
 
 ## Manifest
@@ -170,6 +170,11 @@ command; there is no host-defined runtime shape any more.
 `providers` is the **routing declaration**: the track provider ids this plugin
 serves. Empty (or absent) is legal and means "serves no track source" — a
 lyrics-only plugin is a first-class plugin, not a broken one.
+
+`sources` lists the platform ids a plugin serves **without** a stream route (search and
+lyrics). It is what lets a search-only plugin receive `lyric.fetch` for the rows it
+produced without claiming a playback URL. `description` is an optional one-line text the
+settings row shows (for example "聚合多个在线音乐源；当前支持 wy").
 
 A plugin whose routes depend on user content declares **no** providers and reports
 them through `describe` instead. `plugins/lx` is the standard case: its manifest
@@ -273,10 +278,15 @@ source. It is a *different* capability from `stream.resolve`: searching a catalo
 producing a playable URL are separate endpoints with separate failure modes, and a plugin
 may do one without the other.
 
-**Method.** `catalog.search` — params `{source, query, limit, offset}` → result
-`{rows, hasMore}`. A row is `{externalId, title, artists[], album, duration, vip}`. The
-host asks for **one source per call**: it resolves "全部" into one call per source, so no
-plugin ever fans out internally.
+**Method.** `catalog.search` — params `{source, query, limit, offset, include_cover}` →
+result `{rows, hasMore}`. A row is `{externalId, title, artists[], album, duration, vip,
+cover_url, cover_url_large}`. `cover_url` is the list thumbnail; `cover_url_large` is the
+500×500 (or original) rendition used for the file's embedded artwork and the library cover.
+Both are optional; `include_cover` is the plugin's declared "show covers in results" switch,
+sent by the host so a plugin can omit the URLs. The host caches the large URL it saw and,
+when a save has none, re-asks the source once with covers forced on, so hiding thumbnails
+does not strip artwork from the downloaded file. The host asks for **one source per call**:
+it resolves "全部" into one call per source, so no plugin ever fans out internally.
 
 **The source list comes from `describe`.** A search plugin reports
 `searchSources: [{id, name}]` on its existing `describe` answer — the same mechanism the
@@ -313,6 +323,22 @@ method is reported as such rather than retried.
 **Limits.** 50 rows per page, at most 32 reported sources, 200 characters of query. The
 host caps the row count it accepts regardless of what a plugin returns, because one
 answer travels as a single line (8 MiB).
+
+## Lyrics from a source plugin
+
+`lyric.fetch` lets the plugin that searched a row also supply its lyric. Params are
+`{provider, external_id, title, artists[], album, duration}`; the result is
+`{lyric, tlyric, source, synced}`. The host routes to the running plugin whose manifest
+`sources` contains the track's provider and that declares `capability: lyric.fetch`.
+
+- **The plugin must return a timeline.** The plugin rejects a body without `[mm:ss]`; the
+  host validates it again before storing, because a plain text body cannot scroll.
+- **Fallback is mandatory.** A plugin failure (`unavailable` / `rate_limited` / `auth`)
+  or a non-timeline answer falls through to the built-in LRCLIB/Kugou providers, so a
+  platform outage never removes lyrics entirely.
+- **No title/artist second lookup for plugin rows.** The plugin already knows the platform
+  id, which is exactly the case a title+artist search misses (Japanese titles, covers).
+- `synced` is the plugin's claim; the host still requires the timeline tags above.
 
 ## Lifecycle notification
 
@@ -433,7 +459,10 @@ A plugin may implement `describe` to report its routes and their sub-sources:
 // request: {"jsonrpc":"2.0","id":9,"method":"describe"}
 { "providers": ["wy","kg"],
   "sources": [{ "id": "…", "name": "ikun", "enabled": true, "providers": ["wy"] },
-              { "id": "…", "name": "broken", "enabled": true, "providers": [], "error": "…" }] }
+              { "id": "…", "name": "broken", "enabled": true, "providers": [], "error": "…" }],
+  "searchSources": [{ "id": "wy", "name": "网易云音乐" }],
+  "settings": [{ "key": "cover_in_results", "type": "switch", "default": true,
+                 "label": { "zh": "搜索结果显示封面", "en": "Show covers in results" } }] }
 ```
 
 - The registry calls it **after every successful start**, so a freshly launched
@@ -481,6 +510,12 @@ same place. Unlike the globe this one describes an **enforced** right, so its wo
 states the capability ("may store data on this device") rather than a promise. Both
 badges dim with opacity while the plugin is disabled and stay legible, because
 "what will this get access to?" is the question being decided at that moment.
+
+A plugin may also declare **switches** through `describe.settings` (today only
+`type: "switch"`). The settings row renders them under the plugin's own toggle; the
+value is stored in the plugin's KV under the host-owned `host.setting.` prefix and is
+passed to the plugin on the call it affects (`include_cover` for `catalog.search`).
+A plugin that declares no settings keeps the documented defaults.
 
 Empty state names `<DataDir>/plugins/` and offers a refresh button that calls
 `RescanPlugins` (re-scan + reload flags) without an app restart.
@@ -546,6 +581,10 @@ There are now two ways to add one, and they are different things:
 | network declaration reaches the row (badge, `*`, hosts) | `plugin_service_test.go`, `PluginsSettings.spec.ts` |
 | `permissions.kv` reaches the row (enforced badge) | `plugin_service_test.go`, `PluginsSettings.spec.ts` |
 | catalog search: fusion, dedup, paging, availability, partial failure | `internal/app/catalog/service_test.go` |
+| catalog search: cover field, cover cache, `include_cover` forwarded from the plugin switch | `internal/app/catalog/cover_cache_test.go`, `plugin_adapter_test.go` |
+| plugin settings: switch value round-trips in plugin KV with the host prefix | `internal/app/plugin/settings_test.go` |
+| lyrics: plugin route first, built-in fallback on failure/absence | `internal/app/lyrics/lyrics_service_test.go` |
+| lyric.fetch routing by manifest `sources`, timeline validation | `internal/app/plugin/lyrics_test.go` |
 | catalog search: source table from describe, routing, kind mapping, row cap | `internal/app/catalog/plugin_adapter_test.go` |
 | catalog search: the plugin resolver is the availability oracle; registry is the source table | `internal/app/stream/catalog_wiring_test.go` |
 | no built-in resolver; an undeclared provider is a readable permanent failure | `internal/app/stream/plugin_resolver_test.go` |

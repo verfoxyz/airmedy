@@ -46,6 +46,12 @@ type Service struct {
 	settings      SettingsReader
 	logger        *slog.Logger
 	sourceTimeout time.Duration
+
+	// coverMu guards the in-memory cover cache. A search only hands URLs to the
+	// UI; the cache keeps them so an action can still embed artwork after the
+	// user turned result thumbnails off (the plugin then omits cover_url).
+	coverMu    sync.RWMutex
+	coverCache map[domain.CatalogIdentity]string
 }
 
 // ResolverAvailability answers "can the host actually download from this
@@ -101,6 +107,7 @@ func NewService(deps Deps) *Service {
 		settings:      deps.Settings,
 		logger:        logger,
 		sourceTimeout: timeout,
+		coverCache:    make(map[domain.CatalogIdentity]string),
 	}
 }
 
@@ -135,6 +142,7 @@ func (s *Service) Search(ctx context.Context, request domain.CatalogSearchReques
 
 	outcome := s.searchSources(ctx, selected, normalised)
 	fused := fuseRanks(normalised.Query, selected, outcome.results)
+	s.rememberCovers(fused)
 	applyAvailability(available, s.resolver, fused)
 
 	rows, hasMore := pageOf(fused, normalised.Offset, normalised.Limit)
@@ -373,6 +381,33 @@ func (s *Service) applyStates(ctx context.Context, rows []domain.CatalogSearchRe
 			rows[index].State = domain.CatalogRowStateInLibrary
 		}
 	}
+}
+
+// rememberCovers keeps any cover the sources did report, keyed by identity.
+//
+// The UI may hide thumbnails, and the plugin then omits cover_url. The saved
+// download should still embed artwork, so the last URL the host saw is kept in
+// memory. This is a convenience cache, not persistence: a restart loses it.
+func (s *Service) rememberCovers(rows []domain.CatalogSearchResult) {
+	s.coverMu.Lock()
+	defer s.coverMu.Unlock()
+	for _, row := range rows {
+		cover := row.CoverURLLarge
+		if cover == "" {
+			cover = row.CoverURL
+		}
+		if cover == "" {
+			continue
+		}
+		s.coverCache[domain.CatalogIdentity{Provider: row.Provider, ExternalID: row.ExternalID}] = cover
+	}
+}
+
+// cachedCover returns the last cover seen for an identity, or "".
+func (s *Service) cachedCover(identity domain.CatalogIdentity) string {
+	s.coverMu.RLock()
+	defer s.coverMu.RUnlock()
+	return s.coverCache[identity]
 }
 
 // RowStates answers the row-state question for an arbitrary identity list. The
