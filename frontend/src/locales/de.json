@@ -188,6 +188,7 @@
       "sponsor_bmac": "Buy Me a Coffee",
       "sponsor_github": "GitHub-Sponsoren",
       "check_updates": "Nach Updates suchen",
+      "updates_disabled": "Plugin-Testbuild – In-App-Updates sind deaktiviert",
       "check_updates_auto": "Automatisch nach Updates suchen",
       "check_updates_auto_desc": "Beim Start automatisch nach neuen Versionen suchen",
       "checking": "Prüfen...",

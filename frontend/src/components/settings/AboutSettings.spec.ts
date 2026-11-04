@@ -36,4 +36,16 @@ describe('AboutSettings', () => {
     expect(iconShadow.classes()).toContain('rounded-[30%]')
     expect(iconShadow.get('img').classes()).not.toContain('drop-shadow-2xl')
   })
+
+  it('states that in-app updates are disabled and renders no update button', () => {
+    const wrapper = mount(AboutSettings, {
+      global: {
+        plugins: [createTestingPinia({ createSpy: vi.fn })],
+      },
+    })
+
+    expect(wrapper.text()).toContain('settings.about.updates_disabled')
+    expect(wrapper.text()).not.toContain('settings.about.check_updates')
+    expect(wrapper.findAll('button').some(button => button.text() === 'settings.about.check_updates')).toBe(false)
+  })
 })

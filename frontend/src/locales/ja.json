@@ -188,6 +188,7 @@
       "sponsor_bmac": "Buy Me a Coffee",
       "sponsor_github": "GitHub スポンサー",
       "check_updates": "アップデートを確認",
+      "updates_disabled": "プラグインのテストビルド — アプリ内更新は無効です",
       "check_updates_auto": "アップデートを自動確認",
       "check_updates_auto_desc": "起動時に新しいバージョンを自動的に確認する",
       "checking": "確認中...",

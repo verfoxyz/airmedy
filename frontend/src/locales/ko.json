@@ -188,6 +188,7 @@
       "sponsor_bmac": "Buy Me a Coffee",
       "sponsor_github": "GitHub 스폰서",
       "check_updates": "업데이트 확인",
+      "updates_disabled": "플러그인 테스트 빌드 — 앱 내 업데이트가 비활성화되었습니다",
       "check_updates_auto": "자동 업데이트 확인",
       "check_updates_auto_desc": "시작 시 자동으로 새 버전을 확인합니다",
       "checking": "확인 중...",

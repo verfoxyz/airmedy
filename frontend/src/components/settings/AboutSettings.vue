@@ -1,18 +1,15 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useAppStore } from '@/stores/app'
 import * as SettingsService from '../../../bindings/airmedy/internal/infra/wails/settingsservice'
-import { RefreshCw, CheckCircle2, ChevronRight } from '@lucide/vue'
+import { CloudOff, ChevronRight } from '@lucide/vue'
 import { Browser } from '@wailsio/runtime';
 
 const { t } = useI18n()
-const appStore = useAppStore()
 
 // State
 const appInfo = ref<any>(null)
 const isLoading = ref(true)
-const updateError = ref<string | null>(null)
 const sponsorLinks = [
   {
     key: 'settings.about.sponsor_github',
@@ -51,26 +48,6 @@ const loadData = async () => {
   }
 }
 
-const checkUpdate = async () => {
-  updateError.value = null
-  try {
-    await appStore.checkForUpdate()
-  } catch (err) {
-    console.error('Failed to check for update:', err)
-    updateError.value = t('settings.about.check_update_failed')
-  }
-}
-
-const applyUpdate = async () => {
-  updateError.value = null
-  try {
-    await appStore.applyUpdate()
-  } catch (err) {
-    console.error('Failed to apply update:', err)
-    updateError.value = 'Failed to apply update'
-  }
-}
-
 const openAppDataFolder = async () => {
   try {
     await SettingsService.OpenAppDataFolder()
@@ -94,42 +71,11 @@ onMounted(() => {
       <p class="text-sm font-bold text-primary mb-2">{{ t("settings.about.version") }} {{ appInfo?.version || '1.0.0' }}
       </p>
 
-      <!-- Update Section -->
-      <div class="mt-4 flex flex-col items-center min-h-[40px]">
-        <button v-if="!appStore.updateInfo && !appStore.updateApplied" @click="checkUpdate" :disabled="appStore.isCheckingUpdate"
-          class="flex items-center gap-2 px-4 py-2 bg-foreground/[0.04] hover:bg-foreground/[0.08] rounded-full text-xs font-bold disabled:opacity-50 transition-colors">
-          <div class="w-3 h-3 flex items-center justify-center">
-            <RefreshCw class="w-3 h-3" :class="{ 'animate-spin': appStore.isCheckingUpdate }" />
-          </div>
-          <span class="inline-block min-w-[100px]">{{ appStore.isCheckingUpdate ? t('settings.about.checking') : t('settings.about.check_updates') }}</span>
-        </button>
-
-        <div v-if="!appStore.updateInfo && !appStore.updateApplied && appStore.updateChecked && !appStore.isCheckingUpdate" class="flex items-center gap-2 text-foreground/50 pb-1 pt-4">
-          <CheckCircle2 class="w-4 h-4" />
-          <span class="text-xs font-bold">{{ t('settings.about.up_to_date') }}</span>
-        </div>
-
-        <div v-if="appStore.updateInfo && !appStore.updateApplied" class="p-4 bg-primary/10 rounded-2xl border border-primary/20 max-w-sm w-full">
-          <p class="text-xs font-bold text-primary mb-3">{{ t('settings.about.new_version_available', { version: appStore.updateInfo.version }) }}</p>
-          <div class="flex flex-col gap-2">
-            <button @click="applyUpdate" :disabled="appStore.isUpdating"
-              class="w-full py-2 bg-primary text-primary-foreground rounded-xl text-xs font-bold shadow-lg shadow-primary/20 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-2">
-              <div v-if="appStore.isUpdating" class="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              {{ appStore.isUpdating ? t('settings.about.updating') : t('settings.about.update_now') }}
-            </button>
-            <button @click="appStore.isUpdateDialogOpen = true"
-              class="w-full py-2 bg-foreground/[0.04] hover:bg-foreground/[0.08] rounded-xl text-xs font-bold transition-all">
-              {{ t('app.view_details') }}
-            </button>
-          </div>
-        </div>
-
-        <div v-if="appStore.updateApplied" class="flex items-center gap-2 text-green-500 py-2">
-          <CheckCircle2 class="w-4 h-4" />
-          <span class="text-xs font-bold">{{ t('settings.about.update_applied') }}</span>
-        </div>
-
-        <p v-if="updateError" class="text-xs text-red-500 mt-2 font-bold">{{ updateError }}</p>
+      <!-- In-app updates are disabled in this build; state the reason instead of
+           offering a button that the backend would refuse. -->
+      <div class="mt-4 flex items-center justify-center gap-2 text-dim min-h-[40px]">
+        <CloudOff class="w-4 h-4" />
+        <span class="text-xs font-bold">{{ t('settings.about.updates_disabled') }}</span>
       </div>
 
     </div>

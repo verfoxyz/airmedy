@@ -188,6 +188,7 @@
       "sponsor_bmac": "Buy Me a Coffee",
       "sponsor_github": "Спонсорство GitHub",
       "check_updates": "Проверить обновления",
+      "updates_disabled": "Тестовая сборка плагинов — обновления внутри приложения отключены",
       "check_updates_auto": "Автоматическая проверка обновлений",
       "check_updates_auto_desc": "Автоматически проверять наличие новых версий при запуске",
       "checking": "Проверка...",

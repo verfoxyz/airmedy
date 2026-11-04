@@ -188,6 +188,7 @@
       "sponsor_bmac": "Buy Me a Coffee",
       "sponsor_github": "GitHub Sponsors",
       "check_updates": "ตรวจสอบการอัปเดต",
+      "updates_disabled": "บิลด์ทดสอบปลั๊กอิน — ปิดการอัปเดตในแอปแล้ว",
       "check_updates_auto": "ตรวจสอบการอัปเดตอัตโนมัติ",
       "check_updates_auto_desc": "ตรวจสอบเวอร์ชันใหม่โดยอัตโนมัติเมื่อเริ่มต้นระบบ",
       "checking": "กำลังตรวจสอบ...",

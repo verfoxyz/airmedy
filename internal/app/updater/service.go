@@ -66,6 +66,14 @@ func (s *Service) GetCurrentVersion() string {
 }
 
 func (s *Service) CheckForUpdate(ctx context.Context) (*UpdateInfo, error) {
+	if config.UpdatesDisabled {
+		// This build shares the official release channel; an update accepted here
+		// would replace the fork. Return the legal "no update" state without
+		// touching the network so startup stays offline and no dialog can open.
+		s.logger.Info("in-app updates are disabled in this build; skipping the release check")
+		return nil, nil
+	}
+
 	s.logger.Info("checking for updates", "current_version", s.currentVersion)
 
 	rel, err := fetchLatestRelease(ctx)
@@ -118,6 +126,12 @@ func (s *Service) CheckForUpdate(ctx context.Context) (*UpdateInfo, error) {
 }
 
 func (s *Service) DownloadAndApply(ctx context.Context, progress ProgressFunc) error {
+	if config.UpdatesDisabled {
+		// Keep the binding callable (the frontend types depend on it) but never
+		// write an update over this build.
+		return fmt.Errorf("in-app updates are disabled in this build")
+	}
+
 	if s.pending == nil {
 		if _, err := s.CheckForUpdate(ctx); err != nil {
 			return fmt.Errorf("no cached release and re-check failed: %w", err)

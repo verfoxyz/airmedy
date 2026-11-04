@@ -187,6 +187,12 @@ hydrate the library-analysis worker slider's current value and its runtime max.
 
 ## Auto-Update Implementation
 
+**Disabled in this build.** `config.UpdatesDisabled` is true for the plugins alpha, which
+shares the official release channel and must not replace itself with an upstream build.
+`CheckForUpdate` returns `(nil, nil)` without any network call, `DownloadAndApply` returns a
+readable error, and the About page shows `settings.about.updates_disabled` instead of a
+check button. Set the constant to false to restore the flow below.
+
 `internal/app/updater/Service` uses the GitHub Releases API directly (`api.github.com/repos/misa198/airmedy/releases/latest`) — no third-party updater library. Flow:
 
 1. `CheckForUpdate()` → fetches latest release JSON, selects platform asset by OS/arch + extension (`.zip` for macOS/Windows, `.tar.gz` for Linux), optionally fetches `SHA256SUMS` for verification. Caches the pending release.

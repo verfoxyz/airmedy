@@ -188,6 +188,7 @@
       "sponsor_bmac": "Buy Me a Coffee",
       "sponsor_github": "GitHub 赞助",
       "check_updates": "检查更新",
+      "updates_disabled": "插件测试版，已禁止软件内更新",
       "check_updates_auto": "自动检查更新",
       "check_updates_auto_desc": "启动时自动检查新版本",
       "checking": "检查中...",
