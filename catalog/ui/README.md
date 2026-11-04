@@ -1,5 +1,47 @@
 # UI System
 
+<!-- toc -->
+- [Summary](#summary)
+- [Mobile library sync](#mobile-library-sync)
+- [Tech Stack](#tech-stack)
+- [Routing](#routing)
+- [Search Page (`/search`)](#search-page-search)
+- [Mobile Pairing UI](#mobile-pairing-ui)
+  - [Cached Route Data Refresh](#cached-route-data-refresh)
+  - [Favorite-only invalidation](#favorite-only-invalidation)
+  - [Mini Player Window Lifecycle](#mini-player-window-lifecycle)
+- [CSS Variables & Theming](#css-variables-theming)
+  - [Static Variables](#static-variables)
+  - [Dynamic Variables (Artwork-Derived)](#dynamic-variables-artwork-derived)
+- [Glass-Morphism Surfaces](#glass-morphism-surfaces)
+- [Layout Chrome and Typography](#layout-chrome-and-typography)
+- [Main Layout Sidebar](#main-layout-sidebar)
+- [Track Table (`TrackTable.vue`)](#track-table-tracktablevue)
+  - [Architecture](#architecture)
+- [Context Menu System](#context-menu-system)
+  - [Player Footer Quick Settings](#player-footer-quick-settings)
+- [Modal & Dialog System](#modal-dialog-system)
+- [Chip Input (`components/settings/DelimiterInput.vue`)](#chip-input-componentssettingsdelimiterinputvue)
+- [Settings Panels](#settings-panels)
+  - [Library Settings (`components/settings/LibrarySettings.vue`)](#library-settings-componentssettingslibrarysettingsvue)
+  - [Playback Settings (`components/settings/PlaybackSettings.vue`)](#playback-settings-componentssettingsplaybacksettingsvue)
+  - [About Settings (`components/settings/AboutSettings.vue`)](#about-settings-componentssettingsaboutsettingsvue)
+- [UI Primitives (`@airmedy/ui`)](#ui-primitives-airmedyui)
+  - [MarqueeText (`packages/ui/src/MarqueeText.vue`)](#marqueetext-packagesuisrcmarqueetextvue)
+  - [Slider (`packages/ui/src/slider/Slider.vue`)](#slider-packagesuisrcsliderslidervue)
+  - [Checkbox (`packages/ui/src/checkbox/Checkbox.vue`)](#checkbox-packagesuisrccheckboxcheckboxvue)
+  - [Tooltip (`packages/ui/src/tooltip/Tooltip.vue`)](#tooltip-packagesuisrctooltiptooltipvue)
+  - [TabSwitcher (`packages/ui/src/TabSwitcher.vue`)](#tabswitcher-packagesuisrctabswitchervue)
+- [Home Analytics](#home-analytics)
+- [Interactive Polish](#interactive-polish)
+  - [Development Tools Overlay](#development-tools-overlay)
+- [Track Table (`TrackTable.vue`)](#track-table-tracktablevue)
+- [Mini Player Glass Panel](#mini-player-glass-panel)
+- [Internationalization](#internationalization)
+- [Performance Notes](#performance-notes)
+  - [Fullscreen romanization](#fullscreen-romanization)
+<!-- /toc -->
+
 ## Summary
 
 The frontend is a Vue 3 SPA built with Vite 5, TailwindCSS v4, and Pinia. It uses a glass-morphism design system with dynamic artwork-based color theming. All views are lazy-loaded except Home. Track lists use virtual scrolling for performance.
@@ -62,12 +104,52 @@ Hash history mode (`createWebHashHistory`). All views lazy-loaded except HomeVie
 | `/genres/:id`     | GenreDetailView      | Genre tracks                                   |
 | `/composers`      | ComposersView        | Composer list                                  |
 | `/composers/:id`  | ComposerDetailView   | Composer tracks                                |
-| `/search`         | SearchView           | Unified search results                         |
+| `/search`         | SearchView           | Local / cloud search, one mode at a time       |
 | `/playlists/:id`  | PlaylistDetailView   | Playlist hero + tracks                         |
 | `/settings`       | SettingsView         | Tabbed settings (General/Library/EQ/About)     |
 | `/mini-player`    | MiniPlayerWindowView | Separate Wails window                          |
 
 The `/mini-player` route bypasses the MainLayout wrapper and renders directly.
+
+## Search Page (`/search`)
+
+`SearchView` owns the local/cloud switch (a `TabSwitcher`, default local). The two
+branches are separate stores because their result models differ:
+
+| Mode | Store | Rows |
+|---|---|---|
+| Local | `stores/search.ts` | library entities (`tracks`, `albums`, artists, playlists, composers) |
+| Cloud | `stores/catalog.ts` | `(provider, externalId)` hits with a per-row state |
+
+The keyword drives whichever branch is on screen; switching modes re-runs the
+current keyword against the branch being entered, so neither branch can show
+results for a different keyword. Local results survive a switch because their
+store keeps its response.
+
+`components/catalog/CatalogResults.vue` is the cloud branch (presentational; the
+store does search, paging and saving): a source bar (`全部` plus one button per
+source the plugin reported through `describe`), rows showing **title** and
+**artist · source** (the same track from two sources stays two rows), a state chip
+(`in_library` / `saved` / `downloading` / `failed`), an inline chip per failed
+source, and a 50-per-page "load more".
+
+Per-row actions (`收藏`, `加入歌单`) both register the track and start its download
+through `CatalogService.SaveCatalogResult`; the download setting does not gate
+them. A row that is not downloadable is disabled with a reason
+(`blocked_reason`, worded by the frontend), and an `in_library` row hides the
+actions instead of offering a second download — unless it carries
+`local_track_id` (the song is in the library through an imported file), where
+favorite/playlist reuse that row and a separate `download_anyway` button asks for
+the provider's copy. A `failed` row offers nothing extra: requesting it again
+reuses the failed job via the download queue.
+
+After `download:done` the page re-reads the row by identity through
+`GetCatalogRowStates`, because the merge deletes the remote row that the event's
+track id pointed at.
+
+Page-level failures travel as machine kinds in `error_kind` (`no_sources`,
+`source_unavailable`, `invalid`, `unavailable`) and are worded in the
+`cloud_search` locale namespace; the Go binding never returns a sentence for them.
 
 ## Mobile Pairing UI
 
@@ -167,6 +249,7 @@ TailwindCSS v4 uses a **CSS-first** `@theme` directive approach. All design toke
 --bg-main: #18181b
 --bg-glass: rgba(35, 35, 38, 0.6)
 --bg-glass-elevated: rgba(55, 55, 60, 0.4)
+--bg-glass-modal: rgba(36, 36, 40, 1)
 --border-glass: rgba(255, 255, 255, 0.1)
 --text-main: #ffffff --text-muted: #a1a1aa
 --primary: #e11d48 --accent-favorite: #ef4444
@@ -175,6 +258,7 @@ TailwindCSS v4 uses a **CSS-first** `@theme` directive approach. All design toke
 --bg-main: #0a0a0a
 --bg-glass: rgba(25, 25, 25, 0.6)
 --bg-glass-elevated: rgba(45, 45, 45, 0.4)
+--bg-glass-modal: rgba(30, 30, 30, 1)
 
 /* Light theme (default) */
 --bg-main: #f4f4f5
@@ -185,6 +269,10 @@ TailwindCSS v4 uses a **CSS-first** `@theme` directive approach. All design toke
 ```
 
 `--primary` and its RGB/tint/foreground companion variables are updated at runtime from the persisted primary-color setting. This is independent of artwork-derived `--dynamic-*` colors.
+
+Three `@utility` text classes derive from theme foreground, for use instead of raw
+opacity on `text-muted`: `text-dim` (60%, secondary/metadata), `text-subdued` (50%,
+hints), `text-dimmer` (40%, ghost/disabled).
 
 `--primary-foreground` favors `#FFFFFF` for saturated primary accents and uses
 `#18181B` only when the primary's perceived brightness is high (for example,
@@ -225,14 +313,25 @@ the tint reflects the viewed entity, not the playing track: `DetailHero.vue`
 (albums/playlists, via a `theme` prop) and `ArtistDetailView.vue` (artist, via
 `GetArtistColors`). Each falls back to `var(--bg-glass)` when no colors.
 
-## Glass-Morphism Implementation
+## Glass-Morphism Surfaces
+
+Glass is for **floating surfaces only** — context menus, popovers, drawers, modals,
+the download-queue panel, home analysis cards. Fixed chrome (`Sidebar`,
+`PlayerFooter`, `LyricsDrawer`, `QueueDrawer`) is opaque `bg-background`, split by
+`border-foreground/[0.06]` hairlines: a translucent panel behind permanently moving
+content costs GPU compositing on every repaint and reads as noise.
 
 ```css
-/* Sidebar, player bar, lyrics panel */
-background: var(--bg-glass);
-backdrop-filter: blur(30px);
-border-top: 1px solid var(--border-glass);
+/* Menus and popovers — ContextMenu, FilterDropdown, DownloadQueuePanel */
+bg-glass-elevated + backdrop-blur-xl + ring-1 ring-border-glass + transform-gpu isolate
+/* Full-height side panel and modal sheet — DownloadQueuePanel, Modal */
+bg-glass / bg-glass-modal + backdrop-blur-3xl
 ```
+
+`bg-glass*` / `ring-border-glass` are Tailwind aliases mapped to the CSS variables in
+`frontend/tailwind.config.js` (`@config` in `index.css` loads it) — the utilities, not
+the raw `var()`, are what components use. `transform-gpu isolate` is required:
+without it the blur snapshots stale content while the element animates.
 
 Cards use lower blur with hover scale:
 
@@ -242,6 +341,19 @@ Cards use lower blur with hover scale:
   filter: brightness(1.1);
 }
 ```
+
+## Layout Chrome and Typography
+
+Measured from source — quote these from here, not from memory:
+
+- Sidebar: resizable 180–260px, 250px default (above). The resizer handle is `w-px
+  bg-foreground/[0.06]`.
+- `PlayerFooter`: `h-[72px]`, `bg-background`, top border `border-foreground/[0.06]`.
+- Headings are Tailwind scale, not fixed px: view hero `text-4xl font-bold
+  tracking-tight` (subtitle `text-xl`), section headers `text-xl font-semibold
+  tracking-tight`.
+- Body text `text-sm`; metadata `text-xs`. Track row height is 56px, 36px compact
+  (see Track Table).
 
 ## Main Layout Sidebar
 
@@ -547,7 +659,7 @@ The mini player controls sit over a CSS glassmorphism panel (`.glass-panel` in `
 
 - `vue-virtual-sortable` renders only visible rows in track lists (56px or 36px each).
 - Views are lazy-loaded (dynamic `import()` in router) — only the home view loads eagerly.
-- Search is debounced 300ms in `stores/search.ts`.
+- Search is debounced 300ms in `stores/search.ts`; cloud search debounces the same way and fetches 50 merged rows per page.
 - Track and album results in `SearchView` expose their shared context menus on right-click, matching the actions available on other track and album surfaces.
 - Artwork requests use variants (`_sm`, `_md`) sized appropriately for each context.
 - Fullscreen `PlayerArtwork` can stack outgoing and incoming covers for an automatic audio crossfade; `requestAnimationFrame` applies equal-power `cos(t*pi/2)`/`sin(t*pi/2)` opacity weights over the backend-provided effective fade duration, using `plus-lighter` compositing. Its maximum size is explicitly set by `FullScreenPlayer`: `22rem` without a right column and `20rem` when queue or lyrics is open. Player bars and mini-player artwork do not blend.

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Refuse to publish this fork to the wrong place.
+#
+# Blocks:
+#   * any push into master/main (of any remote), and
+#   * any push to the upstream remote (misa198/airmedy).
+#
+# The fork publishes from the `plugins` branch only; upstream sync is pull-only.
+set -u
+
+remote="${1:-}"
+upstream_url_1="https://github.com/misa198/airmedy.git"
+upstream_url_2="https://github.com/misa198/airmedy"
+
+blocked=0
+
+case "$remote" in
+  upstream|"$upstream_url_1"|"$upstream_url_2")
+    echo "pre-push: refused — '$remote' is the upstream project, not your fork." >&2
+    echo "pre-push: upstream is pull-only here; push your fork with 'git push origin plugins'." >&2
+    blocked=1
+    ;;
+esac
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/master|refs/heads/main)
+      echo "pre-push: refused — pushing $local_ref to $remote_ref is blocked." >&2
+      echo "pre-push: this fork publishes from the 'plugins' branch. Use 'git push origin plugins'." >&2
+      blocked=1
+      ;;
+  esac
+done
+
+exit "$blocked"

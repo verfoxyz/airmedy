@@ -1,369 +1,196 @@
 # Airmedy Project Mandates
 
+Operating rules only. Facts live in `catalog/` (per-feature contracts, English) and
+`docs/` (design plans, machine constraints). This file duplicates neither.
+
+## Before You Act
+
+- `agents/INTERACTION.md` — Inquiry vs Directive. An inquiry gets research and a
+  proposal, never a file edit.
+- `mobile/AGENTS.md` — read before touching `mobile/`; it overrides the desktop UI,
+  testing and platform rules for that subtree.
+- `agents/WAILS_V3.md` — v3 is alpha; when a v2 idiom fails, find the v3 equivalent
+  instead of assuming the same behaviour.
+
+## Verified Environment Facts
+
+Recorded once in [`docs/windows-build.md`](docs/windows-build.md); that file is the only
+source for them. Two of its facts change how every task is run, so they are repeated here
+as commands rather than explanations — the reasons live in the document:
+
+```bash
+export PATH="/d/PFilesD/MSYS/mingw64/bin:$(go env GOPATH)/bin:$PATH"
+export CGO_ENABLED=1 GOTMPDIR="$PWD/.gotmp" TMP="$PWD/.gotmp" TEMP="$PWD/.gotmp"
+```
+
+Launch built binaries from `%TEMP%`, never from the workspace, and do not call
+`wails3 task windows:build` / `wails3 task verify` from Git Bash — the documented
+equivalents are in the same file. If a build or test fails in a way that smells like the
+environment, read that file before debugging code.
+
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Desktop framework | Wails v3 (Go + Vue 3) |
-| Monorepo | pnpm workspaces + Turbo |
-| DI | Uber FX |
-| Frontend state | Pinia 3 |
-| i18n | vue-i18n |
-| UI components | Radix Vue, TailwindCSS v4 (`@airmedy/ui`) |
-| Database | SQLite (sqlx + golang-migrate) |
-| Search | Bleve v2 |
-| File watching | fsnotify |
-| Audio (macOS) | SFBAudioEngine (cgo) |
-| Audio (Win/Linux) | miniaudio (C) |
-| Metadata | TagLib + FFmpeg fallback |
-| Logging | log/slog + lumberjack |
-
----
-
-## Mobile App (Kotlin Multiplatform)
-
-The desktop rules below apply to the Wails/Go/Vue application. Before changing
-anything under [`mobile/`](mobile/), read [`mobile/AGENTS.md`](mobile/AGENTS.md).
-It defines the Android-first KMP architecture and overrides desktop-specific UI,
-testing, and platform instructions for that subtree. General repository rules
-(research, conventional commits, and preserving unrelated changes) still apply.
-
----
+Wails v3 (Go + Vue 3) · pnpm workspaces + Turbo · Uber FX · Pinia · vue-i18n · Radix Vue
++ Tailwind v4 (`@airmedy/ui`) · SQLite (sqlx + golang-migrate) · Bleve v2 · fsnotify ·
+SFBAudioEngine (macOS, cgo) / miniaudio (Win + Linux) · TagLib + FFmpeg ·
+`log/slog` + lumberjack.
 
 ## 1. Performance
 
-- Track lists/grids MUST use `vue-virtual-scroller` (56px row height, or 36px in compact/collapsed mode).
-- Heavy tasks (metadata extraction, directory scan, search indexing) MUST run in goroutines with `context.Context` cancellation.
-- SQLite: use transactions for bulk writes; maintain appropriate indexes.
-
----
+- Track lists and grids use the virtualised `TrackTable` (`vue-virtual-sortable`); row
+  heights live in `catalog/ui/README.md`.
+- Heavy work (metadata, scanning, indexing) runs in goroutines honouring
+  `context.Context` cancellation.
+- SQLite: transactions for bulk writes; keep the indexes honest.
 
 ## 2. UI Design System
 
-### Glass-Morphism Rules
+Numbers — layout, type scale, glass recipes — live in `catalog/ui/README.md`. The rules:
 
-- Surfaces: `background: var(--bg-glass); backdrop-filter: blur(30px)`.
-- Borders: `1px solid var(--border-glass)`. Never plain `border` without explicit opacity.
+- Icons: **Lucide Vue only.**
+- **Every colour resolves from a theme token.** No hex, `rgb`/`rgba`, named colours or
+  Tailwind palette utilities (`white`, `red-*`, `zinc-*`, `slate-*`) in components. The
+  only exceptions are token declarations in global theme CSS and runtime artwork values.
+- No white- or black-based opacity overlays for interaction states; derive them from the
+  active theme tokens.
+- Inactive → active is an opacity step of a theme token, not a colour switch.
 - Row hover: `hover:bg-foreground/[0.04]`. Never `hover:bg-accent/50`.
-- Button inactive/active: opacity variation of the theme foreground (`text-foreground/40 → text-foreground/70`), not a colour switch.
-- Play button: theme primary-foreground circle + theme background icon.
-- Secondary/metadata text: a muted theme token such as `text-[color:var(--text-muted)]`, optionally with opacity. Never `text-muted-foreground` on dark translucent backgrounds.
-- Cards: `border-radius: 12px`, hover `scale(1.02)` + border brightness, and a theme-defined shadow token.
-- Icons: **Lucide Vue only**. No Phosphor or others.
-- Progress bars: 4px, expands 6px on hover, theme-foreground thumb.
-- Transitions: `all 0.3s cubic-bezier(0.4, 0, 0.2, 1)`. Theme color shifts: `1.5s ease-in-out`.
-
-### TailwindCSS v4
-
-- Tokens defined via `@theme` directive in global CSS — **not** `tailwind.config.js extend.colors`.
-- CSS custom properties are the primary theming mechanism.
-- New design tokens go under `@theme` only.
-
-### Theme-Safe Colours
-
-- Every UI colour in a component MUST resolve from a semantic theme token or CSS custom property, so it remains correct in every supported theme. Use existing utilities such as `text-foreground`, `bg-foreground/[0.04]`, and `text-[color:var(--text-muted)]`, or add a semantic token when needed.
-- Do not use raw colour values in component markup or styles: no hex, `rgb`/`rgba`, named colours, or Tailwind palette utilities such as `white`, `black`, `red-*`, `zinc-*`, or `slate-*`. The only exceptions are token declarations in global theme CSS and explicitly documented runtime/dynamic artwork values.
-- Do not use white- or black-based opacity overlays for interaction states. Derive overlays, borders, muted text, icons, and disabled states from the active theme tokens instead.
-- After any UI colour change, verify light, dark, and black themes; add or update the relevant component test when the state can be asserted.
-
-### Mandatory CSS Variables
-
-| Variable | Dark value | Black (OLED) value | Purpose |
-|---|---|---|---|
-| `--bg-main` | `#18181B` | `#0A0A0A` | Page background |
-| `--bg-glass` | `rgba(35,35,38,0.6)` | `rgba(25,25,25,0.6)` | Glass surfaces |
-| `--bg-glass-elevated` | `rgba(55,55,60,0.4)` | `rgba(45,45,45,0.4)` | Elevated glass |
-| --border-glass | `rgba(255,255,255,0.1)` | same | Glass borders |
-| `--primary` | `#E11D48` | same | Primary action |
-| `--dynamic-primary` | extracted vibrant | same | Per-track, runtime |
-| `--dynamic-surface` | extracted dominant 10–20% opacity | same | Per-track, runtime |
-| `--dynamic-glow` | extracted vibrant 40% opacity | same | Per-track, runtime |
-
-Themes: `system`, `light`, `dark` (gray), `black` (pure black for OLED). `black` applies `.dark` + `.black` CSS classes; `.black` only overrides bg vars.
-
-### Layout Constraints
-
-- Sidebar: `240px` width, `30px` blur.
-- Player bar: `80px` height, `30px` blur, `1px solid var(--border-glass)` top border, fixed bottom.
-
-### Typography Scale
-
-- H1 Hero: 32px Bold, tracking -0.02em
-- H2 Section: 20px Semibold
-- Body: 14px Medium
-- Metadata: 12px Regular, 60% opacity
-
-### UI Primitive Rules
-
-- Sliders/progress: `import { Slider } from '@airmedy/ui'` — never `<input type="range">`.
-- Text inputs: `import { Input } from '@airmedy/ui'` — never raw `<input type="text">`.
-- New shared primitives (no app-domain knowledge) → `packages/ui/src/`, export from `packages/ui/src/index.ts`.
-- App-specific components (use stores/bindings/router) → `frontend/src/components/`.
-
-### UI Implementation Checklist
-
-- [ ] Glass blur or subtle border for depth?
-- [ ] `--dynamic-*` colors verified for WCAG contrast?
-- [ ] All interactions smooth — no abrupt state changes?
-- [ ] Icons are Lucide Vue only?
-- [ ] Cards scale 2% on hover with brighter border?
-- [ ] New tokens via `@theme` directive, not config `extend`?
-
-### Package Manager
-
-**pnpm** only. Never npm or yarn.
-
----
+- Secondary text: `text-dim` / `text-subdued` / `text-dimmer`. `text-muted-foreground`
+  is banned on dark translucent backgrounds and survives in ~5 legacy files — do not
+  add to that set.
+- Glass is for **floating surfaces only** (menus, popovers, drawers, modals, home
+  cards). Persistent chrome is opaque `bg-background` with `border-foreground/[0.06]`
+  hairlines.
+- Tailwind v4: new design tokens go in `@theme` in global CSS. Colour utilities are
+  aliased to CSS variables in `tailwind.config.js` (loaded via `@config`) — extend the
+  right one, never inline a literal value.
+- Check light, dark **and** black after any colour change.
+- Sliders → `Slider`, text inputs → `Input`, both from `@airmedy/ui`. Never a raw
+  `<input>`.
+- **pnpm only.**
 
 ## 2.1 Internationalization
 
-- **12 locales:** `de en es fr it ja ko pt ru th vi zh` — all in `frontend/src/locales/`.
-- Never hardcode strings. Use `$t()` in templates, `t()` from `useI18n()` in scripts.
-- Never write `t('key', 'Fallback')`. Keys must exist in locale files.
-- When adding a key: add to **all 12 files simultaneously** (English value + translated/placeholder in other 11), then use in component.
+- 12 locales — `de en es fr it ja ko pt ru th vi zh` — in `frontend/src/locales/`.
+- No hardcoded strings. `$t()` in templates, `t()` from `useI18n()` in scripts. Never
+  `t('key', 'Fallback')`; the key must exist.
+- Add a key to **all 12 files in the same change**.
 
----
+## 2.5 Component Placement
 
-## 2.5 Frontend Component Architecture
-
-| Type | Location | Rules |
-|---|---|---|
-| UI Primitives | `packages/ui/src/` (`@airmedy/ui`) | No `stores/`, `bindings/`, or `router` imports. Stateless. Shared across workspaces. |
-| Feature Components | `frontend/src/components/` | May import stores/bindings. Reused across views. |
-| Views/Pages | `frontend/src/views/` | Orchestrates feature components, handles page fetching. |
-
-- Extract to composable/component when pattern appears in 3+ places.
-- Prefer `<slot />` over excessive props.
-- Split components >300 lines.
-- Shared logic → `lib/utils.ts` or `composables/`.
-- All components: `<script setup lang="ts">`, typed `defineProps<{}>()` and `defineEmits<{}>()`.
-- Every non-trivial feature component needs a `.spec.ts` (Vitest + `@vue/test-utils`).
-
----
+- `packages/ui/src/` — stateless primitives, no stores/bindings/router.
+  `frontend/src/components/` — feature components. `frontend/src/views/` — orchestration
+  and page-level fetching.
+- Extract a composable or component on the third repetition; prefer `<slot />` over prop
+  sprawl; split past ~300 lines.
+- `<script setup lang="ts">` with typed `defineProps<{}>()` / `defineEmits<{}>()`.
+- Every non-trivial feature component ships a `.spec.ts` (Vitest + `@vue/test-utils`).
 
 ## 2.6 Frontend Memory Management
 
-### Wails Events (`Events.On`)
+`Events.On()` returns an off-function — **always keep it**. A Pinia store that calls it
+collects off-fns in an array, exposes `dispose()`, and guards `init()` against a double
+call with an `_initialized` flag.
 
-- `Events.On()` returns `() => void` — **always store the off-function**.
-- Pinia stores with `init()`: collect all off-fns in an array, expose `dispose()`, and guard `init()` against double-call with an `_initialized` flag.
-- Pinia stores without `init()` (top-level `Events.On`): store off-fn as a `const`, expose `dispose()`.
-
-```ts
-// store pattern
-let _offFns: (() => void)[] = []
-let _initialized = false
-
-function init() {
-  if (_initialized) return
-  _initialized = true
-  _offFns = [
-    Events.On('some:event', handler),
-  ]
-}
-
-function dispose() {
-  _offFns.forEach(off => off())
-  _offFns = []
-  _initialized = false
-}
-```
-
-### Component Cleanup (`onUnmounted`)
-
-Every component that registers any of the following **must** clean it up in `onUnmounted`:
+Everything below must be released in `onUnmounted` (or the store's `dispose()`):
 
 | Resource | Cleanup |
 |---|---|
 | `Events.On()` | call the returned off-fn |
 | `setInterval` / `setTimeout` | `clearInterval` / `clearTimeout` |
-| `requestAnimationFrame` loop | `cancelAnimationFrame(rafId)` |
+| `requestAnimationFrame` loop | `cancelAnimationFrame` |
 | `ResizeObserver` / `IntersectionObserver` / `MutationObserver` | `.disconnect()` |
-| `addEventListener` on `window` / `document` / `MediaQueryList` | `removeEventListener` with the **same function reference** (store it) |
-| WebGL / Canvas context | `loseContext()` via `WEBGL_lose_context` extension |
+| `addEventListener` on `window`/`document`/`MediaQueryList` | `removeEventListener` with the **same function reference** (store it) |
+| WebGL / Canvas context | `loseContext()` |
 | `URL.createObjectURL` | `URL.revokeObjectURL` |
-
-### MediaQueryList in Stores
-
-Store the listener reference so it can be removed:
-
-```ts
-const _mq = window.matchMedia('(prefers-color-scheme: dark)')
-const _handler = () => { /* ... */ }
-_mq.addEventListener('change', _handler)
-
-function dispose() {
-  _mq.removeEventListener('change', _handler)
-}
-```
-
----
 
 ## 3. Go Architecture
 
-### Hexagonal / Ports & Adapters
+Strict dependency direction: `infra → app → domain`. Full map in
+`catalog/architecture/README.md`.
 
-Dependency direction (strict): `infra → app → domain`
-
-- **`internal/domain`** — entities + port interfaces. Zero imports from `app` or `infra`.
-- **`internal/app`** — services/use cases. Zero imports from `infra`.
-- **`internal/infra`** — adapter implementations:
-  - `sqlite/` — repositories (SQLite + sqlx + golang-migrate)
-  - `bleve/` — search (Bleve v2)
-  - `audio/` — `player_darwin.go` (SFBAudioEngine), `player_miniaudio.go` (Win/Linux)
-  - `metadata/` — TagLib + FFmpeg fallback
-  - `artwork/` — disk cache, resize, palette extraction
-  - `logging/` — zap + lumberjack
-  - `wails/` — thin Wails v3 binding wrappers (translation only, no logic)
-- **Entry point:** root `main.go`. No `cmd/` directory.
-
-### Dependency Injection (Uber FX)
-
-- Each package declares providers via `fx.Module`.
-- All wiring in `main.go` via `fx.New(...)`.
-- Never instantiate infra directly in `app` or `domain`.
-
-### Error Handling & Logging
-
-- Errors: `fmt.Errorf("context: %w", err)`.
-- Domain errors defined in `domain`, translated to user messages in `infra/wails`.
-- Logging: `*slog.Logger` (FX-injected). Never `log.Print*` or `fmt.Print*` in production. Use `slog.SetDefault` is called at startup so package-level `slog.*` calls are safe after FX starts.
-
-### Go Implementation Checklist
-
-- [ ] Business logic in `domain` or `app`, not `infra`?
-- [ ] `infra` implements a defined Port interface?
-- [ ] FX wires everything in `main.go`?
-- [ ] Wails bindings translation-only?
-- [ ] Goroutines accept `context.Context`?
-- [ ] `*slog.Logger` for all logging (injected) or `slog.*` package-level calls after FX starts?
-
----
+- `domain` — entities and port interfaces; imports neither `app` nor `infra`.
+- `app` — use cases; never imports `infra`. Adapters are bound onto ports in `main.go`
+  via `fx.Module`s.
+- `infra` — adapters. `wails/` is translation only: no logic in bindings.
+- The entry point is the root `main.go`; there is no `cmd/`.
+- Errors: `fmt.Errorf("context: %w", err)`. Domain errors are defined in `domain` and
+  turned into user messages in `infra/wails`.
+- Logging is `*slog.Logger` (FX-injected) or package-level `slog.*` after startup —
+  never `log.Print*` / `fmt.Print*` in production.
+- **Provider-specific logic** — a URL shape, an API key, a response format, a fallback
+  chain — inside `internal/` is in the wrong layer. It belongs in a plugin.
 
 ## 4. Git & Commits
 
-Conventional Commits: `type(scope): description`
-
-- Types: `feat fix chore docs style refactor perf test`
-- Scopes: `core app infra domain ui meta`
-- Install hooks: `task setup:hooks` (enforces `commit-msg`).
-
----
+Conventional Commits: `type(scope): description`. Types `feat fix chore docs style
+refactor perf test`; scopes `core app infra domain ui meta`. Hooks: `task setup:hooks`
+(enforces `commit-msg`).
 
 ## 5. Data Integrity
 
-- Schema changes MUST use golang-migrate. No destructive migrations without a down path.
-- Music files are **read-only** unless user explicitly triggers Save Metadata.
-- Propagate meaningful errors from Go to frontend via Wails.
-
----
+- Schema changes go through golang-migrate; no destructive migration without a down path.
+- Music files are **read-only** unless the user explicitly triggers Save Metadata.
+- Propagate meaningful errors from Go to the frontend through Wails.
 
 ## 6. Testing
 
-- All bug fixes and features MUST have unit tests (Go) or component tests (Vue).
-- Run `task verify` before declaring a task complete.
-- Task is done only when automated tests pass AND UI/UX manually verified.
+- Every bug fix and feature ships with a Go test or a Vue component test.
+- Run `task verify` (or the documented equivalent) before declaring completion.
+- Done means tests pass **and** the affected UI was actually verified. If you could not
+  check it visually, say so explicitly instead of implying a check happened.
 
----
+## 7. Platform Integration
 
-## 7. macOS Integration
-
-- Now Playing widget + media keys must be kept in sync with playback state.
-- "Close to tray" — music continues after main window closes.
-
----
+Now Playing / media keys / SMTC / MPRIS stay in sync with playback state, and "close to
+tray" keeps playing. Per-platform detail: `catalog/player/README.md`.
 
 ## 8. Catalog Maintenance
 
-`catalog/` contains living technical documentation. Treat it as a contract
-reference, not a changelog. Do not read or edit it by default for every code
-change.
+`catalog/` is a contract reference, not a changelog. Read only the entry for the area
+you are touching, and only when its documented boundary, lifecycle, data flow or
+external contract could be affected. Isolated CI, build, lint, test, formatting or
+dependency changes need no catalog read.
 
-### Read Before Touch
-
-Read the relevant catalog only when working in that feature area and its
-documented boundary, lifecycle, data flow, or external contract could affect
-the change. Do not read catalogs for isolated CI, build, lint, test, formatting,
-dependency, or private implementation changes unless the task explicitly needs
-the documented contract.
-
-| Feature area | Catalog |
+| Area | Catalog |
 |---|---|
-| Library scan, folder watch, file import | `catalog/library/README.md` |
-| Audio playback, queue, player state | `catalog/player/README.md` |
-| Tag extraction, normalization, metadata write | `catalog/metadata/README.md` |
-| Bleve search index, query | `catalog/search/README.md` |
-| Artwork cache, palette, asset handler | `catalog/artwork/README.md` |
-| EQ profiles, bands, presets | `catalog/equalizer/README.md` |
-| Background audio analysis (loudness/spectral/tempo pipeline) | `catalog/analysis/README.md` |
-| Volume normalization (preamp gain, target LUFS) | `catalog/normalization/README.md` |
-| Lyrics fetch, LRC parse, sync display | `catalog/lyrics/README.md` |
-| Playlist CRUD, track order, artwork | `catalog/playlists/README.md` |
-| App settings, theme, language | `catalog/settings/README.md` |
-| SQLite schema, migrations, repositories | `catalog/database/README.md` |
-| Vue components, stores, composables, routing | `catalog/ui/README.md` |
-| pnpm monorepo, @airmedy/ui, @airmedy/utils | `catalog/frontend-monorepo/README.md` |
-| Overall architecture, DI, Wails IPC | `catalog/architecture/README.md` |
-| Remote control server, WS protocol, auth, remote SPA | `catalog/remote/README.md` |
+| Library scan, folder watch, import | `library/` |
+| Playback, queue, player state | `player/` |
+| Tags, normalization, metadata write | `metadata/` |
+| Bleve index and query | `search/` |
+| Artwork cache, palette, asset handler | `artwork/` |
+| EQ profiles and presets | `equalizer/` |
+| Background analysis pipeline | `analysis/` |
+| Volume normalization | `normalization/` |
+| Lyrics fetch, parse, display | `lyrics/` |
+| Playlists, ordering, artwork | `playlists/` |
+| Download queue, remote tracks, merge | `download/` |
+| Settings, theme, language | `settings/` |
+| SQLite schema, migrations, repositories | `database/` |
+| Vue components, stores, routing | `ui/` |
+| pnpm monorepo, `@airmedy/ui` | `frontend-monorepo/` |
+| Architecture, DI, Wails IPC | `architecture/` |
+| Remote server, WS protocol, auth | `remote/` |
+| Plugin manifests, lifecycle, routing | `plugins/` |
 
-### Update Threshold
+**Update threshold.** Change a catalog in the same task only when it would otherwise
+state something false or omit what is needed to use the contract safely: public setup
+and commands, DB schema and migrations, Wails APIs and events, cross-layer ports,
+lifecycle invariants, persisted data flow, user-visible behaviour, navigation ownership,
+algorithm semantics. Never for private refactors, renamed internals, localized fixes,
+tests, CI/build/lint changes, dependency bumps or formatting.
 
-Update a catalog or README in the same task only when it would otherwise state
-something false or omit information a future engineer needs to use the changed
-contract safely. This includes public commands or setup, DB schema and
-migrations, Wails APIs/events, cross-layer ports, persisted data flow,
-lifecycle/cleanup invariants, user-visible behavior, navigation ownership, or
-meaningful algorithm semantics.
+**Writing.** English, operational, ownership first. Record the contracts that constrain
+future change; point at the source of truth rather than copying implementation detail.
+Delete stale detail instead of appending a correction below it.
 
-Do **not** update documentation for private refactors, renamed internal
-symbols, localized bug fixes, tests, CI/build/lint changes, dependency bumps,
-formatting, or implementation details that leave those contracts unchanged.
-Do not add a documentation diff merely to demonstrate compliance.
+## File Map
 
-README files follow the same threshold: update them for changed public setup,
-commands, supported targets, or user-facing behavior—not for internal workflow
-details. A task is complete without a documentation edit when no documented
-contract became stale.
-
-### Writing Catalogs
-
-Catalogs are operational architecture documents, written in English. They must
-let the next engineer change a feature safely without rediscovering its design
-from source.
-
-- Lead with ownership and boundaries: which layer/component owns state, side
-  effects, persistence, and platform integration.
-- Record the contracts that constrain future changes: public commands and data,
-  data flow, invariants, lifecycle/cleanup rules, failure handling, and the
-  relevant test or verification location.
-- Use a compact diagram or table only when it makes a relationship clearer.
-  Prefer the smallest useful map over a comprehensive file inventory.
-- Document behavior that is intentional, surprising, or easy to regress; point
-  to the source of truth rather than copying implementation details.
-- Do not turn catalogs into changelogs, exhaustive component/file lists, or
-  pixel-level animation narration. Delete stale detail instead of appending a
-  correction below it.
-- Keep claims source-backed. When a documented contract changes, update the
-  catalog in the same diff as the code and its test.
-
----
-
-## Implementation Workflow
-
-1. **Research** — read relevant catalog entries, find existing patterns, reproduce bugs with a test first.
-2. **Implement** — surgical changes with accompanying tests.
-3. **Verify** — `wails3 task verify` (tests + linters).
-4. **Update docs** — only if a documented contract is now stale.
-
----
-
-## Files Reference
-
-- `agents/INTERACTION.md` — Inquiry vs Directive protocol.
-- `agents/WAILS_V3.md` — Wails v3 alpha-specific patterns.
-- `catalog/` — Living feature documentation (section 8).
-
-## Command reference
-
-- `pnpm` for frontend task
-- `wails3` for backend task
+- `AGENTS.md` — the rules (this file).
+- [`docs/plugin-api.md`](docs/plugin-api.md) — plugin interfaces not yet implemented,
+  plus the decisions not to revisit.
+- [`docs/windows-build.md`](docs/windows-build.md) — verified machine constraints and
+  crash root causes.
+- `catalog/` — per-feature contracts, English (§8).
+- `agents/` — interaction protocol and Wails v3 notes.
+- `README.md` — this branch's scope; the project itself is documented upstream.

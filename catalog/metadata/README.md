@@ -9,6 +9,7 @@ The metadata feature handles reading audio file tags (ID3, Vorbis, MP4/iTunes, e
 | File                                     | Purpose                                       |
 | ---------------------------------------- | --------------------------------------------- |
 | `internal/infra/metadata/taglib.go`      | TagLib integration — extract and write        |
+| `internal/infra/metadata/flac.go`        | Native FLAC metadata-block writer (Vorbis comment + picture) |
 | `internal/domain/metadata.go`            | MetadataExtractor / MetadataWriter interfaces |
 | `internal/domain/metadata_processing.go` | String normalization, delimiter-based name splitting (`SplitNames`, `DefaultDelimiters`, `ValidateDelimiters`, `RawTagSeparator`) |
 
@@ -39,6 +40,25 @@ type MetadataExtractor interface {
 ```
 
 **Library:** `github.com/misa198/go-taglib` — fork of `go.senan.xyz/taglib` (Go bindings to the TagLib C++ library), extended to expose `BitDepth` (bits per sample) and `InnerCodec` (codec inside a container format, e.g. m4a `aac`/`alac`), which upstream doesn't surface. Feeds `Track.BitDepth`/`Track.Codec`, used by the frontend to classify Lossy/Lossless/Hi-Res/DSD (see `catalog/library` for the audio-quality tiering and the re-sync backfill mechanism).
+
+### Native FLAC writes (never ID3)
+
+TagLib falls back to ID3v2 frames on a FLAC stream that has no Vorbis-comment block
+(the "raw FLAC" output some stream resolvers produce). Those frames land *inside the
+audio payload* and break frame decoding mid-file, so a FLAC must never go through
+`WriteTags`. `flac.go` rewrites only the metadata region:
+
+- parse the block chain after `fLaC` (a leading ID3v2 tag is dropped);
+- replace the `VORBIS_COMMENT` block with the fields being written (TITLE/ARTIST/
+  ALBUM/ALBUMARTIST/DATE/TRACKNUMBER/…/LYRICS);
+- write the cover as `METADATA_BLOCK_PICTURE` (front cover), with dimensions read
+  from the image header;
+- keep STREAMINFO, seek tables, cuesheets and padding;
+- copy the audio payload verbatim to a temp file, hash it, re-parse the temp file
+  and compare the hash, then rename into place.
+
+A non-FLAC or malformed container is refused instead of written. MP3/MP4/Ogg
+continue through TagLib, which writes their native tags.
 
 ## Tag Mapping Strategy
 

@@ -1,5 +1,36 @@
 # Lyrics
 
+<!-- toc -->
+- [Summary](#summary)
+- [Files](#files)
+- [Lyric Model](#lyric-model)
+- [Mobile Library Sync Cache](#mobile-library-sync-cache)
+- [Resolution Strategy](#resolution-strategy)
+  - [Local Lyric Files](#local-lyric-files)
+  - [Manual `.lrc` File Save](#manual-lrc-file-save)
+  - [Export `.lrc`](#export-lrc)
+- [Fetch Strategy](#fetch-strategy)
+  - [1. Exact Fetch](#1-exact-fetch)
+  - [2. Fallback Without Album](#2-fallback-without-album)
+  - [3. Search and Rank](#3-search-and-rank)
+  - [Title Cleaning](#title-cleaning)
+  - [Synced vs. Plain Preference](#synced-vs-plain-preference)
+  - [KuGou Search and Rank](#kugou-search-and-rank)
+- [Ports](#ports)
+- [Provider Adapters](#provider-adapters)
+- [Wails-Exposed Methods](#wails-exposed-methods)
+- [Event Delivery](#event-delivery)
+- [LRC Format Parser (`useLyrics.ts`)](#lrc-format-parser-uselyricsts)
+  - [Parsed Types](#parsed-types)
+  - [Immersive Fullscreen Rendering](#immersive-fullscreen-rendering)
+  - [`isSynced` Detection](#issynced-detection)
+  - [Bilingual Support](#bilingual-support)
+- [Frontend Display](#frontend-display)
+  - [Enhanced LRC](#enhanced-lrc)
+  - [Follow and browse](#follow-and-browse)
+- [Offline fullscreen romanization](#offline-fullscreen-romanization)
+<!-- /toc -->
+
 ## Summary
 
 Fetches and displays synchronized (LRC) or plain-text lyrics for the current track. Lyrics are sourced from **sibling local files** (`.lrc` / `.txt` next to the audio file, read live at play time), an optional **subfolder next to the track** (gated by `lyrics_subfolder_enabled` + `lyrics_subfolder_name`, e.g. `<album>/lyrics/Song.lrc`), an optional **dedicated lyrics folder** (a single user-chosen folder searched by track basename, gated by `lyrics_folder_enabled`), embedded **file metadata** (`LYRICS` tag, read at scan time), and the external providers **lrclib.net** and **KuGou Music** (cached in SQLite). The frontend parses LRC timestamps and auto-scrolls to the current line.
@@ -134,7 +165,27 @@ Exposed to the frontend as `LyricsService.SaveLyricsFile(audioPath, content)`. I
 `FindLyricsDialog.vue` when the "Save .lrc file" checkbox is checked (default unchecked) at
 the point the user clicks the result-selection button.
 
+### Export `.lrc`
+
+`LyricsService.ExportLyrics(ctx, trackID, overwrite bool) (path string, err error)` writes the
+stored lyric (`Content`, falling back to `MetaContent`) to `<audio dir>/<audio base>.lrc` as
+UTF-8 with LF endings. It never touches the audio file and refuses remote (`remote://`) rows.
+An existing target returns `domain.ErrLyricsFileExists` unless `overwrite` is set — the user's
+explicit consent. The write goes through a temp file in the same directory and is renamed into
+place, so a failure leaves no partial file. `ExportLyricsTo` writes a user-chosen path; the
+Wails layer uses `LyricsExportName` for the save dialog's default name.
+
+`ExportLyrics` (Wails) returns `{path, exists}` so a conflict needs no string matching;
+`ExportLyricsAs` opens the native save dialog and returns `""` on cancel. Entry points are the
+lyrics drawer button and `context_menu.export_lyrics`; the menu item is disabled for remote
+rows and when the track has no stored lyric.
+
 ## Fetch Strategy
+
+For a downloaded track, `download_with_lyrics` requests lyrics only after the
+download merge, keyed on the surviving track id (see `catalog/download`, "Lyrics
+follow the row"). The fetch runs as a background step of the download service, so
+a provider outage never fails an audio download.
 
 External fetch is a fallback chain — each step tries the next only on miss:
 
@@ -240,6 +291,8 @@ PlayerService.GetCurrentLyrics(): LyricsEvent | null
 PlayerService.RefreshCurrentLyrics(): number
 SaveLyrics(trackID: string, content: string, source: string): void
 SaveLyricsFile(audioPath: string, content: string): void
+ExportLyrics(trackID: string, overwrite: boolean): LyricsExportResultDTO
+ExportLyricsAs(trackID: string): string
 DeleteLyrics(trackID: string): void
 ```
 
@@ -389,7 +442,7 @@ follow/browse behavior.
 
 **`LyricsDrawer.vue`** and the fullscreen `SyncedLyricsView` render lines with active-line highlighting. Their synced view follows playback by default: the first valid layout positions the active line immediately, then subsequent transitions use smooth scrolling only while the previous active line remains visible. Scrolling or dragging the lyric surface enters browse mode, stopping follow and making every line fully readable (no fade or blur). Tapping a line seeks to it and resumes follow. If fullscreen lyrics is mounted while its right column is still collapsed, a `ResizeObserver` waits for the first non-zero layout before positioning the active lyric.
 
-**View selection:** Tracks with synchronized lyrics always use the synced view; browse mode makes the complete text readable without switching modes. Tracks with only plain lyrics use the plain-text view.
+**View selection:** Tracks with synchronized lyrics always use the synced view; browse mode makes the complete text readable without switching modes. Tracks with only plain lyrics use the plain-text view. Plain lyrics have no timeline, so neither view pretends to follow playback: the drawer and fullscreen view show the `player.lyrics_unsynced` label above the text.
 
 **Fullscreen player:** Lyrics panel shown as the right column or via tab in the fullscreen overlay.
 

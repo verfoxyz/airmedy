@@ -1,5 +1,33 @@
 # Playlists
 
+<!-- toc -->
+- [Summary](#summary)
+- [Favorite-dependent refresh](#favorite-dependent-refresh)
+- [Mobile reconciliation](#mobile-reconciliation)
+- [Files](#files)
+- [Playlist Model](#playlist-model)
+- [PlaylistService Methods](#playlistservice-methods)
+- [Smart Playlists](#smart-playlists)
+  - [Rule Schema](#rule-schema)
+  - [Track Limit & Live Updating](#track-limit-live-updating)
+  - [Field/Operator Allowlist (`internal/app/playlist/smart_rules.go`)](#fieldoperator-allowlist-internalappplaylistsmartrulesgo)
+  - [Indexes (migration `000045_smart_rules_indexes`)](#indexes-migration-000045smartrulesindexes)
+  - [Mood Playlists](#mood-playlists)
+- [Track Ordering (LexoRank)](#track-ordering-lexorank)
+- [M3U8 Parser (`m3u8.go`)](#m3u8-parser-m3u8go)
+- [LibraryService Methods (import-related)](#libraryservice-methods-import-related)
+- [Wails-Exposed Methods](#wails-exposed-methods)
+  - [Event Echo Guarding (senderID)](#event-echo-guarding-senderid)
+  - [Return Types (import/export)](#return-types-importexport)
+- [Database Schema](#database-schema)
+- [Artwork](#artwork)
+- [Search Indexing](#search-indexing)
+- [Event Emitted](#event-emitted)
+- [Frontend State (`stores/playlists.ts`)](#frontend-state-storesplayliststs)
+- [Sidebar Navigation](#sidebar-navigation)
+- [Track Context Menu Integration](#track-context-menu-integration)
+<!-- /toc -->
+
 ## Summary
 
 User-created playlists with ordered tracks, optional custom artwork, and color extraction. Playlists are persisted in SQLite and indexed in Bleve for search.
@@ -552,6 +580,8 @@ Playlists appear in the sidebar below the main navigation items, ordered by crea
 ## Track Context Menu Integration
 
 The `Add to Playlist` context menu item fetches `GetPlaylistsForTrack(trackID)` to show a checkmark next to playlists that already contain the track. Clicking a playlist name calls `AddTracksToPlaylist` (batch, for multi-track selection) or `RemoveTrackFromPlaylist` depending on current membership.
+
+Removing a track is a deliberate three-way choice in `DeleteTrackDialog.vue` (`context_menu.delete_track`): **Remove from playlist** (`RemoveTrackFromPlaylist`, membership only), **Delete file** (`LibraryService.DeleteTrackFile`), or cancel. The dialog is opened with the current playlist ID, except for smart playlists and favorites where membership is not user-owned — those offer only the file deletion.
 
 Every Add to Playlist submenu starts with a text-only Create Playlist action (no icon), followed by a divider and the existing manual playlists. Confirming its shared name dialog creates a normal playlist and immediately adds the tracks from the initiating track, multi-selection, album, or group; it does not navigate away from the current view.
 

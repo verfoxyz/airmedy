@@ -125,6 +125,38 @@ resolve_arm64_tools() {
     echo "${CC} ${AR} ${NM} ${WAF_NAME}"
 }
 
+# waf's bundled waflib mishandles absolute paths on modern Python: during
+# `waf build` it turns "D:/code/..." into a child node named "D:" and dies with
+# "Could not create the directory .../build/src/D:". `waf configure` is fine (it
+# writes build/src/config.h), so when the build step fails we compile the same
+# sources directly with the configured compiler and archive them ourselves.
+build_with_gcc() {
+    local WORK_DIR="$1" CC_BIN="$2" AR_BIN="$3"
+    local OBJ_DIR="${WORK_DIR}/objs-gcc"
+    rm -rf "${OBJ_DIR}"
+    mkdir -p "${OBJ_DIR}"
+
+    local f o ok=0 fail=0
+    while IFS= read -r f; do
+        o="${OBJ_DIR}/$(printf '%s' "$f" | tr '/' '_').o"
+        if ( cd "${WORK_DIR}" && "${CC_BIN}" -O2 -c "$f" -o "$o"                 -I. -Isrc -Ibuild/src -I"${FFTW3_INCLUDE}" -DHAVE_CONFIG_H )                 >>"${OBJ_DIR}/compile.log" 2>&1; then
+            ok=$((ok + 1))
+        else
+            echo "      FAILED: $f"
+            fail=$((fail + 1))
+        fi
+    done < <(cd "${WORK_DIR}" && find src -name '*.c' | sort)
+
+    if [[ "${fail}" -ne 0 ]]; then
+        echo "    ERROR: ${fail} aubio sources failed to compile" >&2
+        tail -20 "${OBJ_DIR}/compile.log" >&2
+        exit 1
+    fi
+
+    ( cd "${WORK_DIR}" && "${AR_BIN}" rcs libaubio.a "${OBJ_DIR}"/*.o )
+    echo "    gcc fallback: archived ${ok} objects into libaubio.a"
+}
+
 build_arch() {
     local ARCH="$1"
     local CC_COMPILER="$2"
@@ -205,10 +237,13 @@ PYEOF
     export LIBS="-lfftw3f -lpthread"
     export PKG_CONFIG_PATH="${FFTW3_PKGCONFIG_BASE}/${ARCH}${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
     python3 ./waf configure "${WAF_FLAGS[@]}" "--check-c-compiler=${WAF_CC_NAME}" --prefix="${WORK_DIR}/install"
-    python3 ./waf build "${WAF_FLAGS[@]}"
+    if ! python3 ./waf build "${WAF_FLAGS[@]}"; then
+        echo "    waf build failed; falling back to a direct gcc build"
+        build_with_gcc "${WORK_DIR}" "${CC_EXPORT}" "${AR_EXPORT}"
+    fi
 
     local LIB
-    LIB="$(find "${WORK_DIR}/build" -name 'libaubio.a' | head -1)"
+    LIB="$(find "${WORK_DIR}" -name 'libaubio.a' | head -1)"
     [[ -n "${LIB}" ]] || { echo "    ERROR: libaubio.a not produced" >&2; exit 1; }
 
     mkdir -p "${OUT_DIR}"

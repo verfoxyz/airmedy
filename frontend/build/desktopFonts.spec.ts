@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { readFileSync } from 'node:fs'
+import { basename } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import postcss from 'postcss'
 import { desktopFonts, desktopTarget } from './desktopFonts'
@@ -7,7 +8,9 @@ import { desktopFonts, desktopTarget } from './desktopFonts'
 describe('desktop font targets', () => {
   it.each(['windows', 'linux', 'darwin'] as const)('uses the %s stylesheet', target => {
     expect(desktopTarget(target, 'darwin')).toBe(target)
-    expect(desktopFonts(target).stylesheet).toMatch(new RegExp(`/${target}\\.css$`))
+    // Compare the basename, not a "/name.css$" pattern: the path separator is
+    // "\" on Windows and the stylesheet path is platform-built.
+    expect(basename(desktopFonts(target).stylesheet)).toBe(`${target}.css`)
   })
 
   it.each([['win32', 'windows'], ['linux', 'linux'], ['darwin', 'darwin']] as const)('defaults %s to %s', (host, target) => {

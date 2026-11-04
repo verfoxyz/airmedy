@@ -4,7 +4,7 @@ import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import * as LibraryService from '../../../bindings/airmedy/internal/infra/wails/libraryservice'
 import { GetProgress, ListFailedTracks, RetryFailedTracks } from '../../../bindings/airmedy/internal/infra/wails/analysisservice'
-import { RotateCcw, Plus, Trash2, Folder, Loader2, DatabaseZap, Info, Tags, RefreshCw, Gauge, Music } from '@lucide/vue'
+import { RotateCcw, Plus, Trash2, Folder, Loader2, DatabaseZap, Info, Tags, RefreshCw, Gauge, Music, TimerReset } from '@lucide/vue'
 import type { WatchedFolder, SyncProgress } from '../../../bindings/airmedy/internal/domain/models'
 import { Events } from '@wailsio/runtime'
 import ConfirmDialog from '../ConfirmDialog.vue'
@@ -213,6 +213,40 @@ const optimizeSearch = async () => {
   }
 }
 
+// User-triggered repair for rows whose stored duration is implausible (older
+// builds once wrote a misread container's one second over the real value).
+// A file the container probe still cannot read is damaged; changing the row
+// cannot fix it, so the result lists it for a re-download.
+type DurationRepairOutcome = {
+  repaired: number
+  unreadable: { track_id: string; title: string; path: string }[]
+}
+
+const isRepairingDurations = ref(false)
+const durationRepair = ref<DurationRepairOutcome | null>(null)
+const showDurationRepair = ref(false)
+
+const repairDurations = async () => {
+  if (isRepairingDurations.value) return
+  isRepairingDurations.value = true
+  try {
+    const result = await LibraryService.RepairTrackDurations()
+    durationRepair.value = result
+      ? {
+          repaired: result.repaired,
+          unreadable: (result.unreadable ?? [])
+            .filter((failure): failure is NonNullable<typeof failure> => failure !== null)
+            .map(({ track_id, title, path }) => ({ track_id, title, path })),
+        }
+      : null
+    showDurationRepair.value = true
+  } catch (err) {
+    console.error('Duration repair failed:', err)
+  } finally {
+    isRepairingDurations.value = false
+  }
+}
+
 const handleSyncStarted = (ev: Events.WailsEvent) => {
   const data = ev.data as any
   isSyncing.value = true
@@ -312,6 +346,13 @@ onUnmounted(() => {
     <SettingSection :icon="Folder" :label="t('settings.folders.title')" variant="panel">
       <template #header-extra>
         <div class="flex gap-3">
+          <button @click="repairDurations"
+            :disabled="isSyncing || isRepairingDurations || removingFolderIds.length > 0 || folders.length === 0"
+            class="flex items-center gap-2 px-4 py-2 bg-foreground/[0.04] text-foreground rounded-xl hover:bg-foreground/[0.08] transition-all disabled:opacity-50 text-sm font-bold">
+            <Loader2 v-if="isRepairingDurations" class="w-4 h-4 animate-spin" />
+            <TimerReset v-else class="w-4 h-4" />
+            {{ isRepairingDurations ? t('settings.sync.repairing_durations') : t('settings.sync.repair_durations') }}
+          </button>
           <button @click="optimizeSearch" :disabled="isSyncing || removingFolderIds.length > 0 || folders.length === 0"
             class="flex items-center gap-2 px-4 py-2 bg-foreground/[0.04] text-foreground rounded-xl hover:bg-foreground/[0.08] transition-all disabled:opacity-50 text-sm font-bold">
             <DatabaseZap v-if="!isSyncing" class="w-4 h-4" />
@@ -459,6 +500,37 @@ onUnmounted(() => {
 
     <SyncProgressDialog :open="showSyncDialog" :type="removingFolderIds.length > 0 ? 'deleting' : (syncType || 'sync')"
       :progress="syncProgress" :complete="syncComplete" />
+
+    <Modal :open="showDurationRepair" :title="t('settings.sync.duration_repair_title')" width-class="w-[36rem]"
+      @close="showDurationRepair = false">
+      <div class="space-y-4">
+        <p v-if="durationRepair" class="text-sm text-dim">
+          {{ t('settings.sync.duration_repair_repaired', { count: durationRepair.repaired }) }}
+        </p>
+        <div v-if="durationRepair && durationRepair.unreadable.length > 0" class="space-y-2">
+          <p class="text-sm font-semibold">
+            {{ t('settings.sync.duration_repair_failed', { count: durationRepair.unreadable.length }) }}
+          </p>
+          <ul class="max-h-64 overflow-y-auto space-y-2">
+            <li v-for="failure in durationRepair.unreadable" :key="failure.track_id"
+              class="p-3 bg-foreground/[0.02] border border-foreground/[0.04] rounded-xl">
+              <p class="text-sm font-bold truncate">{{ failure.title || failure.path }}</p>
+              <p class="text-xs text-dimmer truncate" :title="failure.path">{{ failure.path }}</p>
+            </li>
+          </ul>
+        </div>
+        <p v-else class="text-sm text-dim">{{ t('settings.sync.duration_repair_none') }}</p>
+      </div>
+      <template #footer>
+        <div class="flex justify-end">
+          <button
+            class="min-w-24 px-4 py-2 text-sm text-primary-foreground bg-primary hover:opacity-90 rounded-lg transition-all font-medium"
+            @click="showDurationRepair = false">
+            {{ t('common.ok') }}
+          </button>
+        </div>
+      </template>
+    </Modal>
 
     <Modal :open="showFailedTracks" :title="t('settings.library_analysis.failed_tracks')" width-class="w-[42rem]"
       @close="showFailedTracks = false">

@@ -144,6 +144,13 @@ func (s *LibraryService) ReindexAll() error {
 	return nil
 }
 
+// RepairTrackDurations re-reads the container of local tracks whose stored
+// duration is implausible. Unlike the sync actions this is synchronous: the
+// caller shows the repaired and remaining (damaged) files as a result.
+func (s *LibraryService) RepairTrackDurations() (*domain.DurationRepairResult, error) {
+	return s.libService.RepairDurations(context.Background())
+}
+
 func (s *LibraryService) ImportAll() error {
 	folders, err := s.folderRepo.GetAll(context.Background())
 	if err != nil {
@@ -289,6 +296,12 @@ func (s *LibraryService) ToggleFavorite(trackID string) (bool, error) {
 
 func (s *LibraryService) ShowInExplorer(trackID string) error {
 	return s.libService.ShowInExplorer(context.Background(), trackID)
+}
+
+// DeleteTrackFile permanently removes the audio file and the library entry. The
+// UI only calls it from the confirmation dialog that spells that out.
+func (s *LibraryService) DeleteTrackFile(trackID string) error {
+	return s.libService.DeleteTrackFile(context.Background(), trackID)
 }
 
 func (s *LibraryService) UpdateTrackMetadata(trackID string, update domain.MetadataUpdate) error {

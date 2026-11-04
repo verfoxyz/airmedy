@@ -1737,3 +1737,75 @@ func TestSyncFavoriteDoesNotEmitPlaybackUpdates(t *testing.T) {
 		t.Fatal("unrelated track changed")
 	}
 }
+
+// TestPlayTracks_RefusesARemoteRow is the regression for a playback attempt on a
+// track that has not been downloaded: its Path is the virtual
+// remote://<provider>/<id> reference, so the decoder cannot open it (-10 on
+// miniaudio). The player must refuse before touching the engine, with a typed
+// error the UI can word, instead of surfacing a backend code.
+func TestPlayTracks_RefusesARemoteRow(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1.0}}
+	s, _ := newTestService(t, fp)
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID:           "remote-1",
+		Path:         domain.RemotePath("wy", "5257138"),
+		Title:        "屋顶",
+		Availability: domain.AvailabilityRemote,
+		Provider:     "wy",
+		ExternalID:   "5257138",
+	}}
+
+	err := s.PlayTracks([]*domain.TrackDTO{remote}, 0)
+	if !errors.Is(err, domain.ErrTrackNotAvailable) {
+		t.Fatalf("PlayTracks on a remote row = %v, want ErrTrackNotAvailable", err)
+	}
+	if fp.loadCalls != 0 {
+		t.Fatalf("the decoder was asked to load %d times, want 0", fp.loadCalls)
+	}
+}
+
+// TestLoadAndPlay_RefusesARemoteRowThatIsReadyByFlag covers the state the merge
+// bug produced: availability='ready' while the path is still remote://. IsRemote
+// checks both, so the row is refused rather than handed to the decoder.
+func TestLoadAndPlay_RefusesARemoteRowThatIsReadyByFlag(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1.0}}
+	s, _ := newTestService(t, fp)
+
+	broken := &domain.TrackDTO{Track: domain.Track{
+		ID:           "broken-1",
+		Path:         domain.RemotePath("wy", "5257138"),
+		Title:        "屋顶",
+		Availability: domain.AvailabilityReady,
+		Provider:     "wy",
+		ExternalID:   "5257138",
+	}}
+
+	if err := s.PlayTracks([]*domain.TrackDTO{broken}, 0); !errors.Is(err, domain.ErrTrackNotAvailable) {
+		t.Fatalf("PlayTracks on a ready-flagged remote row = %v, want ErrTrackNotAvailable", err)
+	}
+	if fp.loadCalls != 0 {
+		t.Fatalf("the decoder was asked to load %d times, want 0", fp.loadCalls)
+	}
+}
+
+// TestPlayTracks_PlaysALocalRow is the control: the guard must not reject a
+// normal downloaded track.
+func TestPlayTracks_PlaysALocalRow(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1.0}}
+	s, _ := newTestService(t, fp)
+
+	local := &domain.TrackDTO{Track: domain.Track{
+		ID:           "local-1",
+		Path:         `D:\Music\a.mp3`,
+		Title:        "晴天",
+		Availability: domain.AvailabilityReady,
+	}}
+
+	if err := s.PlayTracks([]*domain.TrackDTO{local}, 0); err != nil {
+		t.Fatalf("PlayTracks on a local row: %v", err)
+	}
+	if fp.loadCalls != 1 {
+		t.Fatalf("Load called %d times, want 1", fp.loadCalls)
+	}
+}

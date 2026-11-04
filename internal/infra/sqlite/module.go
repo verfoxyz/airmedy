@@ -35,6 +35,13 @@ var Module = fx.Module("sqlite",
 		func(db *DB) domain.FavoriteMutationLedger { return NewFavoriteMutationLedger(db) },
 		func(db *DB) domain.FavoriteMutationLWW { return NewFavoriteMutationLWW(db) },
 		func(db *DB) domain.PlaylistArtworkStagingRepository { return NewPlaylistArtworkStagingRepository(db) },
+		func(db *DB) domain.DownloadJobRepository { return NewDownloadJobRepository(db) },
+		func(db *DB) domain.PluginSettingsRepository { return NewPluginSettingsRepository(db) },
+		func(db *DB) domain.PluginKVRepository { return NewPluginKVRepository(db) },
+		func(db *DB) domain.LxSourceRepository { return NewLxSourceRepository(db) },
+		func(db *DB, tracks domain.TrackRepository) domain.DownloadMergeRepository {
+			return NewDownloadMergeRepository(db, tracks)
+		},
 		func(db *DB) domain.TxManager { return NewTxManager(db) },
 	),
 )

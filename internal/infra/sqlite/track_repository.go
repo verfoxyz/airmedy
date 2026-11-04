@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"airmedy/internal/domain"
+
+	"github.com/jmoiron/sqlx"
 )
 
 type trackRepository struct {
@@ -369,6 +371,12 @@ func (r *trackRepository) scanTrackRowsWithArtistArtwork(ctx context.Context, ro
 }
 
 func (r *trackRepository) GetByPathPrefix(ctx context.Context, prefix string) ([]*domain.TrackDTO, error) {
+	// An empty prefix turns "path LIKE ? || '%'" into "LIKE '%'", which matches
+	// every row — including virtual remote:// tracks that must never be treated
+	// as files inside a scanned root. Refuse instead of returning the library.
+	if prefix == "" {
+		return nil, nil
+	}
 	query := fmt.Sprintf(`
 		SELECT %s, a.title AS album_title, a.sort_title AS album_sort_title, a.normalization_key AS album_normalization_key, a.copyright AS album_copyright, a.artwork_key AS album_artwork_key, a.year AS album_year, a.created_at AS album_created_at, a.updated_at AS album_updated_at,
 		       GROUP_CONCAT(art.name, '; ') AS artist_names,
@@ -493,6 +501,33 @@ func (r *trackRepository) GetAll(ctx context.Context) ([]*domain.TrackDTO, error
 	err := r.db.Ext(ctx).SelectContext(ctx, &rows, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get all tracks: %w", err)
+	}
+	return r.scanTrackRowsWithArtistArtwork(ctx, rows)
+}
+
+func (r *trackRepository) FindPlayableByDuration(ctx context.Context, minDuration, maxDuration int) ([]*domain.TrackDTO, error) {
+	if minDuration > maxDuration {
+		minDuration, maxDuration = maxDuration, minDuration
+	}
+	query := fmt.Sprintf(`
+		SELECT %s, a.title AS album_title, a.sort_title AS album_sort_title, a.normalization_key AS album_normalization_key, a.copyright AS album_copyright, a.artwork_key AS album_artwork_key, a.year AS album_year, a.created_at AS album_created_at, a.updated_at AS album_updated_at,
+		       GROUP_CONCAT(art.name, '; ') AS artist_names,
+		       GROUP_CONCAT(art.id, '; ') AS artist_ids
+		FROM tracks t
+		LEFT JOIN albums a ON t.album_id = a.id
+		LEFT JOIN track_artists ta ON t.id = ta.track_id
+		LEFT JOIN artists art ON ta.artist_id = art.id
+		WHERE COALESCE(t.availability, 'ready') = 'ready'
+		  AND t.path NOT LIKE 'remote://%%'
+		  AND t.duration BETWEEN ? AND ?
+		GROUP BY t.id
+		ORDER BY t.duration
+		LIMIT 2000
+	`, trackSelectFields)
+	var rows []trackRow
+	err := r.db.Ext(ctx).SelectContext(ctx, &rows, query, minDuration, maxDuration)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find candidates by duration: %w", err)
 	}
 	return r.scanTrackRowsWithArtistArtwork(ctx, rows)
 }
@@ -689,6 +724,26 @@ func (r *trackRepository) GetByRules(ctx context.Context, whereSQL string, args 
 type trackDB struct {
 	domain.Track
 	AlbumID sql.NullString `db:"album_id"`
+
+	// trackDB is flattened by sqlx one level deep, and it resolves a named
+	// parameter by the STRUCT field name, not by the inner `db` tag. These
+	// aliases give the remote-track columns the names the statements use.
+	Availability sql.NullString `db:"availability"`
+	Provider     sql.NullString `db:"provider"`
+	ExternalID   sql.NullString `db:"external_id"`
+}
+
+// newTrackDB flattens a domain.Track into the sqlx struct, mapping the remote
+// identity columns explicitly so an empty value is stored as ” rather than
+// NULL (the columns are NOT NULL DEFAULT ”).
+func newTrackDB(track *domain.Track) trackDB {
+	return trackDB{
+		Track:        *track,
+		AlbumID:      toNullString(track.AlbumID),
+		Availability: sql.NullString{String: track.Availability, Valid: true},
+		Provider:     sql.NullString{String: track.Provider, Valid: true},
+		ExternalID:   sql.NullString{String: track.ExternalID, Valid: true},
+	}
 }
 
 func (r *trackRepository) Save(ctx context.Context, track *domain.Track) error {
@@ -698,28 +753,33 @@ func (r *trackRepository) Save(ctx context.Context, track *domain.Track) error {
 	}
 	track.UpdatedAt = now
 
-	dbTrack := trackDB{
-		Track:   *track,
-		AlbumID: toNullString(track.AlbumID),
-	}
+	dbTrack := newTrackDB(track)
 
 	query := `
 		INSERT INTO tracks (
 			id, path, title, sort_title,
 			album_id, year, track_number, total_tracks, disc_number, total_discs,
 			duration, bitrate, sample_rate, format, bit_depth, codec, artwork_key,
-			raw_artist_names, raw_album_artist_names, raw_genre_names, raw_composer_names,
-			copyright, bpm, label, isrc, play_count, other_metadata, file_size, is_favorite, mtime, created_at, updated_at
+			raw_artist_names, raw_album_artist_names, raw_album_name, raw_genre_names, raw_composer_names,
+			copyright, bpm, label, isrc, play_count, other_metadata, file_size, is_favorite, mtime, created_at, updated_at,
+			availability, provider, external_id
 		) VALUES (
 			:id, :path, :title, :sort_title,
 			:album_id, :year, :track_number, :total_tracks, :disc_number, :total_discs,
 			:duration, :bitrate, :sample_rate, :format, :bit_depth, :codec, :artwork_key,
-			:raw_artist_names, :raw_album_artist_names, :raw_genre_names, :raw_composer_names,
-			:copyright, :bpm, :label, :isrc, :play_count, :other_metadata, :file_size, :is_favorite, :mtime, :created_at, :updated_at
+			:raw_artist_names, :raw_album_artist_names, :raw_album_name, :raw_genre_names, :raw_composer_names,
+			:copyright, :bpm, :label, :isrc, :play_count, :other_metadata, :file_size, :is_favorite, :mtime, :created_at, :updated_at,
+			:availability, :provider, :external_id
 		)`
 
-	_, err := r.db.Ext(ctx).NamedExecContext(ctx, query, dbTrack)
+	// Expand the named parameters against the flattened struct instead of
+	// relying on NamedExecContext: trackDB embeds domain.Track, and the
+	// flattened lookup does not see the alias fields (see trackDB).
+	expanded, args, err := sqlx.Named(query, dbTrack)
 	if err != nil {
+		return fmt.Errorf("failed to expand save track query: %w", err)
+	}
+	if _, err := r.db.Ext(ctx).ExecContext(ctx, r.db.Rebind(expanded), args...); err != nil {
 		return fmt.Errorf("failed to save track: %w", err)
 	}
 	return nil
@@ -732,24 +792,23 @@ func (r *trackRepository) Upsert(ctx context.Context, track *domain.Track) error
 	}
 	track.UpdatedAt = now
 
-	dbTrack := trackDB{
-		Track:   *track,
-		AlbumID: toNullString(track.AlbumID),
-	}
+	dbTrack := newTrackDB(track)
 
 	query := `
 		INSERT INTO tracks (
 			id, path, title, sort_title,
 			album_id, year, track_number, total_tracks, disc_number, total_discs,
 			duration, bitrate, sample_rate, format, bit_depth, codec, artwork_key,
-			raw_artist_names, raw_album_artist_names, raw_genre_names, raw_composer_names,
-			copyright, bpm, label, isrc, play_count, other_metadata, file_size, is_favorite, mtime, created_at, updated_at
+			raw_artist_names, raw_album_artist_names, raw_album_name, raw_genre_names, raw_composer_names,
+			copyright, bpm, label, isrc, play_count, other_metadata, file_size, is_favorite, mtime, created_at, updated_at,
+			availability, provider, external_id
 		) VALUES (
 			:id, :path, :title, :sort_title,
 			:album_id, :year, :track_number, :total_tracks, :disc_number, :total_discs,
 			:duration, :bitrate, :sample_rate, :format, :bit_depth, :codec, :artwork_key,
-			:raw_artist_names, :raw_album_artist_names, :raw_genre_names, :raw_composer_names,
-			:copyright, :bpm, :label, :isrc, :play_count, :other_metadata, :file_size, :is_favorite, :mtime, :created_at, :updated_at
+			:raw_artist_names, :raw_album_artist_names, :raw_album_name, :raw_genre_names, :raw_composer_names,
+			:copyright, :bpm, :label, :isrc, :play_count, :other_metadata, :file_size, :is_favorite, :mtime, :created_at, :updated_at,
+			:availability, :provider, :external_id
 		) ON CONFLICT(path) DO UPDATE SET
 			title = excluded.title,
 			sort_title = excluded.sort_title,
@@ -768,6 +827,7 @@ func (r *trackRepository) Upsert(ctx context.Context, track *domain.Track) error
 			artwork_key = excluded.artwork_key,
 			raw_artist_names = excluded.raw_artist_names,
 			raw_album_artist_names = excluded.raw_album_artist_names,
+			raw_album_name = excluded.raw_album_name,
 			raw_genre_names = excluded.raw_genre_names,
 			raw_composer_names = excluded.raw_composer_names,
 			copyright = excluded.copyright,
@@ -777,11 +837,29 @@ func (r *trackRepository) Upsert(ctx context.Context, track *domain.Track) error
 			other_metadata = excluded.other_metadata,
 			file_size = excluded.file_size,
 			mtime = excluded.mtime,
-			updated_at = excluded.updated_at
+			updated_at = excluded.updated_at,
+			-- Availability follows the row (a re-import of a downloaded file
+			-- keeps it 'ready'), but the remote identity is never overwritten.
+			-- An ordinary rescan imports a Track without Provider/ExternalID,
+			-- and blanking those would lose the dedup key of a downloaded
+			-- track; provider/external_id are kept after download precisely so
+			-- a second download can find this row, see the remote-track design notes.
+			-- CAUTION for future edits. sqlx scans this string for named
+			-- bindings even inside comments, so never write a colon followed
+			-- by a non-word character anywhere below, prose included.
+			availability = CASE
+				WHEN excluded.availability = '' THEN tracks.availability
+				ELSE excluded.availability
+			END,
+			provider = COALESCE(NULLIF(excluded.provider, ''), tracks.provider),
+			external_id = COALESCE(NULLIF(excluded.external_id, ''), tracks.external_id)
 	`
 
-	_, err := r.db.Ext(ctx).NamedExecContext(ctx, query, dbTrack)
+	expanded, args, err := sqlx.Named(query, dbTrack)
 	if err != nil {
+		return fmt.Errorf("failed to expand upsert track query: %w", err)
+	}
+	if _, err := r.db.Ext(ctx).ExecContext(ctx, r.db.Rebind(expanded), args...); err != nil {
 		return fmt.Errorf("failed to upsert track: %w", err)
 	}
 	return nil
@@ -839,6 +917,9 @@ func (r *trackRepository) Delete(ctx context.Context, id string) error {
 }
 
 func (r *trackRepository) DeleteByPathPrefix(ctx context.Context, prefix string) error {
+	if prefix == "" {
+		return fmt.Errorf("delete tracks by path prefix: empty prefix would delete the whole library")
+	}
 	_, err := r.db.Ext(ctx).ExecContext(ctx, "DELETE FROM tracks WHERE path LIKE ? || '%'", prefix)
 	if err != nil {
 		return fmt.Errorf("failed to delete tracks by path prefix: %w", err)

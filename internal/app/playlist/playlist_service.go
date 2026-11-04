@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"airmedy/internal/domain"
@@ -25,6 +26,22 @@ type PlaylistService struct {
 	artworkCache  domain.ArtworkCache
 	searchService domain.SearchService
 	logger        *slog.Logger
+
+	// autoDownload is set by the composition root (main.go/module.go) and is nil
+	// in tests and on platforms without the download pipeline. A nil value means
+	// "do not download"; the hook is a function so this package does not import
+	// the download package (and so cannot create a cycle back through it).
+	autoDownloadMu sync.RWMutex
+	autoDownload   func(ctx context.Context, track *domain.TrackDTO, playlistID string)
+}
+
+// SetAutoDownload enables or disables enqueueing a download when a remote track
+// is added to a playlist. Called by the composition root; settings decide
+// whether it actually fires (see download.ShouldAutoDownload).
+func (s *PlaylistService) SetAutoDownload(fn func(ctx context.Context, track *domain.TrackDTO, playlistID string)) {
+	s.autoDownloadMu.Lock()
+	defer s.autoDownloadMu.Unlock()
+	s.autoDownload = fn
 }
 
 func NewPlaylistService(repo domain.PlaylistRepository, trackRepo domain.TrackRepository, artworkCache domain.ArtworkCache, searchService domain.SearchService, logger *slog.Logger) *PlaylistService {
@@ -357,7 +374,30 @@ func (s *PlaylistService) AddTrack(ctx context.Context, playlistID, trackID stri
 		"new_rank", newRank.String(),
 		"prev_max", maxRankStr)
 
-	return s.repo.AddTrack(ctx, playlistID, trackID, newRank.String())
+	if err := s.repo.AddTrack(ctx, playlistID, trackID, newRank.String()); err != nil {
+		return err
+	}
+	s.maybeAutoDownload(ctx, playlistID, trackID)
+	return nil
+}
+
+// maybeAutoDownload asks the composition root to queue a download for a newly
+// added remote track. It runs after the membership is committed (so the job's
+// foreign key to the playlist holds) and never fails the add: a download is an
+// optimisation, and a full disk or an offline network must not make the playlist
+// edit look unsuccessful.
+func (s *PlaylistService) maybeAutoDownload(ctx context.Context, playlistID, trackID string) {
+	s.autoDownloadMu.RLock()
+	hook := s.autoDownload
+	s.autoDownloadMu.RUnlock()
+	if hook == nil {
+		return
+	}
+	track, err := s.trackRepo.GetByID(ctx, trackID)
+	if err != nil || track == nil || !track.IsRemote() {
+		return
+	}
+	hook(ctx, track, playlistID)
 }
 
 func (s *PlaylistService) AddTracks(ctx context.Context, playlistID string, trackIDs []string) error {
@@ -580,6 +620,14 @@ func (s *PlaylistService) ExportM3U8(ctx context.Context, playlistID string, des
 		}
 		if genre != "" {
 			fmt.Fprintf(&buf, "#EXTGENRE:%s\n", strings.SplitN(genre, ";", 2)[0])
+		}
+		if t.IsRemote() {
+			// A remote track has no file path to reference. Keep the entry (and
+			// its #EXTINF metadata) so the ordering and the "a track belongs
+			// here" information survive, but write the identity as a comment
+			// instead of an unplayable remote:// path.
+			fmt.Fprintf(&buf, "# remote: %s/%s\n", t.Provider, t.ExternalID)
+			continue
 		}
 		buf.WriteString(t.Path + "\n")
 	}

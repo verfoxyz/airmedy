@@ -1,5 +1,24 @@
 # Mobile Pairing Protocol v1
 
+<!-- toc -->
+- [Summary](#summary)
+- [Desktop IPC](#desktop-ipc)
+- [Desktop mDNS broadcast](#desktop-mdns-broadcast)
+  - [Mobile discovery contract (v1)](#mobile-discovery-contract-v1)
+  - [Android discovery lifecycle](#android-discovery-lifecycle)
+- [Discovery QR](#discovery-qr)
+- [MQTT transport](#mqtt-transport)
+- [Handshake messages](#handshake-messages)
+  - [Signing input](#signing-input)
+- [Desktop behavior](#desktop-behavior)
+- [Flow Diagrams](#flow-diagrams)
+  - [Flow 1 — New Device Pairing](#flow-1-new-device-pairing)
+  - [Flow 2 — Trusted Device Reconnect via mDNS](#flow-2-trusted-device-reconnect-via-mdns)
+  - [Flow 3 — Re-pairing a Trusted Device with a Changed Public Key](#flow-3-re-pairing-a-trusted-device-with-a-changed-public-key)
+  - [Flow 4 — Revoking a Trusted Device](#flow-4-revoking-a-trusted-device)
+- [Library sync](#library-sync)
+<!-- /toc -->
+
 ## Summary
 
 The desktop application starts an embedded MQTT broker whenever it starts. This

@@ -1,0 +1,3 @@
+# Built example binaries: `go build -o echo/echo ./echo`
+echo/echo
+echo/echo.exe

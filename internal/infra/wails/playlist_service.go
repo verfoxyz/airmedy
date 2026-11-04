@@ -202,7 +202,7 @@ func (s *PlaylistService) ExportPlaylistToM3U8(playlistID string) error {
 
 	destPath, err := app.Dialog.SaveFile().
 		SetMessage("Export Playlist").
-		SetFilename(playlistID + ".m3u8").
+		SetFilename(playlistID+".m3u8").
 		AddFilter("M3U8 Playlist", "*.m3u8").
 		PromptForSingleSelection()
 	if err != nil {

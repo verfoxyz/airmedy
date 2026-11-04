@@ -175,6 +175,13 @@ func allTags(tags map[string][]string, sep string, keys ...string) string {
 }
 
 func (e *taglibExtractor) WriteMetadata(_ context.Context, path string, fields domain.MetadataUpdate) error {
+	// TagLib degrades to ID3v2 on FLAC streams that lack a Vorbis-comment block,
+	// which writes frames into the audio payload and corrupts decoding. Native
+	// FLAC gets its own metadata-block writer; everything else keeps TagLib.
+	if isFLACFile(path) {
+		return writeFLACMetadata(path, fields)
+	}
+
 	tags := map[string][]string{
 		"TITLE":       {fields.Title},
 		"ARTIST":      {fields.Artist},

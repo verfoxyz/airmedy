@@ -918,7 +918,31 @@ func (s *PlayerService) loadWithPlaybackState(track *domain.TrackDTO, state doma
 	return s.loadInactiveAtPosition(track, 0, state == domain.PlaybackStatePaused)
 }
 
+// ensurePlayable rejects a track whose audio is not on disk yet.
+//
+// A remote row's path is the virtual remote:// reference, not a file: handing it
+// to the decoder produces a backend load error (-10 on miniaudio) that the user
+// reads as "the player is broken". The check lives here, at the one place every
+// load path goes through, so a row the library still reports as undownloaded can
+// never reach the decoder — whether it came from a stale UI list, a restored
+// queue, or a search result.
+func (s *PlayerService) ensurePlayable(track *domain.TrackDTO) error {
+	if track == nil {
+		return fmt.Errorf("playback: no track selected")
+	}
+	if track.IsRemote() {
+		s.logger.Info("playback refused: the track is not downloaded yet",
+			"track_id", track.ID, "availability", track.Availability, "path", track.Path)
+		return fmt.Errorf("%w: %s", domain.ErrTrackNotAvailable, track.Title)
+	}
+	return nil
+}
+
 func (s *PlayerService) loadInactiveAtPosition(track *domain.TrackDTO, position float64, paused bool) error {
+	if err := s.ensurePlayable(track); err != nil {
+		return err
+	}
+
 	s.stopPositionTicker()
 	s.mu.Lock()
 	s.nextPreQueued = nil
@@ -964,6 +988,10 @@ func (s *PlayerService) loadInactiveAtPosition(track *domain.TrackDTO, position 
 }
 
 func (s *PlayerService) loadAndPlayAtPosition(track *domain.TrackDTO, position float64, previousReason domain.PlaybackEndReason) error {
+	if err := s.ensurePlayable(track); err != nil {
+		return err
+	}
+
 	// A hard load supersedes any in-flight crossfade.
 	s.snapActiveCrossfade()
 	s.flushListening(context.Background())
@@ -2341,8 +2369,14 @@ func (s *PlayerService) restoreState(ctx context.Context) {
 			if err != nil || track == nil {
 				continue
 			}
-			if _, err := os.Stat(track.Path); err != nil {
-				continue
+			// Remote tracks have no file to stat: their Path is a virtual
+			// remote:// reference. Dropping them here would silently shorten
+			// the restored queue; keep them and let the UI/playback path decide
+			// (availability says whether they are downloaded yet).
+			if !track.IsRemote() {
+				if _, err := os.Stat(track.Path); err != nil {
+					continue
+				}
 			}
 			tracks = append(tracks, track)
 		}

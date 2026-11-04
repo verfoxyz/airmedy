@@ -3,10 +3,12 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createTestingPinia } from '@pinia/testing'
 import LibrarySettings from './LibrarySettings.vue'
 
-const { handlers, retry, listFailed } = vi.hoisted(() => ({
+const { handlers, retry, listFailed, repairDurations, watchedFolders } = vi.hoisted(() => ({
   handlers: new Map<string, (event: { data: unknown }) => void>(),
   retry: vi.fn().mockResolvedValue(undefined),
   listFailed: vi.fn().mockResolvedValue([{ id: 'bad', title: 'Broken', artists: 'Artist', path: '/music/broken.mp3', artworkKey: '', failedComponents: ['ffmpeg'] }]),
+  repairDurations: vi.fn(),
+  watchedFolders: vi.fn().mockResolvedValue([]),
 }))
 
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string, values?: Record<string, number>) => values ? `${key}:${values.done}/${values.total} (${values.percent}%)` : key }) }))
@@ -26,7 +28,9 @@ vi.mock('../../../bindings/airmedy/internal/infra/wails/analysisservice', () => 
   RetryFailedTracks: retry,
 }))
 vi.mock('../../../bindings/airmedy/internal/infra/wails/libraryservice', () => ({
-  GetWatchedFolders: vi.fn().mockResolvedValue([]), DelimitersPendingResync: vi.fn().mockResolvedValue(false),
+  GetWatchedFolders: watchedFolders,
+  DelimitersPendingResync: vi.fn().mockResolvedValue(false),
+  RepairTrackDurations: (...args: unknown[]) => repairDurations(...args),
 }))
 
 function mountSettings() {
@@ -57,5 +61,25 @@ describe('LibrarySettings analysis failures', () => {
     await flushPromises()
     await wrapper.get('[data-testid="retry-failed-tracks"]').trigger('click')
     expect(retry).toHaveBeenCalled()
+  })
+
+  it('repairs durations and lists the files that are still unreadable', async () => {
+    watchedFolders.mockResolvedValue([{ id: 'folder-1', path: '/music' }])
+    repairDurations.mockResolvedValue({
+      repaired: 2,
+      unreadable: [{ track_id: 'bad', title: 'Broken', path: '/music/broken.flac', reason: 'unreadable' }],
+    })
+    const wrapper = mountSettings()
+    await flushPromises()
+
+    await wrapper.findAll('button')
+      .find(button => button.text() === 'settings.sync.repair_durations')!
+      .trigger('click')
+    await flushPromises()
+
+    expect(repairDurations).toHaveBeenCalled()
+    expect(wrapper.text()).toContain('settings.sync.duration_repair_repaired')
+    expect(wrapper.text()).toContain('settings.sync.duration_repair_failed')
+    expect(wrapper.text()).toContain('Broken')
   })
 })

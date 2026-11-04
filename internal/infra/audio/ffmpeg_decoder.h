@@ -142,13 +142,19 @@ static FFmpegHandle* ffmpeg_open(const char* path, ma_uint32 target_rate) {
 
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(59, 37, 100)
     {
-        AVChannelLayout in_ch_layout;
+        /* AVChannelLayout owns a heap pointer, and av_channel_layout_copy
+         * frees whatever the destination holds before copying. Left
+         * uninitialised, that destination is stack garbage and the free
+         * corrupts the heap — the process then dies later with
+         * 0xC0000374 inside an unrelated allocation. Zero-init is required,
+         * not defensive style. */
+        AVChannelLayout in_ch_layout = {0};
         if (h->codec_ctx->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC) {
             av_channel_layout_default(&in_ch_layout, (int)in_ch);
         } else {
             av_channel_layout_copy(&in_ch_layout, &h->codec_ctx->ch_layout);
         }
-        AVChannelLayout out_ch_layout;
+        AVChannelLayout out_ch_layout = {0};
         av_channel_layout_default(&out_ch_layout, (int)h->n_ch);
         swr_alloc_set_opts2(&h->swr, &out_ch_layout, AV_SAMPLE_FMT_FLT, (int)target_rate,
                             &in_ch_layout, h->codec_ctx->sample_fmt, h->codec_ctx->sample_rate, 0, NULL);

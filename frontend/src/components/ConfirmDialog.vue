@@ -20,13 +20,16 @@ const emit = defineEmits<{
 const { t } = useI18n()
 
 function handleCancel() {
-  emit('update:open', false)
   emit('cancel')
+  emit('update:open', false)
 }
 
 function handleConfirm() {
-  emit('update:open', false)
+  // The payload event goes first. A parent that clears its pending target on
+  // update:open would otherwise see an empty target by the time it handles
+  // confirm — the deletion silently never happened.
   emit('confirm')
+  emit('update:open', false)
 }
 </script>
 

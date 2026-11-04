@@ -15,9 +15,11 @@ import {
   ListMusic,
   Mic2,
   PictureInPicture2,
+  Download,
 } from '@lucide/vue'
 import LazyImg from '@/components/LazyImg.vue'
 import { usePlayerStore } from '../stores/player'
+import { useDownloadStore } from '../stores/download'
 import { RepeatMode } from '../../bindings/airmedy/internal/domain/models'
 import { formatTime, getTrackDisplayTitle } from '@airmedy/utils'
 import { Slider } from '@airmedy/ui'
@@ -27,14 +29,24 @@ import TrackContextMenu from './TrackContextMenu.vue'
 import { MarqueeText } from '@airmedy/ui'
 import PlayerControlButton from './player/PlayerControlButton.vue'
 import PlayerQuickSettingsMenu from './player/PlayerQuickSettingsMenu.vue'
+import DownloadQueuePanel from './DownloadQueuePanel.vue'
 import { useAppStore } from '../stores/app'
 import PlayerFavoriteButton from './player/PlayerFavoriteButton.vue'
 
 const { t } = useI18n()
 const store = usePlayerStore()
+const downloadStore = useDownloadStore()
 const appStore = useAppStore()
 const trackContextMenu = ref<InstanceType<typeof TrackContextMenu> | null>(null)
 const quickSettingsMenu = ref<InstanceType<typeof PlayerQuickSettingsMenu> | null>(null)
+
+// The download queue is a footer-owned slide-over: it belongs to the player bar
+// rather than to a route, so it survives navigation and closes with the bar.
+const isDownloadQueueOpen = ref(false)
+
+function toggleDownloadQueue() {
+  isDownloadQueueOpen.value = !isDownloadQueueOpen.value
+}
 
 function openArtworkContextMenu(e: MouseEvent) {
   if (!store.currentTrack) return
@@ -178,6 +190,22 @@ async function onSeekEnd() {
         @click="store.toggleQueue()" :title="t('player.queue')">
         <ListMusic class="w-4 h-4" />
       </button>
+      <button
+        class="relative transition-colors"
+        :class="isDownloadQueueOpen ? 'text-primary' : 'text-dim hover:text-subdued'"
+        :aria-expanded="isDownloadQueueOpen"
+        :title="t('download.queue_title')"
+        :aria-label="t('download.queue_title')"
+        data-test="download-queue-toggle"
+        @click="toggleDownloadQueue()">
+        <Download class="w-4 h-4" />
+        <!-- A dot marks a live queue without stealing the icon's colour. -->
+        <span
+          v-if="downloadStore.activeCount > 0 && !isDownloadQueueOpen"
+          class="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-primary"
+          data-test="download-queue-dot"
+          aria-hidden="true" />
+      </button>
       <button class="text-dim hover:text-subdued transition-colors"
         @click="WindowService.ToggleMiniPlayer()" :title="t('player.mini_player')">
         <PictureInPicture2 class="w-4 h-4" />
@@ -191,4 +219,5 @@ async function onSeekEnd() {
 
   <TrackContextMenu ref="trackContextMenu" />
   <PlayerQuickSettingsMenu ref="quickSettingsMenu" />
+  <DownloadQueuePanel :open="isDownloadQueueOpen" @close="isDownloadQueueOpen = false" />
 </template>

@@ -3,7 +3,7 @@ package analysis
 import (
 	"context"
 	"log/slog"
-	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -20,8 +20,9 @@ func (canningAnalyzer) Analyze(ctx context.Context, path string) (*domain.TrackF
 }
 
 func TestAnalysisServiceBackfillDrainsPendingTracks(t *testing.T) {
-	dbPath := "analysis_service_test.db"
-	defer func() { _ = os.Remove(dbPath) }()
+	// A per-test directory, not a fixed name in the package folder: a
+	// leftover file from a killed run would otherwise fail the next one.
+	dbPath := filepath.Join(t.TempDir(), "analysis.db")
 
 	db, err := sqlite.NewDB(dbPath, slog.Default())
 	if err != nil {
@@ -69,8 +70,9 @@ func TestAnalysisServiceBackfillDrainsPendingTracks(t *testing.T) {
 }
 
 func TestAnalysisServiceEnqueueAfterStart(t *testing.T) {
-	dbPath := "analysis_service_enqueue_test.db"
-	defer func() { _ = os.Remove(dbPath) }()
+	// A per-test directory, not a fixed name in the package folder: a
+	// leftover file from a killed run would otherwise fail the next one.
+	dbPath := filepath.Join(t.TempDir(), "analysis.db")
 
 	db, err := sqlite.NewDB(dbPath, slog.Default())
 	if err != nil {

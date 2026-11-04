@@ -91,6 +91,14 @@ func (s *SettingsService) GetSettings(ctx context.Context) (*domain.AppSettings,
 			AlbumArtistDelimiters:           domain.DefaultDelimiters(),
 			GenreDelimiters:                 domain.DefaultDelimiters(),
 			ComposerDelimiters:              domain.DefaultDelimiters(),
+			// An empty download dir means "resolve the default at use time", so
+			// moving the home folder does not leave a stale path behind.
+			DownloadQuality:     domain.DefaultDownloadQuality,
+			DownloadNamingOrder: domain.DefaultNamingOrder,
+			// Adding a track to a playlist downloads it by default: the setting
+			// exists so a user can opt out (metadata only), not so the default is
+			// "save without the audio".
+			AutoDownloadOnPlaylistAdd: true,
 		}
 		return s.cache, nil
 	}
@@ -114,6 +122,12 @@ func (s *SettingsService) SaveSettings(ctx context.Context, settings *domain.App
 		return fmt.Errorf("invalid primary color: %w", err)
 	}
 	settings.PrimaryColor = primaryColor
+
+	namingOrder, err := domain.NormalizeNamingOrder(settings.DownloadNamingOrder)
+	if err != nil {
+		return fmt.Errorf("invalid download naming order: %w", err)
+	}
+	settings.DownloadNamingOrder = namingOrder
 
 	// Validate user-configured delimiters before persisting.
 	for label, list := range map[string][]string{

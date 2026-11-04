@@ -103,7 +103,7 @@ func (m *ThumbBarManager) Setup(mainWindow *application.WebviewWindow) {
 				if m.playerService.GetStatus().PlaybackState == domain.PlaybackStatePlaying {
 					playing = 1
 				}
-				C.ThumbBarInit(unsafe.Pointer(hwnd), playing) //nolint:unsafeptr
+				C.ThumbBarInit(unsafe.Pointer(hwnd), playing) //nolint:govet // opaque HWND for a Win32 call, never a Go pointer
 			})
 		})
 	})

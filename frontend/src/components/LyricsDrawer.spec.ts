@@ -101,6 +101,17 @@ describe('LyricsDrawer romanization', () => {
     wrapper.unmount()
   })
 
+  it('labels a plain lyric as unable to follow playback', async () => {
+    store.lyrics = { content: '第一行\n第二行' }
+    const wrapper = mount(LyricsDrawer, { global: { mocks: { $t: (key: string) => key } } })
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="lyrics-unsynced"]').text()).toBe('player.lyrics_unsynced')
+    expect(wrapper.text()).toContain('第一行')
+    expect(wrapper.find('.karaoke-word').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('restores auto-scroll when the drawer reopens', async () => {
     store.lyrics = { content: '[00:00.00]First\n[00:05.00]Second' }
     const wrapper = mount(LyricsDrawer, { global: { mocks: { $t: (key: string) => key } } })

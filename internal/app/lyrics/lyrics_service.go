@@ -3,6 +3,7 @@ package lyrics
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -17,10 +18,11 @@ type LyricsService struct {
 	providers    []domain.LyricsProvider
 	localReader  domain.LocalLyricsReader
 	settingsRepo domain.SettingsRepository
+	tracks       domain.TrackRepository
 }
 
-func NewLyricsService(repo domain.LyricRepository, logger *slog.Logger, providers []domain.LyricsProvider, localReader domain.LocalLyricsReader, settingsRepo domain.SettingsRepository) *LyricsService {
-	return &LyricsService{repo: repo, logger: logger, providers: providers, localReader: localReader, settingsRepo: settingsRepo}
+func NewLyricsService(repo domain.LyricRepository, logger *slog.Logger, providers []domain.LyricsProvider, localReader domain.LocalLyricsReader, settingsRepo domain.SettingsRepository, tracks domain.TrackRepository) *LyricsService {
+	return &LyricsService{repo: repo, logger: logger, providers: providers, localReader: localReader, settingsRepo: settingsRepo, tracks: tracks}
 }
 
 func (s *LyricsService) GetLyrics(ctx context.Context, trackID string) (*domain.Lyric, error) {
@@ -303,4 +305,140 @@ func (s *LyricsService) saveLyric(ctx context.Context, trackID, content, source 
 		s.logger.Warn("failed to save fetched lyrics", "track_id", trackID, "error", err)
 	}
 	return lyric, nil
+}
+
+// ExportLyrics writes the stored original lyric as a sibling .lrc next to the
+// audio file: <audio dir>/<audio base name>.lrc, UTF-8 with LF line endings.
+// The audio file itself is never touched.
+//
+// Translations and word-by-word timing are deliberately not exported: merging
+// them into one .lrc needs rules of its own.
+//
+// When the target exists and overwrite is false it returns
+// domain.ErrLyricsFileExists together with the path, so the caller can offer
+// overwrite / save as / cancel.
+func (s *LyricsService) ExportLyrics(ctx context.Context, trackID string, overwrite bool) (string, error) {
+	path, lyric, err := s.exportSource(ctx, trackID)
+	if err != nil {
+		return "", err
+	}
+	if !overwrite {
+		if _, statErr := os.Stat(path); statErr == nil {
+			return path, fmt.Errorf("%w: %s", domain.ErrLyricsFileExists, path)
+		} else if !os.IsNotExist(statErr) {
+			return "", fmt.Errorf("export lyrics: inspect %s: %w", path, statErr)
+		}
+	}
+	if err := writeLyricsFile(path, lyric); err != nil {
+		return "", err
+	}
+	s.logger.Info("Exported lyrics", "track_id", trackID, "path", path)
+	return path, nil
+}
+
+// LyricsExportName is the default file name the "save as" dialog offers.
+func (s *LyricsService) LyricsExportName(ctx context.Context, trackID string) (string, error) {
+	path, _, err := s.exportSource(ctx, trackID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Base(path), nil
+}
+
+// ExportLyricsTo writes the same content to a destination the user picked
+// (the "save as" branch of the conflict prompt). The destination directory must
+// exist; a missing one is reported instead of created, because a typo in the
+// picker should not litter the disk.
+func (s *LyricsService) ExportLyricsTo(ctx context.Context, trackID, dest string) (string, error) {
+	dest = strings.TrimSpace(dest)
+	if dest == "" {
+		return "", errors.New("export lyrics: destination path required")
+	}
+	_, lyric, err := s.exportSource(ctx, trackID)
+	if err != nil {
+		return "", err
+	}
+	if err := writeLyricsFile(dest, lyric); err != nil {
+		return "", err
+	}
+	s.logger.Info("Exported lyrics", "track_id", trackID, "path", dest)
+	return dest, nil
+}
+
+// exportSource resolves the track, its on-disk location and the lyric text to
+// export. The stored provider content is preferred; a track whose only lyric
+// came from a file tag falls back to the extracted metadata text, which is the
+// same original lyric the UI displays.
+func (s *LyricsService) exportSource(ctx context.Context, trackID string) (string, string, error) {
+	if s.tracks == nil {
+		return "", "", errors.New("export lyrics: no track repository is available")
+	}
+	track, err := s.tracks.GetByID(ctx, trackID)
+	if err != nil {
+		return "", "", fmt.Errorf("export lyrics: load track %s: %w", trackID, err)
+	}
+	if track == nil {
+		return "", "", fmt.Errorf("export lyrics: track %s not found", trackID)
+	}
+	path := strings.TrimSpace(track.Path)
+	if track.IsRemote() || path == "" {
+		return "", "", fmt.Errorf("export lyrics: track %s has no local file to put the .lrc next to", trackID)
+	}
+	if !filepath.IsAbs(path) {
+		return "", "", fmt.Errorf("export lyrics: %q is not an absolute path", path)
+	}
+
+	lyric, err := s.repo.GetByTrackID(ctx, trackID)
+	if err != nil {
+		return "", "", fmt.Errorf("export lyrics: load lyrics for %s: %w", trackID, err)
+	}
+	if lyric == nil {
+		return "", "", fmt.Errorf("%w: track %s", domain.ErrLyricsUnavailable, trackID)
+	}
+	content := lyric.Content
+	if strings.TrimSpace(content) == "" {
+		content = lyric.MetaContent
+	}
+	if strings.TrimSpace(content) == "" {
+		return "", "", fmt.Errorf("%w: track %s", domain.ErrLyricsUnavailable, trackID)
+	}
+
+	target := strings.TrimSuffix(path, filepath.Ext(path)) + ".lrc"
+	return target, content, nil
+}
+
+// writeLyricsFile writes content with LF endings through a temporary file in
+// the destination directory, then renames it into place. A failure on a read-only
+// folder, a locked file or a full disk therefore never leaves a partial .lrc.
+func writeLyricsFile(dest, content string) error {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+
+	tmp, err := os.CreateTemp(filepath.Dir(dest), ".airmedy-lrc-*")
+	if err != nil {
+		return fmt.Errorf("export lyrics: create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if _, err := tmp.WriteString(content); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("export lyrics: write %s: %w", tmpName, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("export lyrics: close %s: %w", tmpName, err)
+	}
+	if err := os.Rename(tmpName, dest); err != nil {
+		return fmt.Errorf("export lyrics: replace %s: %w", dest, err)
+	}
+	removeTemp = false
+	return nil
 }

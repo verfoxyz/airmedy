@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { Star, Music, Play, MoreVertical, GripVertical } from '@lucide/vue'
 import type { Artist, TrackDTO } from '../../bindings/airmedy/internal/domain/models'
 import { formatTime, buildArtworkUrl, getTrackDisplayTitle } from '@airmedy/utils'
@@ -6,6 +7,8 @@ import LazyImg from '@/components/LazyImg.vue'
 import { PlayingBar } from '@airmedy/ui'
 import { useFavoritesStore } from '../stores/favorites'
 import { usePlayerStore } from '../stores/player'
+import { useDownloadStore } from '../stores/download'
+import DownloadProgressRing from '@/components/DownloadProgressRing.vue'
 import type { ColumnDef } from '@/composables/useTrackTableSettings'
 
 const props = defineProps<{
@@ -30,6 +33,12 @@ const emit = defineEmits<{
 
 const playerStore = usePlayerStore()
 const favoritesStore = useFavoritesStore()
+const downloadStore = useDownloadStore()
+
+// Shown next to the title: a ring while queued/active, a warning tint when the
+// last attempt failed. A track with no download in flight has no state and the
+// ring renders nothing.
+const downloadState = computed(() => downloadStore.forTrack(props.track.id))
 
 const isCurrentTrack = (trackId: string) => playerStore.currentTrack?.id === trackId
 </script>
@@ -101,6 +110,7 @@ const isCurrentTrack = (trackId: string) => playerStore.currentTrack?.id === tra
         <span class="truncate">
           {{ getTrackDisplayTitle(track) || $t('library.unknown_title') }}
         </span>
+        <DownloadProgressRing v-if="downloadState" :state="downloadState" />
       </div>
 
       <!-- Duration cell -->

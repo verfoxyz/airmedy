@@ -43,6 +43,8 @@ tasks:
       - mkdir -p .git/hooks
       - cp scripts/git-hooks/commit-msg .git/hooks/commit-msg
       - chmod +x .git/hooks/commit-msg
+      - cp scripts/git-hooks/pre-push .git/hooks/pre-push
+      - chmod +x .git/hooks/pre-push
 
   setup:docker:
     summary: Builds Docker image for cross-compilation (~800MB download)

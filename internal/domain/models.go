@@ -1,44 +1,51 @@
 package domain
 
 import (
+	"errors"
 	"slices"
 	"time"
 )
 
 // Track represents a music track in the library
 type Track struct {
-	ID                  string    `json:"id" db:"id"`
-	Path                string    `json:"path" db:"path"`
-	Title               string    `json:"title" db:"title"`
-	SortTitle           string    `json:"sort_title" db:"sort_title"`
-	AlbumID             string    `json:"album_id" db:"album_id"`
-	Year                int       `json:"year" db:"year"`
-	TrackNumber         int       `json:"track_number" db:"track_number"`
-	TotalTracks         int       `json:"total_tracks" db:"total_tracks"`
-	DiscNumber          int       `json:"disc_number" db:"disc_number"`
-	TotalDiscs          int       `json:"total_discs" db:"total_discs"`
-	Duration            int       `json:"duration" db:"duration"` // in seconds
-	Bitrate             int       `json:"bitrate" db:"bitrate"`
-	SampleRate          int       `json:"sample_rate" db:"sample_rate"`
-	Format              string    `json:"format" db:"format"`
-	BitDepth            int       `json:"bit_depth" db:"bit_depth"`
-	Codec               string    `json:"codec" db:"codec"`
-	ArtworkKey          string    `json:"artwork_key" db:"artwork_key"`
-	RawArtistNames      string    `json:"raw_artist_names" db:"raw_artist_names"`
-	RawAlbumArtistNames string    `json:"raw_album_artist_names" db:"raw_album_artist_names"`
-	RawGenreNames       string    `json:"raw_genre_names" db:"raw_genre_names"`
-	RawComposerNames    string    `json:"raw_composer_names" db:"raw_composer_names"`
-	Copyright           string    `json:"copyright" db:"copyright"`
-	BPM                 int       `json:"bpm" db:"bpm"`
-	Label               string    `json:"label" db:"label"`
-	ISRC                string    `json:"isrc" db:"isrc"`
-	PlayCount           int       `json:"play_count" db:"play_count"`
-	OtherMetadata       string    `json:"other_metadata" db:"other_metadata"`
-	FileSize            int64     `json:"file_size" db:"file_size"`
-	IsFavorite          bool      `json:"is_favorite" db:"is_favorite"`
-	Mtime               time.Time `json:"mtime" db:"mtime"`
-	CreatedAt           time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at" db:"updated_at"`
+	ID                  string `json:"id" db:"id"`
+	Path                string `json:"path" db:"path"`
+	Title               string `json:"title" db:"title"`
+	SortTitle           string `json:"sort_title" db:"sort_title"`
+	AlbumID             string `json:"album_id" db:"album_id"`
+	Year                int    `json:"year" db:"year"`
+	TrackNumber         int    `json:"track_number" db:"track_number"`
+	TotalTracks         int    `json:"total_tracks" db:"total_tracks"`
+	DiscNumber          int    `json:"disc_number" db:"disc_number"`
+	TotalDiscs          int    `json:"total_discs" db:"total_discs"`
+	Duration            int    `json:"duration" db:"duration"` // in seconds
+	Bitrate             int    `json:"bitrate" db:"bitrate"`
+	SampleRate          int    `json:"sample_rate" db:"sample_rate"`
+	Format              string `json:"format" db:"format"`
+	BitDepth            int    `json:"bit_depth" db:"bit_depth"`
+	Codec               string `json:"codec" db:"codec"`
+	ArtworkKey          string `json:"artwork_key" db:"artwork_key"`
+	RawArtistNames      string `json:"raw_artist_names" db:"raw_artist_names"`
+	RawAlbumArtistNames string `json:"raw_album_artist_names" db:"raw_album_artist_names"`
+	RawAlbumName        string `json:"raw_album_name" db:"raw_album_name"`
+	RawGenreNames       string `json:"raw_genre_names" db:"raw_genre_names"`
+	RawComposerNames    string `json:"raw_composer_names" db:"raw_composer_names"`
+	Copyright           string `json:"copyright" db:"copyright"`
+	BPM                 int    `json:"bpm" db:"bpm"`
+	Label               string `json:"label" db:"label"`
+	ISRC                string `json:"isrc" db:"isrc"`
+	PlayCount           int    `json:"play_count" db:"play_count"`
+	OtherMetadata       string `json:"other_metadata" db:"other_metadata"`
+	FileSize            int64  `json:"file_size" db:"file_size"`
+	IsFavorite          bool   `json:"is_favorite" db:"is_favorite"`
+	// Availability is one of the Availability* constants. Anything other than
+	// AvailabilityReady means Path is a virtual remote:// path (see IsRemote).
+	Availability string    `json:"availability" db:"availability"`
+	Provider     string    `json:"provider" db:"provider"`
+	ExternalID   string    `json:"external_id" db:"external_id"`
+	Mtime        time.Time `json:"mtime" db:"mtime"`
+	CreatedAt    time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at" db:"updated_at"`
 }
 
 // TrackDTO represents a track with its related entities populated for the frontend
@@ -50,6 +57,23 @@ type TrackDTO struct {
 	Genres          []*Genre    `json:"genres,omitempty"`
 	Composers       []*Composer `json:"composers,omitempty"`
 	ListenedSeconds int         `json:"listened_seconds,omitempty" db:"-"`
+}
+
+// DurationRepairResult reports the outcome of a user-triggered duration repair.
+type DurationRepairResult struct {
+	// Repaired is the number of rows whose duration the container probe corrected.
+	Repaired int `json:"repaired"`
+	// Unreadable lists the local files the probe could not read. Their rows are
+	// left untouched; the user has to re-download the file.
+	Unreadable []*DurationRepairFailure `json:"unreadable"`
+}
+
+// DurationRepairFailure describes one file that could not be repaired.
+type DurationRepairFailure struct {
+	TrackID string `json:"track_id"`
+	Title   string `json:"title"`
+	Path    string `json:"path"`
+	Reason  string `json:"reason"`
 }
 
 // Album represents a music album
@@ -230,6 +254,16 @@ type Lyric struct {
 	CreatedAt   time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
 }
+
+// Export errors: both are expected states a caller turns into a UI choice, not
+// bugs, so they are distinguished instead of matched by message.
+var (
+	// ErrLyricsUnavailable means the track has no stored lyric to export.
+	ErrLyricsUnavailable = errors.New("lyrics are not available for this track")
+	// ErrLyricsFileExists means the sibling .lrc already exists and the caller
+	// did not ask to overwrite it.
+	ErrLyricsFileExists = errors.New("lyrics file already exists")
+)
 
 // MobileSyncLyricCache stores the single lyric snapshot exported to mobile.
 // Fingerprint captures every desktop input which could change that snapshot;
@@ -532,6 +566,26 @@ type AppSettings struct {
 	AlbumArtistDelimiters []string `json:"album_artist_delimiters"`
 	GenreDelimiters       []string `json:"genre_delimiters"`
 	ComposerDelimiters    []string `json:"composer_delimiters"`
+
+	// Download preferences. DownloadDir empty means DefaultDownloadDirName
+	// under the user's music folder; DownloadQuality is one of the Quality*
+	// constants (empty falls back to DefaultDownloadQuality).
+	// DownloadNamingOrder is one of the NamingOrder* constants and controls
+	// whether the filename is "<title> - <artist>" or "<artist> - <title>".
+	DownloadDir               string `json:"download_dir"`
+	DownloadQuality           string `json:"download_quality"`
+	DownloadNamingOrder       string `json:"download_naming_order"`
+	AutoDownloadOnPlaylistAdd bool   `json:"auto_download_on_playlist_add"`
+
+	// DownloadContentPrefs decide what is fetched and written next to the
+	// audio file. Each one is an independent request, so each one is opt-in
+	// where the default would spend network the user did not ask for.
+	//
+	// DownloadWithLyricTranslation is meaningless without DownloadWithLyrics;
+	// ResolveDownloadContent collapses that pair so no caller has to.
+	DownloadWithLyrics           bool `json:"download_with_lyrics"`
+	DownloadWithLyricTranslation bool `json:"download_with_lyric_translation"`
+	DownloadWithCover            bool `json:"download_with_cover"`
 
 	// MoodDerivationVersion is bumped whenever feature_percentiles is
 	// recomputed, which makes every track's tracks.mood_derived_version

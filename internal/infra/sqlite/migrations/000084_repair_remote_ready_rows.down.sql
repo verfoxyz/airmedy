@@ -1,0 +1,11 @@
+-- Irreversible by design.
+--
+-- The migration repairs rows that were unplayable: it folded a leftover remote
+-- row into the row that owns the downloaded file. Reconstructing the split (one
+-- row holding only the file, another holding only the user's favorite, playlist
+-- entries and play count) would require knowing which associations came from
+-- which row, and that information is gone once they are merged.
+--
+-- Keeping a no-op down is the honest choice: `migrate down` still succeeds, and
+-- the repaired library stays in its (correct, playable) state.
+SELECT 1;

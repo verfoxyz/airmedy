@@ -1,0 +1,17 @@
+# Canonical identity for agent/AI commits in this fork.
+#
+# This file only changes what git *displays* (shortlog, log --use-mailmap,
+# blame): commit hashes and the objects themselves are untouched, so nothing
+# has to be force-pushed and forks stay valid.
+#
+# The upstream authors (misa198, Thanh Vu) are deliberately NOT remapped: their
+# commits are their own work and the GPL credit for them stays intact.
+
+DS AI <ai@airmedy.local> Airmedy-Main <main@airmedy.local>
+DS AI <ai@airmedy.local> Arts <arts@airmedy.local>
+DS AI <ai@airmedy.local> Core <core@airmedy.local>
+DS AI <ai@airmedy.local> Flat <flat@airmedy.local>
+DS AI <ai@airmedy.local> LX <lx@airmedy.local>
+DS AI <ai@airmedy.local> Qoder <qoder@airmedy.local>
+DS AI <ai@airmedy.local> Sources <sources@airmedy.local>
+DS AI <ai@airmedy.local> vervea <ylixianuo2@outlook.com>

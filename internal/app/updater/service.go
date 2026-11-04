@@ -23,7 +23,6 @@ import (
 	"github.com/blang/semver"
 )
 
-
 type UpdateInfo struct {
 	Version      string `json:"version"`
 	ReleaseNotes string `json:"release_notes"`
@@ -355,6 +354,11 @@ func downloadWithProgress(ctx context.Context, url string, dst io.Writer, progre
 
 // extractBinary extracts the named executable from a .zip or .tar.gz archive,
 // matching by the base filename only (not directory path).
+//
+// Only darwin and linux run the in-place updater (see service_darwin.go and
+// service_other.go), so a Windows build sees these as unreferenced.
+//
+//nolint:unused // referenced by the darwin/linux updater files
 func extractBinary(data []byte, archiveURL, exeName string) ([]byte, error) {
 	switch {
 	case strings.HasSuffix(archiveURL, ".zip"):
@@ -367,6 +371,7 @@ func extractBinary(data []byte, archiveURL, exeName string) ([]byte, error) {
 	}
 }
 
+//nolint:unused // called by extractBinary
 func extractFromZip(data []byte, exeName string) ([]byte, error) {
 	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
@@ -388,6 +393,7 @@ func extractFromZip(data []byte, exeName string) ([]byte, error) {
 	return nil, fmt.Errorf("binary %q not found in zip", exeName)
 }
 
+//nolint:unused // called by extractBinary
 func extractFromTarGz(data []byte, exeName string) ([]byte, error) {
 	gz, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {

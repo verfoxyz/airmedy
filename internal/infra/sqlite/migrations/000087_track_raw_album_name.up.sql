@@ -1,0 +1,1 @@
+ALTER TABLE tracks ADD COLUMN raw_album_name TEXT NOT NULL DEFAULT '';

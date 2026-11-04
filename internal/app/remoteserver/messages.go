@@ -65,12 +65,12 @@ type AuthFailed struct {
 }
 
 type TrackMetadataMessage struct {
-	Type string                    `json:"type"`
+	Type string                     `json:"type"`
 	Data domain.PlayerTrackMetadata `json:"data"`
 }
 
 type PlayerStateMessage struct {
-	Type string                  `json:"type"`
+	Type string                   `json:"type"`
 	Data domain.RemotePlayerState `json:"data"`
 }
 
@@ -80,7 +80,7 @@ type QueueMessage struct {
 }
 
 type LyricsMessage struct {
-	Type string       `json:"type"`
+	Type string        `json:"type"`
 	Data *domain.Lyric `json:"data"`
 }
 

@@ -3,6 +3,7 @@ package library
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -70,10 +71,12 @@ type LibraryService struct {
 	settingsRepo      domain.SettingsRepository
 	syncStateRepo     domain.LibrarySyncStateRepository
 	metadataExtractor domain.MetadataExtractor
+	durationProbe     domain.MediaDurationProbe
 	metadataWriter    domain.MetadataWriter
 	artworkCache      domain.ArtworkCache
 	searchService     domain.SearchService
 	txManager         domain.TxManager
+	downloadJobs      domain.DownloadJobRepository
 	lyricsService     *lyrics.LyricsService
 	logger            *slog.Logger
 
@@ -112,10 +115,12 @@ func NewLibraryService(
 	settingsRepo domain.SettingsRepository,
 	syncStateRepo domain.LibrarySyncStateRepository,
 	metadataExtractor domain.MetadataExtractor,
+	durationProbe domain.MediaDurationProbe,
 	metadataWriter domain.MetadataWriter,
 	artworkCache domain.ArtworkCache,
 	searchService domain.SearchService,
 	txManager domain.TxManager,
+	downloadJobs domain.DownloadJobRepository,
 	lyricsService *lyrics.LyricsService,
 	logger *slog.Logger,
 ) (*LibraryService, error) {
@@ -132,10 +137,12 @@ func NewLibraryService(
 		settingsRepo:         settingsRepo,
 		syncStateRepo:        syncStateRepo,
 		metadataExtractor:    metadataExtractor,
+		durationProbe:        durationProbe,
 		metadataWriter:       metadataWriter,
 		artworkCache:         artworkCache,
 		searchService:        searchService,
 		txManager:            txManager,
+		downloadJobs:         downloadJobs,
 		lyricsService:        lyricsService,
 		logger:               logger.With("module", "library"),
 		artistArtworkQueue:   make(chan artistArtworkJob, 100),
@@ -893,15 +900,54 @@ type importJob struct {
 // ImportFile imports (or re-imports) a single track. Used by the file watcher and
 // any single-file path. It runs the parse phase then the DB-write phase inline.
 func (s *LibraryService) ImportFile(ctx context.Context, path string) error {
+	_, err := s.ImportFileWithID(ctx, path)
+	return err
+}
+
+// ImportFileWithID is ImportFile plus the track ID the import produced.
+//
+// The ID is derived deterministically from the path, so a caller that already
+// knows the path could compute it — but this is the only *supported* way to
+// learn it, which keeps the seed formula in one place. The download pipeline
+// needs it to attach the freshly imported file to the playlist that asked for
+// the download, and to update the remote row's availability.
+func (s *LibraryService) ImportFileWithID(ctx context.Context, path string) (string, error) {
 	settings, err := s.settingsRepo.Load(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to load settings for %s: %w", path, err)
+		return "", fmt.Errorf("failed to load settings for %s: %w", path, err)
 	}
 	job, err := s.parseFile(ctx, path, settings)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return s.persistImported(ctx, job)
+	if err := s.persistImported(ctx, job); err != nil {
+		return "", err
+	}
+	return job.dto.ID, nil
+}
+
+// extractWithDuration reads the file's tags and then replaces the tag-reported
+// duration with the container probe's value when the probe succeeds. The probe
+// is the authoritative source: a raw or malformed container can make taglib
+// report a near-zero or several-times-too-large duration, which would otherwise
+// be written to tracks.duration. When the probe fails the tagged value is kept,
+// because it is still better than discarding the field entirely.
+func (s *LibraryService) extractWithDuration(ctx context.Context, path string) (*domain.TrackDTO, error) {
+	dto, err := s.metadataExtractor.Extract(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if s.durationProbe != nil {
+		if probed, probeErr := s.durationProbe.Probe(ctx, path); probeErr == nil {
+			if seconds := int(probed.Seconds()); seconds > 0 {
+				dto.Duration = seconds
+			}
+		} else {
+			s.logger.Debug("duration probe failed; keeping the tagged duration",
+				"path", path, "error", probeErr)
+		}
+	}
+	return dto, nil
 }
 
 // parseFile reads a track from disk and produces an importJob. It performs only
@@ -914,13 +960,32 @@ func (s *LibraryService) parseFile(ctx context.Context, path string, settings *d
 		return nil, fmt.Errorf("failed to stat file %s: %w", path, err)
 	}
 
-	dto, err := s.metadataExtractor.Extract(ctx, path)
+	dto, err := s.extractWithDuration(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract metadata from %s: %w", path, err)
 	}
 
 	dto.FileSize = info.Size()
 	dto.Mtime = info.ModTime()
+
+	// A file whose tags were lost or never written still has to be searchable:
+	// an empty title produces a row that cannot be found by keyword, which reads
+	// as "the download succeeded but the track is missing". The file name is the
+	// last reliable source; split it back into title/artist so the artist does not
+	// end up inside the title and break provider lookups.
+	if strings.TrimSpace(dto.Title) == "" {
+		title, artist := titleAndArtistFromPath(path, settings.DownloadNamingOrder)
+		dto.Title = title
+		if strings.TrimSpace(dto.RawArtistNames) == "" && artist != "" {
+			dto.RawArtistNames = artist
+			if strings.TrimSpace(dto.RawAlbumArtistNames) == "" {
+				dto.RawAlbumArtistNames = artist
+			}
+		}
+	}
+	if strings.TrimSpace(dto.SortTitle) == "" {
+		dto.SortTitle = domain.NormalizeSort(dto.Title)
+	}
 
 	// Split raw tag values into individual entities using the user-configured
 	// delimiters (single source of truth, shared with resync).
@@ -1011,6 +1076,63 @@ func (s *LibraryService) persistImported(ctx context.Context, job *importJob) er
 	s.notifyAnalysisPending(dto.ID)
 
 	return nil
+}
+
+// VerifyImportedTrack re-reads a row produced by the download import and rejects
+// it when the file's own metadata yielded no title or artist. The row (and its
+// file) is removed before returning, so an unreadable tag write cannot become a
+// search-less ghost row; the download then fails instead of reporting success.
+func (s *LibraryService) VerifyImportedTrack(ctx context.Context, trackID string) error {
+	track, err := s.trackRepo.GetByID(ctx, trackID)
+	if err != nil {
+		return fmt.Errorf("verify imported track %s: %w", trackID, err)
+	}
+	if track == nil {
+		return fmt.Errorf("verify imported track %s: row not found", trackID)
+	}
+
+	hasTitle := strings.TrimSpace(track.Title) != ""
+	hasArtist := strings.TrimSpace(track.RawArtistNames) != "" || len(track.Artists) > 0
+	if hasTitle && hasArtist {
+		return nil
+	}
+
+	if err := s.DeleteTrackFile(ctx, trackID); err != nil {
+		s.logger.Warn("download: failed to discard a track with no title or artist",
+			"track_id", trackID, "error", err)
+	}
+	return fmt.Errorf("%w: the imported file has no title or artist metadata",
+		domain.ErrDownloadPermanent)
+}
+
+// titleFromPath is the metadata-free fallback for a file whose tags carry no
+// title: the file name without its extension.
+func titleFromPath(path string) string {
+	base := filepath.Base(path)
+	return strings.TrimSpace(strings.TrimSuffix(base, filepath.Ext(base)))
+}
+
+// titleAndArtistFromPath splits "<title> - <artist>" (or the configured
+// "artist-title" order) back into its two fields. Without a separator the whole
+// name is the title, which is strictly better than leaving the row empty.
+func titleAndArtistFromPath(path, order string) (title, artist string) {
+	base := titleFromPath(path)
+	if base == "" {
+		return "", ""
+	}
+	index := strings.LastIndex(base, " - ")
+	if index < 0 {
+		return base, ""
+	}
+	left := strings.TrimSpace(base[:index])
+	right := strings.TrimSpace(base[index+3:])
+	if left == "" || right == "" {
+		return base, ""
+	}
+	if domain.ResolveNamingOrder(order) == domain.NamingOrderArtistTitle {
+		return right, left
+	}
+	return left, right
 }
 
 func (s *LibraryService) resolveEntities(ctx context.Context, dto *domain.TrackDTO) error {
@@ -1526,20 +1648,109 @@ func (s *LibraryService) ShowInExplorer(ctx context.Context, id string) error {
 	return cmd.Run()
 }
 
+// DeleteTrackFile deletes a track from disk and from the library: the audio
+// file, the row (which cascades playlists, favorites, lyrics and analysis
+// tables), its download jobs and its search document.
+//
+// The file is removed first. If that fails — the usual causes are a locked file
+// or a read-only folder — nothing else changes, so the user never ends up with a
+// row that points at a file that is gone or a file with no row. A failure after
+// the unlink (a DB error) leaves a row whose file is missing; the next library
+// sync drops it, which is the failure mode that already exists.
+//
+// Music files are read-only unless the user explicitly asks to modify them
+// (AGENTS §5); this method is the explicit "delete the file" action and is only
+// called from the confirmation dialog that says so.
+func (s *LibraryService) DeleteTrackFile(ctx context.Context, id string) error {
+	track, err := s.trackRepo.GetByID(ctx, id)
+	if err != nil {
+		return fmt.Errorf("delete track: load %s: %w", id, err)
+	}
+	if track == nil {
+		return fmt.Errorf("delete track: %s not found", id)
+	}
+	path := strings.TrimSpace(track.Path)
+	if track.IsRemote() || path == "" {
+		return fmt.Errorf("delete track: %s has no local file", id)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("delete track: %q is not an absolute path", path)
+	}
+
+	info, statErr := os.Stat(path)
+	switch {
+	case statErr == nil && info.IsDir():
+		return fmt.Errorf("delete track: %q is a directory", path)
+	case statErr != nil && !os.IsNotExist(statErr):
+		return fmt.Errorf("delete track: inspect %q: %w", path, statErr)
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		// The OS error says why (in use, permission denied). Passing it through
+		// verbatim is what makes the dialog's message actionable.
+		return fmt.Errorf("delete track: remove %q: %w", path, err)
+	}
+
+	if err := s.txManager.RunInTx(ctx, func(ctx context.Context) error {
+		if err := s.trackRepo.Delete(ctx, id); err != nil {
+			return fmt.Errorf("delete row: %w", err)
+		}
+		if err := s.downloadJobs.DeleteByTrack(ctx, id); err != nil {
+			return fmt.Errorf("delete download jobs: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("delete track: %s: %w", id, err)
+	}
+
+	if err := s.searchService.DeleteTracksFromIndex(ctx, []string{id}); err != nil {
+		// The row is gone; a stale document only pollutes search until the next
+		// reindex, so this is a warning rather than a failed deletion.
+		s.logger.Warn("Failed to remove the deleted track from the search index", "track_id", id, "error", err)
+	}
+
+	// Listeners first (analysis pool), then the UI so both see one deletion.
+	s.notifyTracksDeleted([]string{id})
+	if app := application.Get(); app != nil && app.Event != nil {
+		app.Event.Emit("library:track-deleted", id)
+	}
+	s.logger.Info("Deleted track file", "track_id", id, "path", path)
+	return nil
+}
+
 // ToggleFavorite toggles the favorite state of a track. Returns the new state.
 func (s *LibraryService) ToggleFavorite(ctx context.Context, id string) (bool, error) {
 	newState, err := s.trackRepo.ToggleFavorite(ctx, id)
 	if err != nil {
 		return false, fmt.Errorf("failed to toggle favorite: %w", err)
 	}
-	dto, err := s.trackRepo.GetByID(ctx, id)
-	if err == nil && dto != nil {
-		s.notifyFavoriteChanged(dto)
-		if app := application.Get(); app != nil && app.Event != nil {
-			app.Event.Emit("library:favorite-changed", dto)
-		}
-	}
+	s.announceFavorite(ctx, id)
 	return newState, nil
+}
+
+// SetFavorite sets the favorite state instead of flipping it.
+//
+// The search screen needs this: "favorite this result" must be idempotent, and a
+// toggle would un-favorite a track the user already had. It shares the
+// notification path so Last.fm love/unlove and the player button stay in sync.
+func (s *LibraryService) SetFavorite(ctx context.Context, id string, favorite bool) error {
+	if err := s.trackRepo.SetFavorite(ctx, id, favorite); err != nil {
+		return fmt.Errorf("failed to set favorite: %w", err)
+	}
+	s.announceFavorite(ctx, id)
+	return nil
+}
+
+// announceFavorite notifies the in-process listeners and the frontend after the
+// favorite flag changed.
+func (s *LibraryService) announceFavorite(ctx context.Context, id string) {
+	dto, err := s.trackRepo.GetByID(ctx, id)
+	if err != nil || dto == nil {
+		return
+	}
+	s.notifyFavoriteChanged(dto)
+	if app := application.Get(); app != nil && app.Event != nil {
+		app.Event.Emit("library:favorite-changed", dto)
+	}
 }
 
 // UpdateMetadata writes tag changes to the audio file and re-imports to update DB and search.
@@ -1591,6 +1802,169 @@ func (s *LibraryService) GetAlbumColors(ctx context.Context, id string) (*domain
 	return colors, nil
 }
 
+// repairBrokenTracks gives rows written by older builds a usable title and
+// duration before a reindex. A local row is re-parsed first (the file itself is
+// the source of truth for both fields); a remote row falls back to its external
+// id. A file name is only the last resort, and "<title> - <artist>" is split so
+// the artist does not stay glued to the title.
+func (s *LibraryService) repairBrokenTracks(ctx context.Context, tracks []*domain.TrackDTO) {
+	settings, err := s.settingsRepo.Load(ctx)
+	if err != nil || settings == nil {
+		settings = &domain.AppSettings{}
+	}
+	order := domain.ResolveNamingOrder(settings.DownloadNamingOrder)
+
+	repaired := 0
+	for _, track := range tracks {
+		if track == nil {
+			continue
+		}
+		needsTitle := strings.TrimSpace(track.Title) == ""
+		needsDuration := !track.IsRemote() && track.Duration <= 1
+		if !needsTitle && !needsDuration {
+			continue
+		}
+
+		tr := track.Track
+		if !track.IsRemote() && strings.TrimSpace(track.Path) != "" {
+			if dto, err := s.extractWithDuration(ctx, track.Path); err == nil {
+				if strings.TrimSpace(tr.Title) == "" {
+					tr.Title = dto.Title
+				}
+				if strings.TrimSpace(tr.RawArtistNames) == "" {
+					tr.RawArtistNames = dto.RawArtistNames
+				}
+				if strings.TrimSpace(tr.RawAlbumArtistNames) == "" {
+					tr.RawAlbumArtistNames = dto.RawAlbumArtistNames
+				}
+				if dto.Duration > 0 {
+					tr.Duration = dto.Duration
+				}
+				if dto.Bitrate > 0 {
+					tr.Bitrate = dto.Bitrate
+				}
+			}
+		}
+		if strings.TrimSpace(tr.Title) == "" {
+			if track.IsRemote() {
+				tr.Title = strings.TrimSpace(track.ExternalID)
+			} else {
+				title, artist := titleAndArtistFromPath(track.Path, order)
+				tr.Title = title
+				if strings.TrimSpace(tr.RawArtistNames) == "" && artist != "" {
+					tr.RawArtistNames = artist
+					if strings.TrimSpace(tr.RawAlbumArtistNames) == "" {
+						tr.RawAlbumArtistNames = artist
+					}
+				}
+			}
+		}
+		if strings.TrimSpace(tr.Title) == "" {
+			continue
+		}
+		tr.SortTitle = domain.NormalizeSort(tr.Title)
+		if err := s.trackRepo.Upsert(ctx, &tr); err != nil {
+			s.logger.Warn("Failed to repair a track before re-indexing", "track_id", track.ID, "error", err)
+			continue
+		}
+		track.Track = tr
+		repaired++
+	}
+	if repaired > 0 {
+		s.logger.Info("Repaired tracks before re-indexing", "count", repaired)
+	}
+}
+
+// Duration sanity thresholds for the probe-backed repair. A stored duration at
+// or below implausibleDurationSeconds with at least trustedStoredDurationSeconds
+// behind it is a misread container, not a real one-second clip.
+const (
+	implausibleDurationSeconds   = 1
+	trustedStoredDurationSeconds = 5
+)
+
+// RepairDurations probes every local track's container header and rewrites a
+// stored duration that disagrees with it by more than one second. It catches
+// both directions a tag library gets wrong: near-zero values for a damaged
+// container and several-times-too-large values for a raw one.
+//
+// It is user-triggered on purpose: running this at startup would walk the whole
+// library, including slow network drives, before the app becomes usable. A file
+// the probe cannot read is returned as Unreadable and its row is left alone; a
+// malformed container cannot be repaired by changing data, so the only fix for
+// those is a re-download.
+func (s *LibraryService) RepairDurations(ctx context.Context) (*domain.DurationRepairResult, error) {
+	tracks, err := s.trackRepo.GetAll(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("repair durations: load tracks: %w", err)
+	}
+
+	result := &domain.DurationRepairResult{}
+	for _, track := range tracks {
+		if track == nil || track.IsRemote() || strings.TrimSpace(track.Path) == "" {
+			continue
+		}
+
+		// Probe only: falling back to taglib here would write back the same
+		// unreliable value that is being repaired. A container that cannot yield
+		// a usable duration is reported as unreadable and its row is left alone.
+		probed, probeErr := s.durationProbe.Probe(ctx, track.Path)
+		if probeErr == nil {
+			seconds := int(probed.Seconds())
+			switch {
+			case seconds <= 0:
+				probeErr = errors.New("the container probe reports no duration")
+			case seconds <= implausibleDurationSeconds && track.Duration >= trustedStoredDurationSeconds:
+				probeErr = errors.New("the container probe reports an implausibly short duration")
+			}
+		}
+		if probeErr != nil {
+			result.Unreadable = append(result.Unreadable, &domain.DurationRepairFailure{
+				TrackID: track.ID,
+				Title:   track.Title,
+				Path:    track.Path,
+				Reason:  probeErr.Error(),
+			})
+			continue
+		}
+
+		seconds := int(probed.Seconds())
+		if absInt(seconds-track.Duration) <= 1 {
+			continue
+		}
+
+		tr := track.Track
+		tr.Duration = seconds
+		if err := s.trackRepo.Upsert(ctx, &tr); err != nil {
+			result.Unreadable = append(result.Unreadable, &domain.DurationRepairFailure{
+				TrackID: track.ID,
+				Title:   track.Title,
+				Path:    track.Path,
+				Reason:  err.Error(),
+			})
+			continue
+		}
+
+		track.Track = tr
+		result.Repaired++
+		s.notifyTrackUpdated(track)
+		if app := application.Get(); app != nil && app.Event != nil {
+			app.Event.Emit("library:track-updated", track)
+		}
+	}
+
+	s.logger.Info("Repaired track durations",
+		"repaired", result.Repaired, "unreadable", len(result.Unreadable), "scanned", len(tracks))
+	return result, nil
+}
+
+func absInt(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
 // ReindexAll rebuilds the search index standalone. See syncFolderLocked's lock
 // comment: do not call this from inside SyncLibrary, which already holds the
 // lock — call reindexAllLocked directly instead.
@@ -1617,6 +1991,10 @@ func (s *LibraryService) reindexAllLocked(ctx context.Context) error {
 
 	// Calculate total items
 	tracks, _ := s.trackRepo.GetAll(ctx)
+	// Rows written by an older build can have an empty title or the 1-second
+	// fallback duration. Both make search and lyric lookups unusable, so repair
+	// them from the file (or the file name / remote id) before indexing.
+	s.repairBrokenTracks(ctx, tracks)
 	albums, _ := s.albumRepo.GetAll(ctx)
 	artists, _ := s.artistRepo.GetAll(ctx)
 	composers, _ := s.composerRepo.GetAll(ctx)

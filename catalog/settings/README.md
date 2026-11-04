@@ -282,3 +282,4 @@ Settings evolved across multiple migrations:
 | 000033    | Update default delimiters: change single backslash `\` to double backslash `\\` (JSON `'[";","\\\\",","]'`) for rows still on the previous default |
 | 000034    | Add `normalization_enabled` (0), `normalization_mode` ('off'), `normalization_target_lufs` (-14), `normalization_prevent_clip` (1), `library_analysis_enabled` (0) — volume normalization + library analysis opt-in settings (also adds `track_features` table + `tracks.analyzed_version`) |
 | 000047    | Add `library_analysis_worker_count INTEGER NOT NULL DEFAULT 2` — persists the desired concurrent library-analysis worker count; down intentionally keeps the column |
+| 000085    | Add `download_naming_order TEXT NOT NULL DEFAULT 'title-artist'` for the download file-name order (`title-artist` / `artist-title`) |

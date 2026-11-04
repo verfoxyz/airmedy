@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	esContinuous    = 0x80000000
+	esContinuous     = 0x80000000
 	esSystemRequired = 0x00000001
 )
 
@@ -26,11 +26,12 @@ func NewInhibitor() domain.SleepInhibitor {
 }
 
 func (i *windowsInhibitor) Inhibit() error {
-	i.setThreadExecState.Call(uintptr(esContinuous | esSystemRequired))
+	// The Win32 call reports the previous state; nothing here acts on it.
+	_, _, _ = i.setThreadExecState.Call(uintptr(esContinuous | esSystemRequired))
 	return nil
 }
 
 func (i *windowsInhibitor) Release() error {
-	i.setThreadExecState.Call(uintptr(esContinuous))
+	_, _, _ = i.setThreadExecState.Call(uintptr(esContinuous))
 	return nil
 }

@@ -35,6 +35,8 @@ export const usePlayerStore = defineStore('player', () => {
   // State
   const status = shallowRef<PlayerStatus | null>(null)
   const queue = shallowRef<TrackDTO[]>([])
+  /** playError is the last playback failure, for the view to surface. */
+  const playError = ref('')
   const currentTrack = shallowRef<TrackDTO | null>(null)
   const theme = shallowRef<ThemeColors | null>(null)
   const isQueueOpen = ref(false)
@@ -508,7 +510,15 @@ export const usePlayerStore = defineStore('player', () => {
     if (!fromRadio) stopMoodRadio()
     queue.value = tracks
     currentTrack.value = tracks[startIndex] ?? null
-    await PlayerService.PlayTrackIDs(tracks.map(t => t.id), startIndex)
+    try {
+      await PlayerService.PlayTrackIDs(tracks.map(t => t.id), startIndex)
+    } catch (e) {
+      // A track whose audio is not downloaded yet has a virtual remote:// path.
+      // The backend refuses it (domain.ErrTrackNotAvailable) instead of handing a
+      // non-file to the decoder, so the row is reported rather than played.
+      console.error('Failed to start playback', e)
+      playError.value = String(e)
+    }
   }
 
   async function playQueueIndex(index: number) {
@@ -630,6 +640,7 @@ export const usePlayerStore = defineStore('player', () => {
     setShuffle,
     setRepeatMode,
     playTracks,
+    playError,
     playQueueIndex,
     shuffleTracks,
     reorderQueue,

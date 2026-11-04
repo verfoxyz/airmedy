@@ -13,16 +13,29 @@ import (
 	"time"
 
 	"airmedy/internal/app"
+	"airmedy/internal/app/appsettings"
+	appcatalog "airmedy/internal/app/catalog"
 	"airmedy/internal/app/config"
+	"airmedy/internal/app/download"
 	"airmedy/internal/app/i18n"
+	"airmedy/internal/app/lx"
+	"airmedy/internal/app/lyrics"
+	"airmedy/internal/app/plugin"
+	"airmedy/internal/app/pluginkv"
 	"airmedy/internal/app/remoteserver"
 	"airmedy/internal/app/singleinstance"
+	appstream "airmedy/internal/app/stream"
 	"airmedy/internal/domain"
+	"airmedy/internal/infra/artwork"
+	"airmedy/internal/infra/downloader"
 	"airmedy/internal/infra/logging"
+	"airmedy/internal/infra/metadata"
+	"airmedy/internal/infra/pluginhost"
 	"airmedy/internal/infra/sysinfo"
 	"airmedy/internal/infra/wails"
 	"runtime/debug"
 
+	"github.com/natefinch/lumberjack"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 	"github.com/wailsapp/wails/v3/pkg/icons"
@@ -50,6 +63,127 @@ func init() {
 }
 
 const singleInstanceID = "me.misa198.airmedy"
+
+// fxDeps carries the values main constructs before the container exists.
+type fxDeps struct {
+	Config     *config.Config
+	Logger     *slog.Logger
+	LogRotator *lumberjack.Logger
+	RemoteFS   fs.FS
+}
+
+// fxOptions builds the container's provider set.
+//
+// It is a function rather than an inline literal so a test can run
+// fx.ValidateApp over the real graph. A port with no provider only fails when
+// the app starts, and that has already reached this file twice (StreamResolver,
+// then download.SettingsReader); the test catches it in milliseconds instead.
+func fxOptions(deps fxDeps) fx.Option {
+	return fx.Options(
+
+		app.Module,
+		lx.Module,
+		plugin.Module,
+		appstream.Module,
+		// Supply the logger built before fx so the logging module wires rotation
+		// onto the same instance instead of constructing its own.
+		fx.Supply(deps.LogRotator, deps.Logger),
+		// Plugin host: the registry lives in app/plugin and may not import infra,
+		// so the manifest loader and the process-backed host factory are bound
+		// onto domain ports here, next to the download adapters.
+		fx.Provide(func() lx.Config {
+			return lx.Config{SourcesDir: deps.Config.LxSourcesDir()}
+		}),
+		// The lx source list reaches the plugin through its launch environment.
+		// The wiring lives here because the registry must stay free of an app/lx
+		// dependency; the registry itself implements no lx semantics, it just
+		// asks the hook for KEY=VALUE pairs at every start.
+		fx.Provide(func(sources *lx.Service) plugin.Config {
+			config := plugin.Config{Root: deps.Config.PluginsDir()}
+			config.LaunchEnv = func(ctx context.Context, pluginID string) []string {
+				if pluginID != lx.PluginID {
+					return nil
+				}
+				env, err := sources.LaunchEnv(ctx)
+				if err != nil {
+					deps.Logger.Warn("Failed to build the lx launch environment", "error", err)
+					return nil
+				}
+				return env
+			}
+			return config
+		}),
+		// The two services need each other at run time (the source list needs a
+		// restart, the registry needs a launch environment), so the edge is
+		// attached after construction instead of injected: fx rejects a cycle
+		// even when only the call path is circular.
+		fx.Invoke(func(sources *lx.Service, registry *plugin.Service) {
+			sources.AttachRegistry(registry)
+		}),
+		fx.Provide(func(logger *slog.Logger) domain.PluginLoader {
+			return pluginhost.NewLoader(logger)
+		}),
+		// The plugin -> host request set (storage.* today): the handler is bound
+		// on the host factory, which every launch goes through.
+		fx.Provide(func(storage domain.PluginKVRepository, logger *slog.Logger) *pluginkv.Handler {
+			return pluginkv.NewHandler(storage, nil, logger)
+		}),
+		// `permissions.kv` is enforced per plugin, so the handler needs the
+		// registry's manifest table. The edge is attached after construction
+		// because the registry consumes the factory that carries the handler: a
+		// constructor argument would close an fx cycle (the same reason app/lx
+		// gets its registry attached this way).
+		fx.Invoke(func(handler *pluginkv.Handler, registry *plugin.Service) {
+			handler.AttachPermission(registry.PermitsKV)
+		}),
+		fx.Provide(func(logger *slog.Logger, handler *pluginkv.Handler) domain.PluginHostFactory {
+			return pluginhost.NewFactory(logger, pluginhost.WithRequestHandler(handler.Handle)).Start
+		}),
+		// Stream resolution is plugin-only: a provider is playable only when an
+		// enabled plugin declares it under "providers" and implements
+		// stream.resolve. app/stream's resolver is the single
+		// domain.StreamResolver the download service consumes (bound by
+		// appstream.Module above).
+		fx.Provide(func(service *plugin.Service) appstream.ProviderRegistry {
+			return service
+		}),
+		// Catalog search asks the resolver "could this provider be downloaded?"
+		// so a source that can search but has no resolver is disabled up front
+		// instead of failing after the click. The concrete resolver is bound onto
+		// catalog's narrow availability port here, which keeps app/catalog free
+		// of an app/stream import.
+		fx.Provide(func(resolver *appstream.PluginResolver) appcatalog.ResolverAvailability {
+			return resolver
+		}),
+		// The source table (which plugins can search what) and the per-source
+		// call both go through the plugin registry; the port keeps app/catalog
+		// free of an app/plugin import.
+		fx.Provide(func(service *plugin.Service) appcatalog.PluginRegistry {
+			return service
+		}),
+		fx.Provide(func() remoteserver.RemoteFS { return remoteserver.RemoteFS{FS: deps.RemoteFS} }),
+		// The download pipeline's two lyric ports: the lyrics service and the
+		// settings service are concrete app types from other modules, so main
+		// joins them onto download's narrow interfaces here rather than letting
+		// app/download import either package.
+		fx.Provide(func(svc *lyrics.LyricsService) download.LyricsFetcher { return svc }),
+		fx.Provide(func(svc *appsettings.SettingsService) download.LyricsSettingsReader { return svc }),
+		// Download pipeline adapters: the ports live in domain, the concrete
+		// values belong to infra, and only main.go may join the two (app must
+		// not import infra). download.Module builds the service from them.
+		fx.Provide(func(tagger *metadata.Tagger, logger *slog.Logger) download.Ports {
+			return download.BindPorts(
+				downloader.New(tagger),
+				downloader.New(tagger),
+				tagger,
+				tagger,
+				artwork.NewCoverFetcher(),
+			)
+		}),
+		fx.Provide(metadata.NewTagger),
+		fx.NopLogger, // Keep logs clean for now
+	)
+}
 
 func main() {
 	debug.SetGCPercent(50)
@@ -110,6 +244,10 @@ func main() {
 	var mobilePairingService *wails.MobilePairingService
 	var mobileLibrarySyncService *wails.MobileLibrarySyncService
 	var moodRadioService *wails.MoodRadioService
+	var downloadService *wails.DownloadService
+	var pluginService *wails.PluginService
+	var lxSourcesService *wails.LxSourcesService
+	var catalogService *wails.CatalogService
 	var trackTransitionNotificationActivator domain.TrackTransitionNotificationActivator
 	var (
 		lastfmService *wails.LastFmService
@@ -121,12 +259,13 @@ func main() {
 	remoteFS, _ := fs.Sub(remoteAssets, "remote/dist")
 
 	fxApp := fx.New(
-		app.Module,
-		// Supply the logger built before fx so the logging module wires rotation
-		// onto the same instance instead of constructing its own.
-		fx.Supply(logRotator, logger),
-		fx.Provide(func() remoteserver.RemoteFS { return remoteserver.RemoteFS{FS: remoteFS} }),
-		fx.Populate(&greetService, &libraryService, &playerService, &searchService, &playlistService, &lyricsService, &eqService, &normalizationService, &analysisService, &analyticsService, &windowService, &i18nService, &settingsService, &lastfmService, &updaterService, &artworkCache, &remoteServerService, &mobilePairingService, &mobileLibrarySyncService, &moodRadioService, &trackTransitionNotificationActivator),
+		fxOptions(fxDeps{
+			Config:     bootCfg,
+			Logger:     logger,
+			LogRotator: logRotator,
+			RemoteFS:   remoteFS,
+		}),
+		fx.Populate(&greetService, &libraryService, &playerService, &searchService, &playlistService, &lyricsService, &eqService, &normalizationService, &analysisService, &analyticsService, &windowService, &i18nService, &settingsService, &lastfmService, &updaterService, &artworkCache, &remoteServerService, &mobilePairingService, &mobileLibrarySyncService, &moodRadioService, &trackTransitionNotificationActivator, &downloadService, &pluginService, &lxSourcesService, &catalogService),
 		fx.NopLogger, // Keep logs clean for now
 	)
 
@@ -177,6 +316,10 @@ func main() {
 			application.NewService(mobilePairingService),
 			application.NewService(mobileLibrarySyncService),
 			application.NewService(moodRadioService),
+			application.NewService(downloadService),
+			application.NewService(pluginService),
+			application.NewService(lxSourcesService),
+			application.NewService(catalogService),
 		},
 		Assets: application.AssetOptions{
 			Handler: wails.NewAssetHandler(assets, artworkCache),

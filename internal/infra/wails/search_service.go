@@ -8,12 +8,12 @@ import (
 )
 
 type SearchResultSet struct {
-	Tracks         []*domain.TrackDTO             `json:"tracks"`
-	Albums         []*domain.AlbumDTO             `json:"albums"`
-	Artists        []*domain.Artist               `json:"artists"`
-	Playlists      []*domain.Playlist             `json:"playlists"`
+	Tracks         []*domain.TrackDTO            `json:"tracks"`
+	Albums         []*domain.AlbumDTO            `json:"albums"`
+	Artists        []*domain.Artist              `json:"artists"`
+	Playlists      []*domain.Playlist            `json:"playlists"`
 	PlaylistTracks map[string][]*domain.TrackDTO `json:"playlist_tracks"`
-	Composers      []*domain.Composer             `json:"composers"`
+	Composers      []*domain.Composer            `json:"composers"`
 }
 
 type SearchService struct {
@@ -62,14 +62,14 @@ func (s *SearchService) Search(query string) (*SearchResultSet, error) {
 	for _, r := range raw {
 		// Normalize type string (Bleve might return it differently depending on index state)
 		typ := strings.ToLower(r.Type)
-		
+
 		// Skip duplicates
 		key := typ + ":" + r.ID
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
-		
+
 		switch typ {
 		case "track":
 			t, err := s.tracks.GetByID(ctx, r.ID)

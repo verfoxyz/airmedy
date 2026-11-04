@@ -30,7 +30,12 @@ vi.mock('../../bindings/airmedy/internal/infra/wails/playlistservice', () => ({
   GetPlaylistsForTrack: vi.fn().mockResolvedValue([]),
 }))
 vi.mock('../../bindings/airmedy/internal/infra/wails/libraryservice', () => ({}))
-vi.mock('../../bindings/airmedy/internal/infra/wails/lyricsservice', () => ({}))
+vi.mock('../../bindings/airmedy/internal/infra/wails/lyricsservice', () => ({
+  GetLyrics: vi.fn().mockResolvedValue({ content: '[00:01.00]one' }),
+}))
+vi.mock('../../bindings/airmedy/internal/infra/wails/downloadservice', () => ({
+  RedownloadTrack: vi.fn().mockResolvedValue(undefined),
+}))
 
 // Mock @wailsio/runtime for store init and model creation
 vi.mock('@wailsio/runtime', () => ({
@@ -148,5 +153,32 @@ describe('useTrackContextMenu', () => {
       'context_menu.start_mood_radio',
       'context_menu.add_to_favorites',
     ])
+  })
+
+  it('offers redownload only for an online track that owns a local file', () => {
+    const online = { id: 'online-1', title: 'Online', path: 'C:/Music/song.flac', provider: 'wy' } as TrackDTO
+    const localOnly = { id: 'local-1', title: 'Local', path: 'C:/Music/local.flac' } as TrackDTO
+    const remote = { id: 'remote-1', title: 'Remote', path: 'remote://wy/1', provider: 'wy' } as TrackDTO
+    const { buildMenuItems } = useTrackContextMenu(vi.fn())
+
+    const onlineItem = buildMenuItems(online).find(item => item.label === 'context_menu.redownload')
+    const localItem = buildMenuItems(localOnly).find(item => item.label === 'context_menu.redownload')
+    const remoteItem = buildMenuItems(remote).find(item => item.label === 'context_menu.redownload')
+
+    expect(onlineItem?.disabled).toBeFalsy()
+    expect(localItem?.disabled).toBe(true)
+    expect(remoteItem?.disabled).toBe(true)
+  })
+
+  it('offers lyric export for a local track but not a remote one', () => {
+    const localTrack = { id: 'local-1', title: 'Local', path: 'C:/Music/song.flac' } as TrackDTO
+    const remoteTrack = { id: 'remote-1', title: 'Remote', path: 'remote://wy/1' } as TrackDTO
+    const { buildMenuItems } = useTrackContextMenu(vi.fn())
+
+    const localItem = buildMenuItems(localTrack).find(item => item.label === 'context_menu.export_lyrics')
+    const remoteItem = buildMenuItems(remoteTrack).find(item => item.label === 'context_menu.export_lyrics')
+
+    expect(localItem?.disabled).toBeFalsy()
+    expect(remoteItem?.disabled).toBe(true)
   })
 })

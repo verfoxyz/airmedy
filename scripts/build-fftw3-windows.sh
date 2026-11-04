@@ -80,12 +80,12 @@ build_arch() {
     export AR="${AR_TOOL}"
     export CFLAGS="-O2"
 
-    ./configure --host="${HOST_TRIPLE}" --prefix="${WORK_DIR}/install" \
+    ./configure --host="${HOST_TRIPLE}" --prefix="${BUILD_DIR}/install-${ARCH}" \
         --disable-shared --enable-static --enable-single --disable-fortran --disable-doc >/dev/null
     make -j"$(nproc 2>/dev/null || echo 4)" >/dev/null
     make install >/dev/null
 
-    local LIB="${WORK_DIR}/install/lib/libfftw3f.a"
+    local LIB="${BUILD_DIR}/install-${ARCH}/lib/libfftw3f.a"
     [[ -f "${LIB}" ]] || { echo "    ERROR: libfftw3f.a not produced" >&2; exit 1; }
 
     mkdir -p "${OUT_DIR}"
@@ -151,8 +151,8 @@ esac
 if [[ ! -d "${INCLUDE_OUT}" ]]; then
     echo "==> Copying fftw3.h to fftw3_libs/include/..."
     mkdir -p "${INCLUDE_OUT}"
-    cp "${BUILD_DIR}/work-amd64/install/include/fftw3.h" "${INCLUDE_OUT}/fftw3.h" 2>/dev/null || \
-    cp "${BUILD_DIR}/work-arm64/install/include/fftw3.h" "${INCLUDE_OUT}/fftw3.h"
+    cp "${BUILD_DIR}/install-amd64/include/fftw3.h" "${INCLUDE_OUT}/fftw3.h" 2>/dev/null || \
+    cp "${BUILD_DIR}/install-arm64/include/fftw3.h" "${INCLUDE_OUT}/fftw3.h"
 fi
 
 echo ""

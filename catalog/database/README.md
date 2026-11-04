@@ -1,5 +1,24 @@
 # Database
 
+<!-- toc -->
+- [Summary](#summary)
+- [Files](#files)
+- [Connection Setup](#connection-setup)
+- [Migration History](#migration-history)
+- [Full Schema](#full-schema)
+  - [Core Entity Tables](#core-entity-tables)
+  - [Junction Tables (Many-to-Many)](#junction-tables-many-to-many)
+  - [State Tables (Single-Row)](#state-tables-single-row)
+  - [Listening Insights Tables](#listening-insights-tables)
+  - [EQ Tables](#eq-tables)
+  - [Indexes](#indexes)
+- [Repository Patterns](#repository-patterns)
+  - [TrackRepository — Key Queries](#trackrepository-key-queries)
+  - [AlbumRepository — Key Queries](#albumrepository-key-queries)
+  - [PlaylistRepository — Track Ordering (LexoRank)](#playlistrepository-track-ordering-lexorank)
+- [ID Generation](#id-generation)
+<!-- /toc -->
+
 ## Summary
 
 SQLite database managed via `golang-migrate` for schema versioning and `sqlx` for query execution. The schema uses a normalized relational model with many-to-many junction tables for artist/genre/composer relationships.
@@ -90,7 +109,21 @@ SQLite database managed via `golang-migrate` for schema versioning and `sqlx` fo
 | 000070 | `mobile_playlist_reconciliation.up.sql` | Add global playlist LWW/tombstone watermarks and device/reconciliation-owned artwork staging with expiry index |
 | 000071 | `mobile_favorite_sync.up.sql` | Add trusted-device favorite mutation ledger and per-track last-write-wins favorite watermark for mobile reconciliation |
 | 000072 | `listening_sources.up.sql` | Add source-device identity to raw listening rows and daily aggregate keys for cross-device sync |
+| 000073 | `living_artwork_background.up.sql` | Add `app_settings.living_artwork_background BOOLEAN NOT NULL DEFAULT 1` |
+| 000074 | `romanization_enabled.up.sql` | Add `app_settings.romanization_enabled BOOLEAN NOT NULL DEFAULT 1` |
+| 000075 | `lyrics_glow.up.sql` | Add `app_settings.lyrics_glow BOOLEAN NOT NULL DEFAULT 0` |
 | 000076 | `show_player_favorite_button.up.sql` | Add `app_settings.show_player_favorite_button BOOLEAN NOT NULL DEFAULT 0`; down removes the column |
+| 000077 | `remote_tracks.up.sql` | Add `tracks.availability/provider/external_id` plus a partial unique index on `(provider, external_id)` for rows with an external id. `path` stays NOT NULL UNIQUE: an online track that has no file yet carries the virtual `remote://<provider>/<external_id>` path, so `domain.RemotePath` is the only writer and the unique index deduplicates per source without rebuilding the table |
+| 000078 | `download_jobs.up.sql` | Add `download_jobs`, the queue for remote tracks. A partial unique index on `track_id` covers only `queued`/`active`, so a second enqueue is rejected at the DB level; retries UPDATE the same row (`attempts + 1`, back to `queued`). `playlist_id` is nullable with `ON DELETE SET NULL` so removing a playlist never aborts a download |
+| 000079 | `download_settings.up.sql` | Add `app_settings.download_dir/download_quality/auto_download_on_playlist_add`; an empty `download_dir` means "resolve the default at read time" |
+| 000080 | `plugin_settings.up.sql` | Add `plugin_settings(plugin_id, enabled, updated_at)`, the per-plugin enable flag. A missing row means *disabled*: enabling a plugin launches a third-party process, so the default has to be off. One row per plugin — a plugin is one functional unit with no parent row to defer to, so the schema needs no hierarchy. Down drops the table |
+| 000081 | `lx_sources.up.sql` | Add `lx_sources(id, name, file_path, enabled, position, created_at, updated_at)` plus an index on `position`, the imported lx custom-source list. The lx plugin runs the scripts; the core owns the list because the plugin is a child process with no persistence and the user manages it from settings. `position` is the try order (`0..n-1`, rewritten transactionally by reorder) so a concurrent read never sees two rows at the same priority. Down drops the table |
+| 000085 | `download_naming_order.up.sql` | Add `app_settings.download_naming_order TEXT NOT NULL DEFAULT 'title-artist'`. Values are `title-artist` / `artist-title`; the repository falls back to the default on read, and the settings service rejects any other value on save. Only affects files finalized after the change |
+| 000084 | `repair_remote_ready_rows.up.sql` | Repairs rows a finished download left unplayable: a leftover `remote://` row marked `ready` while another row held the file. Moves the user's favorite/play count/playlist entries onto the row that owns the file, deletes the leftover, then gives the survivor the identity (steps in that order — `idx_tracks_provider_external` is UNIQUE). Rows whose target file is no longer in the library are left alone. Down is a deliberate no-op: the split cannot be reconstructed. |
+| 000083 | `download_content.up.sql` | Add `app_settings.download_with_lyrics/download_with_lyric_translation/download_with_cover`, the three download-content switches. Each is an independent network request, so the defaults matter: lyrics and translation off, cover on. The translation/lyrics contradiction is collapsed in `domain.ResolveDownloadContent`, not in SQL. Down drops the three columns |
+| 000082 | `plugin_kv.up.sql` | Add `plugin_kv(plugin_id, key, value, updated_at)` with a composite primary key on `(plugin_id, key)`, the only persistence a plugin has (`storage.*`). `value` is opaque TEXT: the plugin's own JSON, never parsed by the host. Limits (64 KiB per value, 128-byte keys, 256 keys per plugin) are enforced in `app/pluginkv` rather than by CHECK constraints, so raising one needs no migration. Down drops the table |
+| 000086 | `download_jobs_keep_history.up.sql` | Rebuild `download_jobs` to drop the `track_id → tracks(id) ON DELETE CASCADE` FK. Deleting a track (or folding a remote row into the imported one) must not erase its download history; `DeleteByTrack` removes jobs explicitly when the user deletes a file. `playlist_id` keeps `ON DELETE SET NULL`, and the two indexes are recreated. Down restores the FK and copies only rows whose track still exists |
+| 000087 | `track_raw_album_name.up.sql` | Add `tracks.raw_album_name TEXT NOT NULL DEFAULT ''`. A remote row has no album entity, so this is the only place the search result's album name can live until the downloaded file is tagged with it. Down drops the column |
 
 `listeningRepository.GetListeningInsights` returns up to 50 entries for both Top Artists
 (ordered by listened seconds) and Top Tracks (ordered by play count, then listened
@@ -157,6 +190,7 @@ tracks (
     artwork_key TEXT,
     raw_artist_names TEXT,
     raw_album_artist_names TEXT,
+    raw_album_name TEXT NOT NULL DEFAULT '',  -- album name from the online search result (000087)
     raw_genre_names TEXT,
     raw_composer_names TEXT,
     copyright TEXT,
@@ -170,6 +204,9 @@ tracks (
     analyzed_version INTEGER NOT NULL DEFAULT 0,  -- 0 = pending DSP analysis (000034)
     analysis_pending_mask INTEGER NOT NULL DEFAULT 3, -- FFmpeg=1, aubio=2; indexed unresolved work (000052)
     mood_derived_version INTEGER NOT NULL DEFAULT 0,  -- stale vs app_settings.mood_derivation_version → re-derive (000038)
+    availability TEXT NOT NULL DEFAULT 'ready',       -- ready | remote | downloading | failed (000077); non-ready rows carry a remote:// path
+    provider TEXT NOT NULL DEFAULT '',                -- '' = local file; otherwise the source id, e.g. wy (000077)
+    external_id TEXT NOT NULL DEFAULT '',             -- provider-side track id; unique per (provider, external_id) (000077)
     mtime DATETIME,
     created_at DATETIME,
     updated_at DATETIME
@@ -211,6 +248,26 @@ playlists (
     created_at DATETIME,
     updated_at DATETIME
 )
+
+download_jobs (   -- queue for remote tracks (000078, track FK dropped in 000086)
+    id TEXT PRIMARY KEY,
+    track_id TEXT NOT NULL,                 -- no FK: deleting a track keeps its download history
+    playlist_id TEXT REFERENCES playlists(id) ON DELETE SET NULL,  -- "add here when done"; not a reason to abort
+    quality TEXT NOT NULL DEFAULT '320k',
+    state TEXT NOT NULL DEFAULT 'queued',      -- queued | active | done | failed | canceled
+    attempts INTEGER NOT NULL DEFAULT 0,       -- incremented by MarkFailed; retry UPDATEs this row
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    next_retry_at DATETIME,                    -- NULL for a never-retried job; set on a retryable failure
+    last_error TEXT NOT NULL DEFAULT '',
+    bytes_done INTEGER NOT NULL DEFAULT 0,
+    bytes_total INTEGER NOT NULL DEFAULT 0,
+    target_path TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at DATETIME,
+    finished_at DATETIME
+)
+-- idx_download_jobs_active: UNIQUE(track_id) WHERE state IN ('queued','active')
 
 lyrics (
     track_id TEXT PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,

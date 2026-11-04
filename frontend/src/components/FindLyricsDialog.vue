@@ -24,9 +24,22 @@ const results = ref<LyricsSearchResult[]>([])
 const selectedIndex = ref(-1)
 const saveFile = ref(false)
 
+// A downloaded row can carry a wrong stored duration (an old build's malformed
+// container reported about one second). While this track is playing, the
+// decoder's duration is the trustworthy value; outside playback the row is all
+// there is.
+const effectiveDuration = computed(() => {
+  const track = targetTrack.value
+  if (!track) return 0
+  if (playerStore.currentTrack?.id === track.id && playerStore.duration > 0) {
+    return playerStore.duration
+  }
+  return track.duration || 0
+})
+
 const formattedDuration = computed(() => {
-  if (!targetTrack.value?.duration) return '0:00'
-  return formatTime(targetTrack.value.duration)
+  if (!effectiveDuration.value) return '0:00'
+  return formatTime(effectiveDuration.value)
 })
 
 watch(isVisible, (val) => {
@@ -45,7 +58,7 @@ async function search() {
   results.value = []
   selectedIndex.value = -1
   try {
-    const res = await LyricsService.SearchLyrics(searchTitle.value, searchArtist.value, targetTrack.value?.duration || 0)
+    const res = await LyricsService.SearchLyrics(searchTitle.value, searchArtist.value, effectiveDuration.value)
     results.value = (res || []).filter((r): r is LyricsSearchResult => !!r)
   } catch (e) {
     console.error('Failed to search lyrics', e)

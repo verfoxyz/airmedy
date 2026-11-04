@@ -7,6 +7,7 @@ import { usePlayerStore } from '../stores/player'
 import { useAppStore } from '../stores/app'
 import { PlaybackState, RepeatMode, TrackDTO } from '../../bindings/airmedy/internal/domain/models'
 import { useFavoritesStore } from '../stores/favorites'
+import { useDownloadStore } from '../stores/download'
 import * as LibraryService from '../../bindings/airmedy/internal/infra/wails/libraryservice'
 import { Events } from '@wailsio/runtime'
 
@@ -53,6 +54,13 @@ vi.mock('../../bindings/airmedy/internal/infra/wails/playerservice', () => ({
 
 vi.mock('../../bindings/airmedy/internal/infra/wails/libraryservice', () => ({
   ToggleFavorite: vi.fn(),
+}))
+
+// The footer hosts the download queue panel, which lists the queue when it opens.
+vi.mock('../../bindings/airmedy/internal/infra/wails/downloadservice', () => ({
+  ListDownloads: vi.fn().mockResolvedValue([]),
+  CancelDownload: vi.fn(),
+  RetryDownload: vi.fn(),
 }))
 
 vi.mock('./player/PlayerQuickSettingsMenu.vue', () => ({
@@ -256,6 +264,41 @@ describe('PlayerFooter', () => {
     const wrapper = mountFooter()
     expect(wrapper.findAllComponents({ name: 'MarqueeText' }).map(component => component.props('fade')))
       .toEqual([true, true])
+    wrapper.unmount()
+  })
+
+  it('opens the download queue panel from its entry button', async () => {
+    const wrapper = mountFooter()
+    const toggle = wrapper.get('[data-test="download-queue-toggle"]')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(wrapper.find('[data-test="download-queue-panel"]').exists()).toBe(false)
+
+    await toggle.trigger('click')
+    await flushPromises()
+
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    expect(wrapper.find('[data-test="download-queue-panel"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('marks the entry button with a dot only while a download is running', async () => {
+    const wrapper = mountFooter()
+    expect(wrapper.find('[data-test="download-queue-dot"]').exists()).toBe(false)
+
+    const downloadStore = useDownloadStore()
+    downloadStore.byTrack = {
+      t1: {
+        jobId: 'job-1', trackId: 't1', playlistId: '', state: 'active',
+        bytesDone: 1, bytesTotal: 2, percent: 50, error: '',
+      },
+    }
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="download-queue-dot"]').exists()).toBe(true)
+
+    // Opening the panel makes the dot redundant: the queue is on screen.
+    await wrapper.get('[data-test="download-queue-toggle"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="download-queue-dot"]').exists()).toBe(false)
     wrapper.unmount()
   })
 

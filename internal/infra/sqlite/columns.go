@@ -17,6 +17,7 @@ const trackSelectFields = `
 	COALESCE(t.artwork_key, '') AS artwork_key,
 	COALESCE(t.raw_artist_names, '') AS raw_artist_names,
 	COALESCE(t.raw_album_artist_names, '') AS raw_album_artist_names,
+	COALESCE(t.raw_album_name, '') AS raw_album_name,
 	COALESCE(t.raw_genre_names, '') AS raw_genre_names,
 	COALESCE(t.raw_composer_names, '') AS raw_composer_names,
 	COALESCE(t.copyright, '') AS copyright,
@@ -27,6 +28,9 @@ const trackSelectFields = `
 	COALESCE(t.other_metadata, '{}') AS other_metadata,
 	COALESCE(t.file_size, 0) AS file_size,
 	COALESCE(t.is_favorite, 0) AS is_favorite,
+	COALESCE(t.availability, 'ready') AS availability,
+	COALESCE(t.provider, '') AS provider,
+	COALESCE(t.external_id, '') AS external_id,
 	t.mtime,
 	t.created_at, t.updated_at
 `

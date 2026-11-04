@@ -85,6 +85,29 @@ flowchart TB
 
 > ALAC (Apple Lossless) uses the `.m4a` container — it is covered by `.m4a`, not a separate extension.
 
+**Empty title fallback:** a file whose tags carry no title gets the file name (without
+extension) as its title, split at the last `" - "` into title and artist (the field
+order follows `download_naming_order`); `sort_title` is derived from the title. Without
+this a file still imports but has no searchable text, so the library shows a row that
+keyword search can never find. `ReindexAll` re-parses suspicious rows (empty title or
+duration ≤ 1) so existing rows get both a correct title and the duration the file
+header reports. `VerifyImportedTrack` uses the same parse result as the guard the
+download pipeline runs before accepting a finished file.
+
+**Duration source.** Import and repair read the duration from `domain.MediaDurationProbe`
+(the ffmpeg container header, no decode). The tag library's value is kept only when the
+probe fails. This matters for raw or malformed containers, where taglib has been observed
+reporting both ~1s and several times the real length for the same file.
+
+**User-triggered duration repair.** `RepairDurations(ctx)` probes every local track's
+container header and rewrites a stored duration that disagrees by more than one second.
+This catches both directions taglib gets wrong: near-zero values for a damaged container
+and several-times-too-large values for a raw one. A probe that reports no duration, or a
+one-second value on a row that stored at least five, is returned in
+`DurationRepairResult.Unreadable` so the UI can ask for a re-download. It never falls back
+to taglib, because that would write back the value being repaired. It never runs at
+startup: the scan touches every file and can sit on network drives.
+
 ## Entity Resolution
 
 To avoid duplicates, entities are identified by **normalization key** (lowercased, Unicode-folded, trimmed). IDs are deterministic MD5-based UUIDs generated from the seed string.
@@ -139,7 +162,8 @@ RemoveFolder(id: string): void           // optionally keeps tracks
 GetWatchedFolders(): WatchedFolder[]
 SyncAll(): void                          // SyncLibrary: re-scan folders + re-split if delimiters changed
 ImportAll(): void                        // alias for SyncAll
-ReindexAll(): void                       // rebuild Bleve index from DB
+ReindexAll(): void                       // repair empty titles, then rebuild the Bleve index from DB
+RepairTrackDurations(): DurationRepairResult   // probe containers of local rows with duration <= 1s
 DelimitersPendingResync(): boolean       // current delimiter sig != last-applied sig
 GetSyncStatus(): SyncProgress | null     // stub; used for frontend type generation
 // Metadata & artwork
@@ -150,6 +174,7 @@ SelectAndSetArtistArtwork(artistID: string): string   // pick file → manual ar
 RemoveArtistArtwork(artistID: string): void           // clear custom artwork
 ToggleFavorite(trackID: string): boolean
 UpdateTrackMetadata(trackID: string, update: MetadataUpdate): void
+DeleteTrackFile(trackID: string): void   // removes the audio file, row, jobs, index, playlist members
 ShowInExplorer(trackID: string): void
 // Track queries
 GetAllTracks(): TrackDTO[]
@@ -187,6 +212,7 @@ GetComposerByID(id: string): Composer
 | `library:sync-progress` | `{ current, total, path }` | Per file imported (user-triggered sync only) |
 | `library:sync-finished` | `{}`                       | Scan complete (user-triggered sync only) |
 | `library:track-updated` | `TrackDTO`                 | Track import/metadata update (fires for background scans too); excludes favorite toggles |
+| `library:track-deleted` | `string` (track ID)        | After `DeleteTrackFile` committed its DB deletion |
 | `library:favorite-changed` | `TrackDTO` | Successful desktop/tray favorite toggle, after DB persistence and player/Last.fm listeners |
 | `library:updated`       | `{}`                       | General library change (fires for background scans too) |
 | `artist-artwork-updated`| `{ artist_id, source, key }` | One artwork source's key changed (empty `key` = cleared) |
@@ -226,6 +252,17 @@ flowchart TB
     D --> E["Re-import file: ImportFile(path)<br/><i>re-extracts and updates DB</i>"]
     E --> F["EmitEvent(library:track-updated, updated)"]
 ```
+
+## Track File Deletion
+
+`LibraryService.DeleteTrackFile(ctx, id)` is the only path that removes a music file, and it
+runs only after the user picks "delete file" in `DeleteTrackDialog.vue`. It refuses remote
+(`remote://`), path-less and relative-path rows, deletes the file first (an OS failure aborts
+before any DB change, so the row never points at a missing file silently), then in one
+transaction deletes the `tracks` row and its `download_jobs` (`DownloadJobRepository.DeleteByTrack`).
+Playlist membership disappears through the `playlist_tracks` FK cascade. The Bleve entry is
+removed afterwards (a failure is logged, not fatal), and `library:track-deleted` lets views
+drop the row in place.
 
 ## Play Count & Recently Played
 

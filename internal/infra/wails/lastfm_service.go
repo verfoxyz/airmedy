@@ -1,8 +1,8 @@
 package wails
 
 import (
-	"context"
 	"airmedy/internal/app/lastfm"
+	"context"
 )
 
 type LastFmService struct {

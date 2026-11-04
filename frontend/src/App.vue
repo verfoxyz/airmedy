@@ -3,6 +3,8 @@ import { onMounted, watch, onUnmounted, ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import MainLayout from './layouts/MainLayout.vue'
 import FindLyricsDialog from './components/FindLyricsDialog.vue'
+import DeleteTrackDialog from './components/DeleteTrackDialog.vue'
+import ExportLyricsDialog from './components/ExportLyricsDialog.vue'
 import CreatePlaylistWithTracksDialog from './components/CreatePlaylistWithTracksDialog.vue'
 import MobilePairingDialog from './components/MobilePairingDialog.vue'
 import DevToolsOverlay from './components/DevToolsOverlay.vue'
@@ -14,6 +16,8 @@ import { usePlaylistsStore } from './stores/playlists'
 import { useMoodRadioStore } from './stores/moodRadio'
 import { useAppStore } from './stores/app'
 import { useMobilePairingStore } from './stores/mobilePairing'
+import { useDownloadStore } from './stores/download'
+import { useCatalogStore } from './stores/catalog'
 import { useI18n } from 'vue-i18n'
 import { Events } from '@wailsio/runtime'
 import * as WindowService from '../bindings/airmedy/internal/infra/wails/windowservice'
@@ -28,6 +32,8 @@ const playlistsStore = usePlaylistsStore()
 const moodRadioStore = useMoodRadioStore()
 const appStore = useAppStore()
 const mobilePairingStore = useMobilePairingStore()
+const downloadStore = useDownloadStore()
+const catalogStore = useCatalogStore()
 const isDevelopment = import.meta.env.DEV
 
 const isRouterReady = ref(false)
@@ -134,6 +140,9 @@ onMounted(async () => {
   playlistsStore.loadAll()
   moodRadioStore.init()
   mobilePairingStore.init()
+  // Pull the queue once at startup: jobs queued or failed before a restart are
+  // otherwise invisible until the next download event.
+  void downloadStore.hydrate()
 
   offCycleRepeat = Events.On('player:cycle-repeat', () => {
     playerStore.cycleRepeat()
@@ -157,6 +166,8 @@ onUnmounted(() => {
   playlistsStore.dispose()
   moodRadioStore.dispose()
   mobilePairingStore.dispose()
+  downloadStore.dispose()
+  catalogStore.dispose()
   appStore.dispose()
 })
 
@@ -205,6 +216,8 @@ watch(() => playerStore.playerMode, (newMode) => {
   </template>
   <DevToolsOverlay v-if="isDevelopment && !isMiniPlayer" />
   <FindLyricsDialog />
+  <DeleteTrackDialog />
+  <ExportLyricsDialog />
   <CreatePlaylistWithTracksDialog v-if="!isMiniPlayer" />
   <MobilePairingDialog v-if="!isMiniPlayer" />
 </template>

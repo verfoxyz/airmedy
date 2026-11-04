@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Languages, Mic2, X } from '@lucide/vue'
+import { FileDown, Languages, Mic2, X } from '@lucide/vue'
 import { usePlayerStore } from '../stores/player'
 import { useI18n } from 'vue-i18n'
 import { useLyrics } from '../composables/useLyrics'
 import { useRomanization } from '../composables/useRomanization'
+import { useExportLyrics } from '../composables/useExportLyrics'
 import { lyricsMotionClasses, useLyricsScrollMotion } from '../composables/useLyricsScrollMotion'
 import KaraokeText from './KaraokeText.vue'
 
 const { t } = useI18n()
 const store = usePlayerStore()
+const exportLyrics = useExportLyrics().open
 
 const lyricsContent = computed(() => store.lyrics?.content)
 const { isSynced, syncedLines, plainLines } = useLyrics(lyricsContent)
@@ -141,6 +143,12 @@ onUnmounted(() => {
           @click="toggle()">
           <Languages class="w-4 h-4" aria-hidden="true" />
         </button>
+        <button v-if="lyricsContent && store.currentTrack?.path && !store.currentTrack.path.startsWith('remote://')" type="button" data-test="drawer-export-lyrics"
+          class="p-1.5 rounded-full hover:bg-foreground/8 transition-colors text-dim hover:text-foreground"
+          :title="t('export_lyrics.title')" :aria-label="t('export_lyrics.title')"
+          @click="exportLyrics(store.currentTrack, isSynced)">
+          <FileDown class="w-4 h-4" />
+        </button>
         <button
           class="p-1.5 rounded-full hover:bg-foreground/8 transition-colors text-dim hover:text-foreground"
           @click="store.toggleLyrics()">
@@ -190,8 +198,12 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Plain view -->
+      <!-- Plain view: no timestamps, so nothing can follow playback. Say so
+           instead of letting the lines look like a synced lyric that is stuck. -->
       <div v-else class="h-full overflow-y-auto px-4 py-6 scrollbar-hide">
+        <p class="mb-4 text-xs text-dimmer" data-test="lyrics-unsynced">
+          {{ t('player.lyrics_unsynced') }}
+        </p>
         <div class="space-y-3.5">
           <div v-for="(line, index) in plainLines" :key="index" class="leading-relaxed select-text">
             <p class="text-sm text-foreground/80">{{ line.primary }}</p>

@@ -70,8 +70,8 @@ func NewSettingsRepository(db *DB) domain.SettingsRepository {
 
 func (r *settingsRepository) Save(ctx context.Context, settings *domain.AppSettings) error {
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO app_settings (id, language, theme, primary_color, lastfm_username, auto_check_update, start_at_login, show_tray_icon, eq_enabled, use_online_artist_artwork, prefer_local_artist_artwork, last_scan_version, enable_lrclib, enable_kugou, prefer_local_lyrics, lyrics_folder_enabled, lyrics_folder_path, lyrics_subfolder_enabled, lyrics_subfolder_name, romanization_enabled, prevent_sleep_while_playing, remote_server_enabled, remote_server_port, remote_server_password, pairing_mqtt_port, show_player_indicator, show_player_favorite_button, auto_advance_notifications_enabled, library_sync_interval, library_analysis_enabled, library_analysis_worker_count, normalization_enabled, normalization_mode, normalization_target_lufs, normalization_prevent_clip, artist_delimiters, album_artist_delimiters, genre_delimiters, composer_delimiters, mood_derivation_version, max_queue_size, crossfade_seconds, blend_artwork_during_crossfade, high_contrast_lyrics, lyrics_glow, living_artwork_background, eq_preamp, stereo_width, updated_at)
-		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		`INSERT INTO app_settings (id, language, theme, primary_color, lastfm_username, auto_check_update, start_at_login, show_tray_icon, eq_enabled, use_online_artist_artwork, prefer_local_artist_artwork, last_scan_version, enable_lrclib, enable_kugou, prefer_local_lyrics, lyrics_folder_enabled, lyrics_folder_path, lyrics_subfolder_enabled, lyrics_subfolder_name, romanization_enabled, prevent_sleep_while_playing, remote_server_enabled, remote_server_port, remote_server_password, pairing_mqtt_port, show_player_indicator, show_player_favorite_button, auto_advance_notifications_enabled, library_sync_interval, library_analysis_enabled, library_analysis_worker_count, normalization_enabled, normalization_mode, normalization_target_lufs, normalization_prevent_clip, artist_delimiters, album_artist_delimiters, genre_delimiters, composer_delimiters, mood_derivation_version, max_queue_size, crossfade_seconds, blend_artwork_during_crossfade, high_contrast_lyrics, lyrics_glow, living_artwork_background, eq_preamp, stereo_width, download_dir, download_quality, auto_download_on_playlist_add, download_with_lyrics, download_with_lyric_translation, download_with_cover, download_naming_order, updated_at)
+		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		 ON CONFLICT(id) DO UPDATE SET
 		   language = excluded.language,
 		   theme = excluded.theme,
@@ -120,6 +120,13 @@ func (r *settingsRepository) Save(ctx context.Context, settings *domain.AppSetti
 		   living_artwork_background = excluded.living_artwork_background,
 		   eq_preamp = excluded.eq_preamp,
 		   stereo_width = excluded.stereo_width,
+		   download_dir = excluded.download_dir,
+		   download_quality = excluded.download_quality,
+		   download_naming_order = excluded.download_naming_order,
+		   auto_download_on_playlist_add = excluded.auto_download_on_playlist_add,
+		   download_with_lyrics = excluded.download_with_lyrics,
+		   download_with_lyric_translation = excluded.download_with_lyric_translation,
+		   download_with_cover = excluded.download_with_cover,
 		   updated_at = excluded.updated_at`,
 		settings.Language,
 		settings.Theme,
@@ -168,6 +175,13 @@ func (r *settingsRepository) Save(ctx context.Context, settings *domain.AppSetti
 		settings.LivingArtworkBackground,
 		settings.EQPreamp,
 		settings.StereoWidth,
+		settings.DownloadDir,
+		domain.ResolveDownloadQuality(settings.DownloadQuality),
+		settings.AutoDownloadOnPlaylistAdd,
+		settings.DownloadWithLyrics,
+		settings.DownloadWithLyricTranslation,
+		settings.DownloadWithCover,
+		domain.ResolveNamingOrder(settings.DownloadNamingOrder),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save app settings: %w", err)
@@ -224,9 +238,16 @@ func (r *settingsRepository) Load(ctx context.Context) (*domain.AppSettings, err
 		LivingArtworkBackground         bool           `db:"living_artwork_background"`
 		EQPreamp                        float64        `db:"eq_preamp"`
 		StereoWidth                     float64        `db:"stereo_width"`
+		DownloadDir                     string         `db:"download_dir"`
+		DownloadQuality                 string         `db:"download_quality"`
+		AutoDownloadOnPlaylistAdd       bool           `db:"auto_download_on_playlist_add"`
+		DownloadWithLyrics              bool           `db:"download_with_lyrics"`
+		DownloadWithLyricTranslation    bool           `db:"download_with_lyric_translation"`
+		DownloadWithCover               bool           `db:"download_with_cover"`
+		DownloadNamingOrder             string         `db:"download_naming_order"`
 	}
 	err := r.db.GetContext(ctx, &row,
-		`SELECT language, theme, primary_color, lastfm_username, auto_check_update, start_at_login, show_tray_icon, eq_enabled, use_online_artist_artwork, prefer_local_artist_artwork, last_scan_version, enable_lrclib, enable_kugou, prefer_local_lyrics, lyrics_folder_enabled, lyrics_folder_path, lyrics_subfolder_enabled, lyrics_subfolder_name, romanization_enabled, prevent_sleep_while_playing, remote_server_enabled, remote_server_port, remote_server_password, pairing_mqtt_port, show_player_indicator, show_player_favorite_button, auto_advance_notifications_enabled, library_sync_interval, library_analysis_enabled, library_analysis_worker_count, normalization_enabled, normalization_mode, normalization_target_lufs, normalization_prevent_clip, artist_delimiters, album_artist_delimiters, genre_delimiters, composer_delimiters, mood_derivation_version, max_queue_size, crossfade_seconds, blend_artwork_during_crossfade, high_contrast_lyrics, lyrics_glow, living_artwork_background, eq_preamp, stereo_width FROM app_settings WHERE id = 1`,
+		`SELECT language, theme, primary_color, lastfm_username, auto_check_update, start_at_login, show_tray_icon, eq_enabled, use_online_artist_artwork, prefer_local_artist_artwork, last_scan_version, enable_lrclib, enable_kugou, prefer_local_lyrics, lyrics_folder_enabled, lyrics_folder_path, lyrics_subfolder_enabled, lyrics_subfolder_name, romanization_enabled, prevent_sleep_while_playing, remote_server_enabled, remote_server_port, remote_server_password, pairing_mqtt_port, show_player_indicator, show_player_favorite_button, auto_advance_notifications_enabled, library_sync_interval, library_analysis_enabled, library_analysis_worker_count, normalization_enabled, normalization_mode, normalization_target_lufs, normalization_prevent_clip, artist_delimiters, album_artist_delimiters, genre_delimiters, composer_delimiters, mood_derivation_version, max_queue_size, crossfade_seconds, blend_artwork_during_crossfade, high_contrast_lyrics, lyrics_glow, living_artwork_background, eq_preamp, stereo_width, download_dir, download_quality, auto_download_on_playlist_add, download_with_lyrics, download_with_lyric_translation, download_with_cover, download_naming_order FROM app_settings WHERE id = 1`,
 	)
 	if err == sql.ErrNoRows {
 		return &domain.AppSettings{
@@ -265,6 +286,15 @@ func (r *settingsRepository) Load(ctx context.Context) (*domain.AppSettings, err
 			AutoAdvanceNotificationsEnabled: true,
 			EQPreamp:                        0,
 			StereoWidth:                     100,
+			DownloadQuality:                 domain.DefaultDownloadQuality,
+			DownloadNamingOrder:             domain.DefaultNamingOrder,
+			AutoDownloadOnPlaylistAdd:       true,
+			// Cover art on, lyrics and translation off: embedding a cover is
+			// what makes a downloaded file look right, while lyric fetching is
+			// an extra request per track the user has to ask for.
+			DownloadWithCover:            true,
+			DownloadWithLyrics:           false,
+			DownloadWithLyricTranslation: false,
 		}, nil
 	}
 	if err != nil {
@@ -319,5 +349,12 @@ func (r *settingsRepository) Load(ctx context.Context) (*domain.AppSettings, err
 		LivingArtworkBackground:         row.LivingArtworkBackground,
 		EQPreamp:                        row.EQPreamp,
 		StereoWidth:                     row.StereoWidth,
+		DownloadDir:                     row.DownloadDir,
+		DownloadQuality:                 domain.ResolveDownloadQuality(row.DownloadQuality),
+		AutoDownloadOnPlaylistAdd:       row.AutoDownloadOnPlaylistAdd,
+		DownloadWithLyrics:              row.DownloadWithLyrics,
+		DownloadWithLyricTranslation:    row.DownloadWithLyricTranslation,
+		DownloadWithCover:               row.DownloadWithCover,
+		DownloadNamingOrder:             domain.ResolveNamingOrder(row.DownloadNamingOrder),
 	}, nil
 }

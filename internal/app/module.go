@@ -4,7 +4,9 @@ import (
 	"airmedy/internal/app/analysis"
 	"airmedy/internal/app/analytics"
 	"airmedy/internal/app/appsettings"
+	"airmedy/internal/app/catalog"
 	"airmedy/internal/app/config"
+	"airmedy/internal/app/download"
 	"airmedy/internal/app/eq"
 	"airmedy/internal/app/i18n"
 	"airmedy/internal/app/lastfm"
@@ -75,6 +77,7 @@ var Module = fx.Module("app",
 		func() domain.MetadataWriter { return metadata.NewTagLibWriter() },
 		audio.NewPlayer,
 		func() domain.LoudnessAnalyzer { return audio.NewLoudnessAnalyzer() },
+		func() domain.MediaDurationProbe { return audio.NewDurationProbe() },
 		library.NewLibraryService,
 		wails.NewLibraryService,
 		wails.NewPlayerService,
@@ -98,11 +101,35 @@ var Module = fx.Module("app",
 		wails.NewMobileLibrarySyncService,
 		wails.NewUpdaterService,
 		wails.NewMoodRadioService,
+		wails.NewDownloadService,
+		wails.NewPluginService,
+		wails.NewLxSourcesService,
+		wails.NewCatalogService,
 		func(logger *slog.Logger) *updater.Service {
 			return updater.NewService(config.Version, logger)
 		},
 		func() *wails.GreetService { return &wails.GreetService{} },
 		func() domain.PairingKeyStore { return keyringinfra.NewPairingKeyStore() },
+		// The download pipeline consumes ports; these adapters are the app-layer
+		// services behind them. download.Module then builds the service.
+		func(lib *library.LibraryService) download.LibraryImporter { return lib },
+		func(pl *playlist.PlaylistService) download.PlaylistAdder { return pl },
+		func(st *appsettings.SettingsService) download.SettingsReader { return st },
+		// The search page's row badges ("in library", "downloading", "failed")
+		// come from the download service: it owns both the remote identity
+		// lookup and the queue. catalog.Module consumes this port and never
+		// imports app/download.
+		func(svc *download.Service) domain.CatalogRowStateResolver { return svc },
+		// The search row's "save" action registers and queues through the
+		// download service, flags favorites through the library, and adds
+		// playlist membership through the playlist service. Each is a separate
+		// narrow port so app/catalog imports none of them.
+		func(svc *download.Service) catalog.RemoteTracks { return svc },
+		func(svc *download.Service) catalog.LocalTracks { return svc },
+		func(lib *library.LibraryService) download.LocalFileRemover { return lib },
+		func(st *appsettings.SettingsService) catalog.SettingsReader { return st },
+		func(lib *library.LibraryService) catalog.FavoritesWriter { return lib },
+		func(pl *playlist.PlaylistService) catalog.PlaylistMembership { return pl },
 		func(logger *slog.Logger) domain.PairingBroker { return mqttinfra.NewPairingBroker(logger) },
 		func(logger *slog.Logger) domain.PairingAdvertiser { return mdnsinfra.NewPairingAdvertiser(logger) },
 	),
@@ -124,7 +151,9 @@ var Module = fx.Module("app",
 	mobilesync.Module,
 	analysis.Module,
 	analytics.Module,
-	fx.Invoke(func(lc fx.Lifecycle, db *sqlite.DB, search domain.SearchService, lib *library.LibraryService, playerSvc *player.PlayerService, eqSvc *eq.EQService, lastfmSvc *lastfm.LastFmService, analysisSvc *analysis.AnalysisService, settingsSvc *appsettings.SettingsService, playlistSvc *playlist.PlaylistService, pairingSvc *pairing.Service, mobileSyncSvc *mobilesync.Service, logger *slog.Logger) {
+	download.Module,
+	catalog.Module,
+	fx.Invoke(func(lc fx.Lifecycle, db *sqlite.DB, search domain.SearchService, lib *library.LibraryService, playerSvc *player.PlayerService, eqSvc *eq.EQService, lastfmSvc *lastfm.LastFmService, analysisSvc *analysis.AnalysisService, settingsSvc *appsettings.SettingsService, playlistSvc *playlist.PlaylistService, pairingSvc *pairing.Service, mobileSyncSvc *mobilesync.Service, downloadSvc *download.Service, logger *slog.Logger) {
 		pairingSvc.AddDeviceConnectionListener(func(deviceID string, connected bool) {
 			if connected {
 				return
@@ -198,6 +227,11 @@ var Module = fx.Module("app",
 				settingsSvc.AddChangeListener(func(settings *domain.AppSettings) {
 					playerSvc.SetAutoAdvanceNotificationsEnabled(settings.AutoAdvanceNotificationsEnabled)
 				})
+
+				// Adding an online track to a playlist can queue its download,
+				// if the user asked for that. Wired here so the playlist
+				// package never imports the download package.
+				playlistSvc.SetAutoDownload(downloadSvc.AutoDownloadHook)
 
 				if err := playlistSvc.EnsureFavoritesPlaylist(ctx); err != nil {
 					slog.Error("Failed to ensure favorites playlist", "error", err)

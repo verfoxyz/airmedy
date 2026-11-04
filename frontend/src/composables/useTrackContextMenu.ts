@@ -1,4 +1,4 @@
-import { Star, StarMinus, ListStart, ListEnd, ListPlus, Disc, User, Pencil, FolderOpen, Info, RefreshCw, ListX, Check, Trash2, Search, Radio } from '@lucide/vue'
+import { Star, StarMinus, ListStart, ListEnd, ListPlus, Disc, User, Pencil, FolderOpen, Info, RefreshCw, ListX, Check, Trash2, Search, Radio, FileDown, Download } from '@lucide/vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { usePlaylistsStore } from '@/stores/playlists'
@@ -6,7 +6,10 @@ import { useFavoritesStore } from '@/stores/favorites'
 import { usePlayerStore } from '@/stores/player'
 import { useAppStore } from '@/stores/app'
 import { useMoodRadioStore } from '@/stores/moodRadio'
+import * as DownloadService from '../../bindings/airmedy/internal/infra/wails/downloadservice'
 import { useFindLyricsDialog } from './useFindLyricsDialog'
+import { useDeleteTrackDialog } from './useDeleteTrackDialog'
+import { useExportLyrics } from './useExportLyrics'
 import { useAddToPlaylistMenu } from './useAddToPlaylistMenu'
 import type { ContextMenuItem } from './useContextMenu'
 import type { TrackDTO } from '../../bindings/airmedy/internal/domain/models'
@@ -33,6 +36,8 @@ export function useTrackContextMenu(onEditMetadata: (track: TrackDTO) => void) {
   const moodRadioStore = useMoodRadioStore()
   const router = useRouter()
   const findLyricsDialog = useFindLyricsDialog()
+  const deleteTrackDialog = useDeleteTrackDialog()
+  const exportLyricsDialog = useExportLyrics()
   const { buildCreatePlaylistItems } = useAddToPlaylistMenu()
 
   function buildMenuItems(track: TrackDTO, options: TrackContextMenuOptions = {}): ContextMenuItem[] {
@@ -144,6 +149,41 @@ export function useTrackContextMenu(onEditMetadata: (track: TrackDTO) => void) {
       },
     })
 
+    // Export needs a real file next to the audio, so remote rows cannot do it.
+    const hasLocalFile = !!track.path && !track.path.startsWith('remote://')
+    let exportSynced = true
+    const exportItem: ContextMenuItem = {
+      label: t('context_menu.export_lyrics'),
+      icon: FileDown,
+      disabled: !hasLocalFile,
+      action: () => { exportLyricsDialog.open(track, exportSynced) },
+    }
+    items.push(exportItem)
+    if (hasLocalFile) {
+      // Nothing to export without a stored lyric; disable it once we know.
+      LyricsService.GetLyrics(track.id).then((lyric: { content?: string; meta_content?: string } | null) => {
+        if (!lyric || (!lyric.content && !lyric.meta_content)) {
+          exportItem.disabled = true
+          return
+        }
+        exportSynced = /\d{1,2}:\d{2}/.test(lyric.content || lyric.meta_content || '')
+      })
+    }
+
+    // A damaged file can only be fixed by fetching it again: delete it and let
+    // the online identity drive a fresh job.
+    const canRedownload = !!track.provider && !!track.path && !track.path.startsWith('remote://')
+    items.push({
+      label: t('context_menu.redownload'),
+      icon: Download,
+      disabled: !canRedownload,
+      action: () => {
+        DownloadService.RedownloadTrack(track.id).catch((e: unknown) => {
+          console.error('Redownload failed', e)
+        })
+      },
+    })
+
     if (appStore.libraryAnalysisEnabled) {
       items.push({ separator: true })
       items.push({
@@ -249,17 +289,17 @@ export function useTrackContextMenu(onEditMetadata: (track: TrackDTO) => void) {
       action: () => { LibraryService.ShowInExplorer(track.id) },
     })
 
-    if (options.playlistId && options.playlistId !== 'favorites' && !options.isSmartPlaylist) {
-      items.push({ separator: true })
-      items.push({
-        label: t('context_menu.remove_from_playlist'),
-        icon: Trash2,
-        danger: true,
-        action: () => {
-          PlaylistService.RemoveTrackFromPlaylist(options.playlistId!, track.id, '')
-        },
-      })
-    }
+    // Delete is always offered; the dialog adapts to where the row came from
+    // (playlist membership is only a stored relation in manual playlists).
+    items.push({ separator: true })
+    items.push({
+      label: t('context_menu.delete_track'),
+      icon: Trash2,
+      danger: true,
+      action: () => {
+        deleteTrackDialog.open(track, options.isSmartPlaylist ? undefined : options.playlistId)
+      },
+    })
 
     return items
   }

@@ -2,6 +2,8 @@ package wails
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"airmedy/internal/app/appsettings"
 	"airmedy/internal/app/lyrics"
@@ -60,6 +62,51 @@ func (s *LyricsService) DeleteLyrics(trackID string) error {
 
 func (s *LyricsService) SaveLyricsFile(audioPath, content string) error {
 	return s.service.SaveLyricsFile(context.Background(), audioPath, content)
+}
+
+// LyricsExportResultDTO reports where an export landed. Exists means nothing was
+// written because the file is already there; the caller offers overwrite / save
+// as / cancel instead of an error.
+type LyricsExportResultDTO struct {
+	Path   string `json:"path"`
+	Exists bool   `json:"exists"`
+}
+
+// ExportLyrics writes the stored lyric as <audio>.lrc next to the file.
+func (s *LyricsService) ExportLyrics(trackID string, overwrite bool) (LyricsExportResultDTO, error) {
+	path, err := s.service.ExportLyrics(context.Background(), trackID, overwrite)
+	if err != nil {
+		if errors.Is(err, domain.ErrLyricsFileExists) {
+			return LyricsExportResultDTO{Path: path, Exists: true}, nil
+		}
+		return LyricsExportResultDTO{}, err
+	}
+	return LyricsExportResultDTO{Path: path}, nil
+}
+
+// ExportLyricsAs is the "save as" branch: it asks the OS for a destination and
+// writes the lyric there. Returns "" without an error when the user cancels.
+func (s *LyricsService) ExportLyricsAs(trackID string) (string, error) {
+	app := application.Get()
+	if app == nil {
+		return "", fmt.Errorf("application not initialized")
+	}
+	name, err := s.service.LyricsExportName(context.Background(), trackID)
+	if err != nil {
+		return "", err
+	}
+	dest, err := app.Dialog.SaveFile().
+		SetMessage("Export Lyrics").
+		SetFilename(name).
+		AddFilter("LRC Lyrics", "*.lrc").
+		PromptForSingleSelection()
+	if err != nil {
+		return "", err
+	}
+	if dest == "" {
+		return "", nil
+	}
+	return s.service.ExportLyricsTo(context.Background(), trackID, dest)
 }
 
 func (s *LyricsService) SearchLyrics(title, artist string, duration int) ([]*domain.LyricsSearchResult, error) {

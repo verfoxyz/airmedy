@@ -28,7 +28,7 @@ func registerProtocol() error {
 	if err != nil {
 		return err
 	}
-	defer k.Close()
+	defer func() { _ = k.Close() }()
 
 	if err := k.SetStringValue("", description); err != nil {
 		return err
@@ -41,7 +41,7 @@ func registerProtocol() error {
 	if err != nil {
 		return err
 	}
-	defer sk.Close()
+	defer func() { _ = sk.Close() }()
 
 	if err := sk.SetStringValue("", command); err != nil {
 		return err

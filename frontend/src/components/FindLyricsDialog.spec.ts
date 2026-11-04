@@ -27,11 +27,14 @@ vi.mock('../../bindings/airmedy/internal/infra/wails/playerservice', () => ({
   PublishCurrentLyrics: (...args: unknown[]) => publishCurrentLyrics(...args),
 }))
 
+const playerMock = vi.hoisted(() => ({
+  currentTrack: { id: 'track-1' },
+  lyrics: null as unknown,
+  duration: 0,
+}))
+
 vi.mock('@/stores/player', () => ({
-  usePlayerStore: () => ({
-    currentTrack: { id: 'track-1' },
-    lyrics: null,
-  }),
+  usePlayerStore: () => playerMock,
 }))
 
 import FindLyricsDialog from './FindLyricsDialog.vue'
@@ -55,6 +58,8 @@ describe('FindLyricsDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     useFindLyricsDialog().close()
+    playerMock.currentTrack = { id: 'track-1' }
+    playerMock.duration = 0
   })
 
   it('publishes a selected lyric for the playing track after saving it', async () => {
@@ -82,5 +87,34 @@ describe('FindLyricsDialog', () => {
       content: '[00:01.00]Chosen lyric',
       source: 'lrclib-synced',
     }))
+  })
+
+  async function openAndSearch(duration: number) {
+    searchLyrics.mockResolvedValue([])
+    const wrapper = mountDialog()
+    useFindLyricsDialog().open({
+      id: 'track-1',
+      title: 'Song',
+      duration,
+      artists: [{ name: 'Artist' }],
+    } as any)
+    await nextTick()
+    await wrapper.findAll('button').find(button => button.text() === 'find_lyrics.search')!.trigger('click')
+    await nextTick()
+  }
+
+  it('searches with the decoder duration while the track is playing', async () => {
+    playerMock.duration = 240
+    await openAndSearch(1)
+
+    expect(searchLyrics).toHaveBeenCalledWith('Song', 'Artist', 240)
+  })
+
+  it('falls back to the stored duration for a track that is not playing', async () => {
+    playerMock.currentTrack = { id: 'other-track' }
+    playerMock.duration = 240
+    await openAndSearch(180)
+
+    expect(searchLyrics).toHaveBeenCalledWith('Song', 'Artist', 180)
   })
 })

@@ -29,7 +29,9 @@ func setTitleBarThemeImpl(w *application.WebviewWindow, theme string) {
 }
 
 func dwmSetAttr(hwnd uintptr, attr, color uint32) {
-	procDwmSetWinAttr.Call(
+	// DWM reports success/failure through the HRESULT only; the caption colours
+	// are cosmetic, so a refused call leaves the default theme in place.
+	_, _, _ = procDwmSetWinAttr.Call(
 		hwnd,
 		uintptr(attr),
 		uintptr(unsafe.Pointer(&color)),

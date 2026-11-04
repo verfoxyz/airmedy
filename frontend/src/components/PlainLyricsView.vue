@@ -10,6 +10,9 @@ defineProps<{
 <template>
   <div class="h-full overflow-y-auto px-8 py-16 scrollbar-hide">
     <div class="max-w-2xl mx-auto space-y-4">
+      <p class="text-sm font-medium text-white/40" data-test="lyrics-unsynced">
+        {{ $t('player.lyrics_unsynced') }}
+      </p>
       <div
         v-for="(line, index) in lines"
         :key="index"

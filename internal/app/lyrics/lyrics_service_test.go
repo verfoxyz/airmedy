@@ -2,11 +2,13 @@ package lyrics
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,7 +76,7 @@ func (s stubLocal) Read(string, ...string) (string, string, bool) {
 }
 
 func newService(lyric *domain.Lyric, local domain.LocalLyricsReader) *LyricsService {
-	return NewLyricsService(&stubRepo{lyric: lyric}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, local, nil)
+	return NewLyricsService(&stubRepo{lyric: lyric}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, local, nil, nil)
 }
 
 func TestResolveLyrics(t *testing.T) {
@@ -151,11 +153,153 @@ func TestResolveLyrics(t *testing.T) {
 	}
 }
 
+type stubTracks struct {
+	domain.TrackRepository
+	track *domain.TrackDTO
+}
+
+func (s *stubTracks) GetByID(context.Context, string) (*domain.TrackDTO, error) {
+	return s.track, nil
+}
+
+func newExportService(t *testing.T, track *domain.TrackDTO, lyric *domain.Lyric) *LyricsService {
+	t.Helper()
+	return NewLyricsService(
+		&stubRepo{lyric: lyric},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		nil, nil, nil,
+		&stubTracks{track: track},
+	)
+}
+
+func TestExportLyrics_WritesSiblingLRCAsUTF8WithLFLines(t *testing.T) {
+	dir := t.TempDir()
+	audio := filepath.Join(dir, "song.flac")
+	if err := os.WriteFile(audio, []byte("audio-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := newExportService(t,
+		&domain.TrackDTO{Track: domain.Track{ID: "t1", Path: audio, Availability: domain.AvailabilityReady}},
+		&domain.Lyric{TrackID: "t1", Content: "[00:01.00]one\r\n[00:02.00]two", Source: "lrclib-synced"},
+	)
+
+	got, err := svc.ExportLyrics(context.Background(), "t1", false)
+	if err != nil {
+		t.Fatalf("ExportLyrics: %v", err)
+	}
+	want := filepath.Join(dir, "song.lrc")
+	if got != want {
+		t.Fatalf("path = %q, want %q", got, want)
+	}
+
+	data, err := os.ReadFile(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "\r") {
+		t.Fatalf("exported content still has CR characters: %q", data)
+	}
+	if !strings.HasPrefix(string(data), "[00:01.00]one\n[00:02.00]two") {
+		t.Fatalf("content = %q", data)
+	}
+
+	// The audio file is the user's read-only resource; exporting must not touch it.
+	if audioBytes, err := os.ReadFile(audio); err != nil || string(audioBytes) != "audio-bytes" {
+		t.Fatalf("audio file changed: %q (err=%v)", audioBytes, err)
+	}
+}
+
+func TestExportLyrics_RefusesToOverwriteAnExistingLRC(t *testing.T) {
+	dir := t.TempDir()
+	audio := filepath.Join(dir, "song.mp3")
+	if err := os.WriteFile(audio, []byte("audio"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	existing := filepath.Join(dir, "song.lrc")
+	if err := os.WriteFile(existing, []byte("old lyric"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := newExportService(t,
+		&domain.TrackDTO{Track: domain.Track{ID: "t1", Path: audio, Availability: domain.AvailabilityReady}},
+		&domain.Lyric{TrackID: "t1", Content: "new lyric"},
+	)
+
+	got, err := svc.ExportLyrics(context.Background(), "t1", false)
+	if !errors.Is(err, domain.ErrLyricsFileExists) {
+		t.Fatalf("err = %v, want ErrLyricsFileExists", err)
+	}
+	if got != existing {
+		t.Fatalf("path = %q, want the conflicting path %q", got, existing)
+	}
+	// Nothing was written, so the old file is intact.
+	if data, _ := os.ReadFile(existing); string(data) != "old lyric" {
+		t.Fatalf("existing .lrc was modified: %q", data)
+	}
+
+	// Overwrite is the branch the UI offers for exactly this state.
+	if _, err := svc.ExportLyrics(context.Background(), "t1", true); err != nil {
+		t.Fatalf("overwrite export: %v", err)
+	}
+	if data, _ := os.ReadFile(existing); string(data) != "new lyric\n" {
+		t.Fatalf("overwritten .lrc = %q", data)
+	}
+}
+
+func TestExportLyrics_RefusesTracksWithoutLyricsOrLocalFile(t *testing.T) {
+	dir := t.TempDir()
+	audio := filepath.Join(dir, "song.mp3")
+	if err := os.WriteFile(audio, []byte("audio"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := newExportService(t,
+		&domain.TrackDTO{Track: domain.Track{ID: "t1", Path: audio, Availability: domain.AvailabilityReady}},
+		nil,
+	)
+	if _, err := svc.ExportLyrics(context.Background(), "t1", false); !errors.Is(err, domain.ErrLyricsUnavailable) {
+		t.Fatalf("no-lyrics err = %v, want ErrLyricsUnavailable", err)
+	}
+
+	remote := newExportService(t,
+		&domain.TrackDTO{Track: domain.Track{ID: "r1", Path: "remote://wy/1", Availability: domain.AvailabilityDownloading}},
+		&domain.Lyric{TrackID: "r1", Content: "[00:01.00]one"},
+	)
+	if _, err := remote.ExportLyrics(context.Background(), "r1", false); err == nil ||
+		!strings.Contains(err.Error(), "no local file") {
+		t.Fatalf("remote err = %v, want a no-local-file refusal", err)
+	}
+}
+
+func TestExportLyrics_LeavesNoTemporaryFileBehind(t *testing.T) {
+	dir := t.TempDir()
+	audio := filepath.Join(dir, "song.mp3")
+	if err := os.WriteFile(audio, []byte("audio"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := newExportService(t,
+		&domain.TrackDTO{Track: domain.Track{ID: "t1", Path: audio, Availability: domain.AvailabilityReady}},
+		&domain.Lyric{TrackID: "t1", Content: "[00:01.00]one"},
+	)
+	if _, err := svc.ExportLyrics(context.Background(), "t1", true); err != nil {
+		t.Fatalf("ExportLyrics: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".airmedy-lrc-") {
+			t.Fatalf("temporary file left behind: %s", entry.Name())
+		}
+	}
+}
+
 func TestResolveForMobileSyncCachesAndInvalidatesLocalLyrics(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "Song.mp3")
 	lyricPath := filepath.Join(dir, "Song.lrc")
-	service := NewLyricsService(&stubRepo{lyric: &domain.Lyric{TrackID: "track", Content: "provider", Source: "lrclib"}}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil, &stubSettingsRepo{settings: &domain.AppSettings{PreferLocalLyrics: true}})
+	service := NewLyricsService(&stubRepo{lyric: &domain.Lyric{TrackID: "track", Content: "provider", Source: "lrclib"}}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil, &stubSettingsRepo{settings: &domain.AppSettings{PreferLocalLyrics: true}}, nil)
 	cache := &stubMobileSyncCache{entries: map[string]*domain.MobileSyncLyricCache{}}
 	tracks := []*domain.TrackDTO{{Track: domain.Track{ID: "track", Path: path}}}
 
@@ -208,7 +352,7 @@ func TestResolveForMobileSyncUsesNormalizedMacOSSidecarName(t *testing.T) {
 	if err := os.WriteFile(lyricPath, []byte("local lyric"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	service := NewLyricsService(&stubRepo{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil, &stubSettingsRepo{settings: &domain.AppSettings{PreferLocalLyrics: true}})
+	service := NewLyricsService(&stubRepo{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil, &stubSettingsRepo{settings: &domain.AppSettings{PreferLocalLyrics: true}}, nil)
 	resolved, err := service.ResolveForMobileSync(context.Background(), []*domain.TrackDTO{{Track: domain.Track{ID: "track", Path: trackPath}}}, &stubMobileSyncCache{entries: map[string]*domain.MobileSyncLyricCache{}})
 	if err != nil {
 		t.Fatal(err)

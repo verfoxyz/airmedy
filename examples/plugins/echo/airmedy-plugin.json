@@ -1,0 +1,20 @@
+{
+  "id": "echo",
+  "name": "Echo Source",
+  "version": "1.0.0",
+  "author": "Airmedy examples",
+  "apiVersion": "^1.0",
+  "runtime": {
+    "type": "process",
+    "command": "./echo"
+  },
+  "capabilities": [
+    "stream.resolve"
+  ],
+  "providers": [
+    "echo.test"
+  ],
+  "permissions": {
+    "network": []
+  }
+}

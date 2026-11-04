@@ -87,6 +87,16 @@ enum {
     FFA_ERR_ALLOC     = -6,  /* allocation failure                             */
 };
 
+/* Result codes for ffmpeg_probe_duration, kept separate from FFA_ERR_* so a
+ * caller can distinguish "no audio stream" from "duration not in the header". */
+enum {
+    FFA_PROBE_OK           = 0,
+    FFA_PROBE_ERR_OPEN     = -1, /* file could not be opened                     */
+    FFA_PROBE_ERR_NO_AUDIO = -2, /* no audio stream in the container             */
+    FFA_PROBE_ERR_UNKNOWN  = -3, /* header carries no usable duration            */
+    FFA_PROBE_ERR_CANCELLED = -4, /* aborted via *cancel                         */
+};
+
 static int ffa_get_meta(AVFrame *f, const char *key, double *val) {
     AVDictionaryEntry *e = av_dict_get(f->metadata, key, NULL, 0);
     if (!e) return 0;
@@ -253,7 +263,9 @@ static int ffmpeg_analyze(const char *path, FFAnalysisResult *out, volatile int 
     {
         char ch_layout[256];
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(59, 37, 100)
-        AVChannelLayout in_layout;
+        /* Same hazard as ffmpeg_decoder.h: av_channel_layout_copy frees the
+         * destination's existing pointer first, so it must start zeroed. */
+        AVChannelLayout in_layout = {0};
         if (codec_ctx->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC) {
             av_channel_layout_default(&in_layout, codec_ctx->ch_layout.nb_channels > 0
                                                       ? codec_ctx->ch_layout.nb_channels : 2);
@@ -313,7 +325,11 @@ static int ffmpeg_analyze(const char *path, FFAnalysisResult *out, volatile int 
      * Tempo failures are non-fatal: leave out->tempo = 0 and keep analyzing. */
     if (components & FFA_COMPONENT_AUBIO) {
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(59, 37, 100)
-        AVChannelLayout in_l, out_l;
+        /* Same rule as ffmpeg_decoder.h:145 — av_channel_layout_copy()
+         * uninitialises its destination first, so an uninitialised stack layout
+         * makes it free whatever garbage `order`/`u.map` hold and corrupts the
+         * heap. Zero-init is required, not defensive style. */
+        AVChannelLayout in_l = {0}, out_l = {0};
         if (codec_ctx->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC) {
             av_channel_layout_default(&in_l, codec_ctx->ch_layout.nb_channels > 0 ? codec_ctx->ch_layout.nb_channels : 2);
         } else {
@@ -508,6 +524,79 @@ done:
     if (graph) avfilter_graph_free(&graph);
     if (codec_ctx) avcodec_free_context(&codec_ctx);
     if (fmt_ctx) avformat_close_input(&fmt_ctx);
+    return rc;
+}
+
+/*
+ * ffmpeg_probe_duration reads the container/stream header without decoding and
+ * writes the duration in seconds to *out_seconds. This is the authoritative
+ * duration source: tag libraries misread raw or malformed containers (a raw
+ * FLAC with no standard metadata chain has been observed reporting both ~1s and
+ * ~8x the real length). *cancel (may be NULL) is polled before and after the
+ * probe; a cancelled call returns FFA_PROBE_ERR_CANCELLED.
+ *
+ * The open/probe phase shares ffmpeg_probe_mu with playback and analysis, so it
+ * cannot race their decoder static-table initialization.
+ */
+static int ffmpeg_probe_duration(const char *path, double *out_seconds, volatile int *cancel) {
+    if (!path || !out_seconds) return FFA_PROBE_ERR_OPEN;
+    *out_seconds = 0;
+    if (cancel && *cancel) return FFA_PROBE_ERR_CANCELLED;
+
+    AVFormatContext *fmt_ctx = NULL;
+    AVDictionary *format_opts = NULL;
+    AVStream *st = NULL;
+    int stream_idx = -1;
+    double seconds = 0;
+    int rc = FFA_PROBE_ERR_OPEN;
+
+    pthread_mutex_lock(&ffmpeg_probe_mu);
+
+    /* Same modest budget as ffmpeg_analyze: enough to find the audio stream past
+     * cover art, cheap enough for a large library scan. */
+    av_dict_set(&format_opts, "probesize", "5000000", 0);
+    av_dict_set(&format_opts, "analyzeduration", "5000000", 0);
+    if (avformat_open_input(&fmt_ctx, path, NULL, &format_opts) < 0) {
+        goto done;
+    }
+    av_dict_free(&format_opts);
+
+    if (avformat_find_stream_info(fmt_ctx, NULL) < 0) {
+        goto done;
+    }
+
+    stream_idx = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+    if (stream_idx < 0) {
+        rc = FFA_PROBE_ERR_NO_AUDIO;
+        goto done;
+    }
+    if (cancel && *cancel) {
+        rc = FFA_PROBE_ERR_CANCELLED;
+        goto done;
+    }
+
+    st = fmt_ctx->streams[stream_idx];
+    if (st->duration != AV_NOPTS_VALUE && st->duration > 0 &&
+        st->time_base.num > 0 && st->time_base.den > 0) {
+        seconds = (double)st->duration * (double)st->time_base.num / (double)st->time_base.den;
+    }
+    /* Format-level duration is the fallback when the audio stream itself has no
+     * duration (some containers only populate AVFormatContext). */
+    if (seconds <= 0 && fmt_ctx->duration != AV_NOPTS_VALUE && fmt_ctx->duration > 0) {
+        seconds = (double)fmt_ctx->duration / (double)AV_TIME_BASE;
+    }
+    if (seconds <= 0) {
+        rc = FFA_PROBE_ERR_UNKNOWN;
+        goto done;
+    }
+
+    *out_seconds = seconds;
+    rc = FFA_PROBE_OK;
+
+done:
+    av_dict_free(&format_opts);
+    if (fmt_ctx) avformat_close_input(&fmt_ctx);
+    pthread_mutex_unlock(&ffmpeg_probe_mu);
     return rc;
 }
 

@@ -72,6 +72,19 @@ export const useAppStore = defineStore('app', () => {
   const highContrastLyrics = ref(true)
   const lyricsGlow = ref(false)
   const livingArtworkBackground = ref(true)
+  // Download preferences. An empty dir means "use the default" (<Music>/Airmedy);
+  // the backend resolves it at download time so the value never goes stale.
+  const downloadDir = ref('')
+  const downloadQuality = ref<DownloadQuality>('320k')
+  const downloadNamingOrder = ref<DownloadNamingOrder>('title-artist')
+  const autoDownloadOnPlaylistAdd = ref(true)
+  // What to fetch and write beside the audio file. Each is an independent
+  // network request, so the defaults match the backend: cover on, lyrics off.
+  // Asking for a translation without lyrics is meaningless, so the page keeps
+  // the translation switch disabled until lyrics are on.
+  const downloadWithLyrics = ref(false)
+  const downloadWithLyricTranslation = ref(false)
+  const downloadWithCover = ref(true)
   const remoteServerEnabled = ref(false)
   const remoteServerPort = ref(0)
   const remoteServerPassword = ref('')
@@ -165,6 +178,13 @@ export const useAppStore = defineStore('app', () => {
         highContrastLyrics.value = settings.high_contrast_lyrics !== false
         lyricsGlow.value = settings.lyrics_glow ?? false
         livingArtworkBackground.value = settings.living_artwork_background !== false
+        downloadDir.value = settings.download_dir ?? ''
+        downloadQuality.value = resolveDownloadQuality(settings.download_quality)
+        downloadNamingOrder.value = resolveDownloadNamingOrder(settings.download_naming_order)
+        autoDownloadOnPlaylistAdd.value = settings.auto_download_on_playlist_add === true
+        downloadWithLyrics.value = settings.download_with_lyrics === true
+        downloadWithLyricTranslation.value = settings.download_with_lyric_translation === true
+        downloadWithCover.value = settings.download_with_cover !== false
         libraryAnalysisEnabled.value = !!settings.library_analysis_enabled
         normalizationEnabled.value = !!settings.normalization_enabled
         // DB default is 'track'; the mode select only offers Track/Album (never 'off').
@@ -278,6 +298,13 @@ export const useAppStore = defineStore('app', () => {
         high_contrast_lyrics: highContrastLyrics.value,
         lyrics_glow: lyricsGlow.value,
         living_artwork_background: livingArtworkBackground.value,
+        download_dir: downloadDir.value,
+        download_quality: downloadQuality.value,
+        download_naming_order: downloadNamingOrder.value,
+        auto_download_on_playlist_add: autoDownloadOnPlaylistAdd.value,
+        download_with_lyrics: downloadWithLyrics.value,
+        download_with_lyric_translation: downloadWithLyricTranslation.value,
+        download_with_cover: downloadWithCover.value,
         library_analysis_enabled: libraryAnalysisEnabled.value,
         library_analysis_worker_count: libraryAnalysisWorkerCount.value,
         normalization_enabled: normalizationEnabled.value,
@@ -461,6 +488,48 @@ export const useAppStore = defineStore('app', () => {
     await saveSettings()
   }
 
+  const updateDownloadDir = async (dir: string) => {
+    downloadDir.value = dir.trim()
+    await saveSettings()
+  }
+
+  const updateDownloadQuality = async (quality: DownloadQuality) => {
+    downloadQuality.value = resolveDownloadQuality(quality)
+    await saveSettings()
+  }
+
+  const updateDownloadNamingOrder = async (order: DownloadNamingOrder) => {
+    downloadNamingOrder.value = resolveDownloadNamingOrder(order)
+    await saveSettings()
+  }
+
+  const updateAutoDownloadOnPlaylistAdd = async (enabled: boolean) => {
+    autoDownloadOnPlaylistAdd.value = enabled
+    await saveSettings()
+  }
+
+  /**
+   * Turning lyrics off also clears the translation choice: a translation of
+   * lyrics that are never fetched is not a state the backend can honour, and
+   * leaving it set would show a switch that looks on but does nothing.
+   */
+  const updateDownloadWithLyrics = async (enabled: boolean) => {
+    downloadWithLyrics.value = enabled
+    if (!enabled) downloadWithLyricTranslation.value = false
+    await saveSettings()
+  }
+
+  const updateDownloadWithLyricTranslation = async (enabled: boolean) => {
+    if (!downloadWithLyrics.value) return
+    downloadWithLyricTranslation.value = enabled
+    await saveSettings()
+  }
+
+  const updateDownloadWithCover = async (enabled: boolean) => {
+    downloadWithCover.value = enabled
+    await saveSettings()
+  }
+
   const updateLyricsGlow = async (enabled: boolean) => {
     lyricsGlow.value = enabled
     await saveSettings()
@@ -586,6 +655,20 @@ export const useAppStore = defineStore('app', () => {
   }
 
   return {
+    downloadDir,
+    downloadQuality,
+    downloadNamingOrder,
+    autoDownloadOnPlaylistAdd,
+    downloadWithLyrics,
+    downloadWithLyricTranslation,
+    downloadWithCover,
+    updateDownloadDir,
+    updateDownloadQuality,
+    updateDownloadNamingOrder,
+    updateAutoDownloadOnPlaylistAdd,
+    updateDownloadWithLyrics,
+    updateDownloadWithLyricTranslation,
+    updateDownloadWithCover,
     theme,
     primaryColor,
     language,
@@ -684,3 +767,25 @@ export const useAppStore = defineStore('app', () => {
     dispose,
   }
 })
+
+/** Selectable download tiers; mirrors domain.ValidDownloadQualities. */
+export const DOWNLOAD_QUALITIES = ['128k', '320k', 'flac'] as const
+export type DownloadQuality = typeof DOWNLOAD_QUALITIES[number]
+
+/** An unknown or empty stored quality falls back to 320k, matching the backend. */
+export function resolveDownloadQuality(value: string | null | undefined): DownloadQuality {
+  return (DOWNLOAD_QUALITIES as readonly string[]).includes(value ?? '')
+    ? (value as DownloadQuality)
+    : '320k'
+}
+
+/** Selectable file-name orders; mirrors domain.NamingOrder*. */
+export const DOWNLOAD_NAMING_ORDERS = ['title-artist', 'artist-title'] as const
+export type DownloadNamingOrder = typeof DOWNLOAD_NAMING_ORDERS[number]
+
+/** An unknown or empty stored order falls back to "title - artist", matching the backend. */
+export function resolveDownloadNamingOrder(value: string | null | undefined): DownloadNamingOrder {
+  return (DOWNLOAD_NAMING_ORDERS as readonly string[]).includes(value ?? '')
+    ? (value as DownloadNamingOrder)
+    : 'title-artist'
+}

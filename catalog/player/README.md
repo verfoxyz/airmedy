@@ -1,5 +1,42 @@
 # Audio Player
 
+<!-- toc -->
+- [Summary](#summary)
+- [Files](#files)
+- [AudioPlayer Interface](#audioplayer-interface)
+- [Reload After Media-File Mutation](#reload-after-media-file-mutation)
+- [GaplessPlayer Interface (Optional)](#gaplessplayer-interface-optional)
+- [CrossfadePlayer Interface (Optional)](#crossfadeplayer-interface-optional)
+- [Automatic Track-change Notifications (macOS)](#automatic-track-change-notifications-macos)
+- [NowPlayingController Interface (Optional)](#nowplayingcontroller-interface-optional)
+  - [Playback state (play/pause glyph)](#playback-state-playpause-glyph)
+- [NormalizationController Interface (Optional)](#normalizationcontroller-interface-optional)
+- [SleepInhibitor Interface](#sleepinhibitor-interface)
+- [Platform Adapters](#platform-adapters)
+  - [macOS — SFBAudioEngine (`player_darwin.go`)](#macos-sfbaudioengine-playerdarwingo)
+  - [Windows/Linux — miniaudio (`player_miniaudio.go`)](#windowslinux-miniaudio-playerminiaudiogo)
+  - [Windows — System Media Transport Controls (Now Playing)](#windows-system-media-transport-controls-now-playing)
+  - [Windows — Taskbar Thumbnail Toolbar (`internal/infra/wails/`)](#windows-taskbar-thumbnail-toolbar-internalinfrawails)
+  - [Linux — MPRIS (Now Playing)](#linux-mpris-now-playing)
+- [PlayerService (Application Layer)](#playerservice-application-layer)
+  - [Responsibilities](#responsibilities)
+  - [Key Methods](#key-methods)
+  - [PlayerStatus](#playerstatus)
+- [Queue Service](#queue-service)
+  - [Navigation](#navigation)
+  - [Shuffle](#shuffle)
+  - [Insert After Current](#insert-after-current)
+  - [Max Queue Size](#max-queue-size)
+  - [Other QueueService Methods](#other-queueservice-methods)
+  - [Favorite synchronization](#favorite-synchronization)
+- [State Persistence](#state-persistence)
+- [Events Emitted](#events-emitted)
+- [Frontend Store (`stores/player.ts`)](#frontend-store-storesplayerts)
+- [Wails-Exposed Methods](#wails-exposed-methods)
+- [Mini Player Window](#mini-player-window)
+  - [Geometry & Pin Persistence](#geometry-pin-persistence)
+<!-- /toc -->
+
 ## Summary
 
 The player feature handles audio playback, queue management, shuffle/repeat modes, state persistence across app restarts, and OS-level media integration (macOS Now Playing, Windows System Media Transport Controls + taskbar thumbnail toolbar, Linux MPRIS). It is split between an application-layer service and platform-specific audio adapters.

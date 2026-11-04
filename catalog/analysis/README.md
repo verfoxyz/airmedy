@@ -1,5 +1,24 @@
 # Library Analysis
 
+<!-- toc -->
+- [Summary](#summary)
+- [Aubio FFT Backend](#aubio-fft-backend)
+- [Data Flow](#data-flow)
+- [Files](#files)
+- [Settings (`AppSettings`)](#settings-appsettings)
+- [Enable/Disable Lifecycle (`AnalysisService`)](#enabledisable-lifecycle-analysisservice)
+- [Queue / Worker Mechanics](#queue-worker-mechanics)
+  - [Progress computation](#progress-computation)
+  - [Failed tracks](#failed-tracks)
+  - [Dedup and dequeue](#dedup-and-dequeue)
+- [Mood Derivation (`internal/app/analysis/mood/`)](#mood-derivation-internalappanalysismood)
+- [Mood Radio (`frontend/src/stores/moodRadio.ts`, `MoodRadioService`)](#mood-radio-frontendsrcstoresmoodradiots-moodradioservice)
+- [Central Wiring (`internal/app/module.go`)](#central-wiring-internalappmodulego)
+- [Wails-Exposed Methods (`AnalysisService`)](#wails-exposed-methods-analysisservice)
+- [Events Emitted](#events-emitted)
+- [Frontend](#frontend)
+<!-- /toc -->
+
 ## Summary
 
 Background pipeline that decodes each track once, runs an ffmpeg `libavfilter`

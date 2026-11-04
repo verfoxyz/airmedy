@@ -77,15 +77,15 @@ func buildIndexMapping() mapping.IndexMapping {
 
 	// 3. Create a single, global document mapping
 	defaultMapping := bleve.NewDocumentMapping()
-	
+
 	// Core identity fields
 	defaultMapping.AddFieldMappingsAt("type", keywordFieldMapping)
 	defaultMapping.AddFieldMappingsAt("id", keywordFieldMapping)
-	
+
 	// Searchable fields (Standardized on 'title' for names)
 	defaultMapping.AddFieldMappingsAt("title", textFieldMapping)
 	defaultMapping.AddFieldMappingsAt("name", textFieldMapping) // redundant fallback
-	
+
 	// Category-specific fields
 	defaultMapping.AddFieldMappingsAt("artist_name", textFieldMapping)
 	defaultMapping.AddFieldMappingsAt("artist_names", textFieldMapping)

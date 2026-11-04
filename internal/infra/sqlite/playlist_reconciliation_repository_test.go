@@ -29,6 +29,9 @@ func TestPlaylistMutationLWWIsDurableAndDeterministic(t *testing.T) {
 
 	db, err = NewDB(path, slog.Default())
 	require.NoError(t, err)
+	// The reopened handle must be released before t.TempDir removes the file: on
+	// Windows an open handle makes that cleanup fail and reports a bogus failure.
+	t.Cleanup(func() { _ = db.Close() })
 	won, err = NewPlaylistMutationLWW(db).Claim(context.Background(), "playlist", 99, "z", false)
 	require.NoError(t, err)
 	require.False(t, won, "DELETE watermark must survive restart")

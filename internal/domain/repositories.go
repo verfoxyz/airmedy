@@ -15,6 +15,11 @@ type TrackRepository interface {
 	GetByGenreID(ctx context.Context, genreID string) ([]*TrackDTO, error)
 	GetByComposerID(ctx context.Context, composerID string) ([]*TrackDTO, error)
 	GetAll(ctx context.Context) ([]*TrackDTO, error)
+	// FindPlayableByDuration returns ready, on-disk tracks whose duration is
+	// within [minDuration, maxDuration] seconds. It is a coarse candidate query:
+	// the caller refines with title/artist, so no title index is needed. Remote
+	// rows are excluded because they carry no file to play.
+	FindPlayableByDuration(ctx context.Context, minDuration, maxDuration int) ([]*TrackDTO, error)
 	GetPaginated(ctx context.Context, offset, limit int) ([]*TrackDTO, error)
 	GetByIDs(ctx context.Context, ids []string) ([]*TrackDTO, error)
 	Count(ctx context.Context) (int, error)

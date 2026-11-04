@@ -1,17 +1,20 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onActivated } from 'vue'
+import { computed, ref, watch, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { Disc, Music, Search, User, Library, PenTool } from '@lucide/vue'
 import LazyImg from '@/components/LazyImg.vue'
-import { Input } from '@airmedy/ui'
+import { Input, TabSwitcher } from '@airmedy/ui'
 import AlbumCard from '@/components/AlbumCard.vue'
 import ArtistCard from '@/components/ArtistCard.vue'
 import PlaylistCard from '@/components/PlaylistCard.vue'
 import ComposerCard from '@/components/ComposerCard.vue'
 import SearchSection from '@/components/SearchSection.vue'
+import CatalogResults from '@/components/catalog/CatalogResults.vue'
 import TrackContextMenu from '@/components/TrackContextMenu.vue'
 import ContextMenu from '@/components/ContextMenu.vue'
 import { useSearchStore } from '@/stores/search'
+import { useCatalogStore } from '@/stores/catalog'
 import { usePlayerStore } from '@/stores/player'
 import { useContextMenu } from '@/composables/useContextMenu'
 import { useAlbumContextMenu } from '@/composables/useAlbumContextMenu'
@@ -20,7 +23,9 @@ import type { AlbumDTO, TrackDTO } from '../../bindings/airmedy/internal/domain/
 import { buildArtworkUrl } from '@airmedy/utils'
 
 const router = useRouter()
+const { t } = useI18n()
 const store = useSearchStore()
+const catalogStore = useCatalogStore()
 const playerStore = usePlayerStore()
 
 const inputValue = ref(store.query)
@@ -29,9 +34,51 @@ const trackContextMenu = ref<InstanceType<typeof TrackContextMenu> | null>(null)
 const albumContextMenu = useContextMenu()
 const { buildMenuItems: buildAlbumMenuItems } = useAlbumContextMenu()
 
+// The keyword drives whichever branch is on screen. Local results stay stored in
+// their own store, so switching back to them shows the last run instead of an
+// empty page, and the cloud store keeps its own rows the same way.
 watch(inputValue, (val) => {
+  if (catalogStore.mode === 'cloud') {
+    catalogStore.search(val)
+    return
+  }
   store.search(val)
 })
+
+const modeOptions = computed(() => [
+  { value: 'local', label: t('cloud_search.mode_local') },
+  { value: 'cloud', label: t('cloud_search.mode_cloud') },
+])
+
+function onModeChange(value: string | null) {
+  if (value !== 'local' && value !== 'cloud') return
+  catalogStore.setMode(value)
+  // Re-run the current keyword against the branch being entered, so the page
+  // never shows results from a different keyword than the one in the box.
+  if (value === 'cloud') {
+    catalogStore.search(inputValue.value)
+  } else {
+    store.search(inputValue.value)
+  }
+}
+
+function favoriteResult(row: import('../../bindings/airmedy/internal/infra/wails/models').CatalogRowDTO) {
+  void catalogStore.save(row, { favorite: true })
+}
+
+function addResultToPlaylist(
+  row: import('../../bindings/airmedy/internal/infra/wails/models').CatalogRowDTO,
+  playlistId: string,
+) {
+  void catalogStore.save(row, { playlistId })
+}
+
+/** The user asked for the provider's copy even though a local file matches. */
+function downloadResultAnyway(
+  row: import('../../bindings/airmedy/internal/infra/wails/models').CatalogRowDTO,
+) {
+  void catalogStore.save(row, { forceDownload: true })
+}
 
 // Search results are a stored response, not a live query. Re-run the current
 // query after metadata/import mutations; useLibrarySync defers this while the
@@ -90,7 +137,13 @@ const hasResults = () => hasTracks() || hasAlbums() || hasArtists() || hasPlayli
 <template>
   <div class="flex flex-col h-full overflow-hidden">
     <!-- Search bar -->
-    <div class="px-8 pt-8 pb-4 flex-shrink-0">
+    <div class="px-8 pt-8 pb-4 flex-shrink-0 space-y-3">
+      <TabSwitcher
+        :options="modeOptions"
+        :model-value="catalogStore.mode"
+        variant="label"
+        @update:model-value="onModeChange"
+      />
       <div class="relative max-w-xl">
         <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-subdued pointer-events-none" />
         <Input ref="searchInput" v-model="inputValue" :placeholder="$t('library.search_placeholder')" class="pl-10 pr-4" clearable />
@@ -99,6 +152,8 @@ const hasResults = () => hasTracks() || hasAlbums() || hasArtists() || hasPlayli
 
     <!-- Content area -->
     <div class="flex-1 overflow-y-auto px-8 pb-8 space-y-12 custom-scrollbar select-none">
+
+      <template v-if="catalogStore.mode === 'local'">
 
       <!-- Empty state (no query) -->
       <div v-if="!inputValue.trim()" class="flex flex-col items-center justify-center h-64 text-center">
@@ -196,6 +251,29 @@ const hasResults = () => hasTracks() || hasAlbums() || hasArtists() || hasPlayli
         </SearchSection>
 
       </div>
+
+      </template>
+
+      <!-- Cloud branch: sources, merged rows, states and paging (see
+           components/catalog/CatalogResults.vue). -->
+      <CatalogResults
+        v-else
+        :sources="catalogStore.sources"
+        :active-source="catalogStore.activeSource"
+        :rows="catalogStore.rows"
+        :failures="catalogStore.failures"
+        :has-more="catalogStore.hasMore"
+        :loading="catalogStore.loading"
+        :loading-more="catalogStore.loadingMore"
+        :error-kind="catalogStore.errorKind"
+        :action-error="catalogStore.actionError"
+        :has-query="catalogStore.hasQuery"
+        @update:source="catalogStore.setSource"
+        @load-more="catalogStore.loadMore"
+        @favorite="favoriteResult"
+        @add-to-playlist="addResultToPlaylist"
+        @force-download="downloadResultAnyway"
+      />
     </div>
 
     <TrackContextMenu ref="trackContextMenu" />

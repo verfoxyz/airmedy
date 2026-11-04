@@ -56,10 +56,12 @@ func TestLibraryService_AnalysisListener_FiresOnImportNotOnFavoriteToggle(t *tes
 		&mockSettingsRepo{},
 		&mockSyncStateRepo{version: currentMetadataSchemaVersion},
 		&mockMetadataExtractor{},
+		&stubDurationProbe{},
 		&mockMetadataWriter{},
 		&mockArtworkCache{},
 		&mockSearchService{},
 		&mockTxManager{},
+		&mockDownloadJobs{},
 		nil,
 		slog.Default(),
 	)

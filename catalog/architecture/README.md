@@ -21,7 +21,7 @@ flowchart TB
     end
 
     subgraph APP["internal/app — Application Services"]
-        AppSvc["library/ · player/ · playlist/ · moodradio/ · eq/ · lyrics/ · config/ · i18n/ · updater/<br/>lastfm/ · remoteserver/ · pairing/ · mobilesync/ · appsettings/ · singleinstance/<br/><i>orchestrates domain entities + ports; framework-agnostic</i>"]
+        AppSvc["library/ · player/ · playlist/ · moodradio/ · eq/ · lyrics/ · config/ · i18n/ · updater/<br/>lastfm/ · remoteserver/ · pairing/ · mobilesync/ · appsettings/ · singleinstance/<br/>plugin/ · pluginkv/ · catalog/ · stream/ · download/ · lx/<br/><i>orchestrates domain entities + ports; framework-agnostic</i>"]
     end
 
     subgraph DOMAIN["internal/domain — Core"]

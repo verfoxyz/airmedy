@@ -1,6 +1,10 @@
 package domain
 
-import "context"
+import (
+	"context"
+	"errors"
+	"time"
+)
 
 // PlaybackState represents the current state of the audio player
 type PlaybackState string
@@ -188,6 +192,15 @@ type LoudnessAnalyzer interface {
 	Analyze(ctx context.Context, path string) (*TrackFeatures, error)
 }
 
+// MediaDurationProbe reports an audio file's duration by reading its
+// container/stream header without decoding. It is the authoritative duration
+// source: a tag library can misread raw or malformed containers, reporting
+// either a near-zero value or several times the real length. Implemented by the
+// in-process ffmpeg adapter and injected into the library and download services.
+type MediaDurationProbe interface {
+	Probe(ctx context.Context, path string) (time.Duration, error)
+}
+
 // AnalysisComponents identifies independently versioned raw-analysis sources.
 // A track can be current for one source while still needing the other.
 type AnalysisComponents uint8
@@ -211,6 +224,13 @@ type SleepInhibitor interface {
 }
 
 // AudioPlayer is the interface for platform-native audio playback engines
+// ErrTrackNotAvailable is returned when a track has no audio on disk yet: its
+// path is still the virtual remote:// reference of an undownloaded track.
+//
+// It is a typed error rather than a decoder failure so the UI can say "download
+// finishes first" instead of surfacing a backend code.
+var ErrTrackNotAvailable = errors.New("track is not downloaded yet")
+
 type AudioPlayer interface {
 	// Control operations
 	Play() error

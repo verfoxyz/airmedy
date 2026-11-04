@@ -38,9 +38,9 @@ type RemoteServerStatus struct {
 func (s *RemoteServerService) GetStatus(ctx context.Context) RemoteServerStatus {
 	settings, _ := s.svc.GetSettings(ctx)
 	return RemoteServerStatus{
-		Enabled:  settings != nil && settings.RemoteServerEnabled,
-		Running:  s.svc.IsRunning(),
-		Port:     s.svc.GetPort(),
+		Enabled: settings != nil && settings.RemoteServerEnabled,
+		Running: s.svc.IsRunning(),
+		Port:    s.svc.GetPort(),
 		Password: func() string {
 			if settings != nil {
 				return settings.RemoteServerPassword
