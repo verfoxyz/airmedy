@@ -551,6 +551,7 @@
     "unknown": "Không xác định",
     "select_item": "Chọn một mục để xem chi tiết",
     "search_placeholder": "Tìm kiếm trong thư viện",
+    "refresh_search": "Làm mới tìm kiếm",
     "search_description": "Tìm bài hát, album và nghệ sĩ",
     "try_different_search": "Thử một từ khóa tìm kiếm khác",
     "play_count": "Số lần phát",

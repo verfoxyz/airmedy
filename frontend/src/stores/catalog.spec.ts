@@ -97,6 +97,48 @@ describe('catalog store', () => {
     expect(store.loading).toBe(false)
   })
 
+  it('restores the loaded page when re-entering with the same keyword', async () => {
+    api.SearchCatalog.mockResolvedValue(page([row('1'), row('2')], true))
+    const store = useCatalogStore()
+
+    store.search('周杰伦')
+    await vi.advanceTimersByTimeAsync(300)
+    expect(api.SearchCatalog).toHaveBeenCalledTimes(1)
+    expect(store.rows).toHaveLength(2)
+
+    // Returning to cloud with the same keyword must keep rows, hasMore and the
+    // source filter rather than fetching page 1 again.
+    store.activeSource = 'wy'
+    store.setMode('local')
+    store.ensureSearch('周杰伦')
+    await vi.advanceTimersByTimeAsync(300)
+
+    expect(api.SearchCatalog).toHaveBeenCalledTimes(1)
+    expect(store.rows).toHaveLength(2)
+    expect(store.hasMore).toBe(true)
+    expect(store.activeSource).toBe('wy')
+  })
+
+  it('searches a changed keyword instead of restoring the old page', async () => {
+    api.SearchCatalog.mockResolvedValue(page([row('1')]))
+    const store = useCatalogStore()
+    store.search('周杰伦')
+    await vi.advanceTimersByTimeAsync(300)
+
+    api.SearchCatalog.mockResolvedValue(page([row('9')]))
+    store.ensureSearch('晴天')
+    await vi.advanceTimersByTimeAsync(300)
+
+    expect(api.SearchCatalog).toHaveBeenCalledTimes(2)
+    expect(api.SearchCatalog).toHaveBeenLastCalledWith({
+      query: '晴天',
+      sources: [],
+      limit: 50,
+      offset: 0,
+    })
+    expect(store.rows).toHaveLength(1)
+  })
+
   it('appends the next page at the current offset', async () => {
     api.SearchCatalog.mockResolvedValueOnce(page([row('1')], true))
     api.SearchCatalog.mockResolvedValueOnce(page([row('2')], false))

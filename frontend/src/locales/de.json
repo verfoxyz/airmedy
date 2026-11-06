@@ -551,6 +551,7 @@
     "unknown": "Unbekannt",
     "select_item": "Wähle ein Element aus, um Details anzuzeigen",
     "search_placeholder": "Mediathek durchsuchen",
+    "refresh_search": "Suche aktualisieren",
     "search_description": "Titel, Alben und Künstler finden",
     "try_different_search": "Versuche es mit einem anderen Suchbegriff",
     "play_count": "Wiedergaben",

@@ -1,88 +1,132 @@
-# 计划：聚合搜索加入 tx / kg
+# 计划：kg 搜索源 + 多源选择与本地排行
 
 > 状态：待开工
-> 前置：`plugins/wy` 已能搜 wy，且行契约、封面、歌词链路都已通（见提交 `2d50855`）。
+> 先行项：**仅 kg**（wy 已可用）；tx 等源沿用同一模板后续追加。
 > 硬约束：AI 不做图形化测试；搜索质量由人工确认。
 
 ---
 
 ## 1. 目标
 
-把一个源（wy）扩成三个源（wy + **tx** + **kg**）。插件仍是一个，显示名「聚合搜索」，
-`describe.sources` 从 `["wy"]` 变成 `["wy","tx","kg"]`，设置页的源按钮自动多出两个。
+两件事一起做：
 
-**对外一律用 id**：`wy` / `tx` / `kg`，不写平台全名。展示名放在插件自己的 locale 里
-（`wy → 网易云`、`tx → QQ音乐`、`kg → 酷狗`），宿主只渲染它给的字符串。
+1. 聚合搜索插件新增 **kg** 源（搜索 + 关键词联想）；
+2. 搜索框增加**源多选**：选一个源就查一个；选多个源时由**宿主本地排行**、打源标签、
+   按插件设置的上限截断显示。
 
 ---
 
-## 2. 每个源要做什么
+## 2. kg 源的实测结论（2026-11 实机）
 
-三件事缺一不可：**搜索**（列表）、**封面**（缩略图 + 大图）、**歌词**（`lyric.fetch`）。
+| 项 | 结论 |
+|---|---|
+| 搜索接口 | `http://mobilecdn.kugou.com/api/v3/search/song?format=json&keyword=…&page=1&pagesize=20` |
+| **协议** | **只能 http**：https 版本连接超时（`000`），http 返回 200 |
+| 字段 | `data.info[]`：`songname`、`singername`、`album_name`、`album_id`、`duration`（**秒**）、`hash`、`audio_id` |
+| **封面** | **没有**：`imgurl` 为 null；试过 `stdmusic/{album_id}.jpg`、`soft/collection/{album_id}.jpg`、`stdmusic/{hash}.jpg` 三种拼法，**都返回同一张默认占位图**（伪造 id 也一样） |
+| 联想接口 | `https://searchtip.kugou.com/getSearchTip?MusicTipCount=10&keyword=…`，需要 `Referer: https://www.kugou.com/`；返回 `data[0].RecordDatas[].HintInfo` |
+| 时长 | 秒，无需换算 |
 
-| 源 | 搜索接口 | 关键差异 | 估时 |
+**首版取舍**：kg 行**没有封面**（返回空 `cover_url`），前端显示占位图；不为封面额外发详情请求。
+播放地址（`hash` → 解析）不在本轮，kg 行先按"无解析源"置灰。
+
+---
+
+## 3. 多源选择（结果页）与候选抽屉（搜索框）是两套
+
+| 位置 | 控制什么 | 形态 |
+|---|---|---|
+| **结果页源 chips** | 正式搜索查哪些源 | 现有形态扩展：`全部 / wy / kg`；选「全部」即多源 |
+| **搜索框下拉抽屉** | 候选问哪些源 | 多选，见 `search-candidates-plan.md` §3 |
+
+两者**不联动**、各自持久化：在候选抽屉里取消 kg，不影响结果页仍在查 kg。
+
+结果页规则：
+
+- `全部` = 所有可用源 → 走 §4 的本地排行；
+- 单选某个源 → 保持该源自己的顺序，不重排；
+- 行内显示**源标签**（`wy` / `kg`），颜色用主题 token，不用平台品牌色。
+
+---
+
+## 4. 多源时的排行（宿主侧）
+
+选多个源时**不做插件内融合**——插件各返回自己的行，宿主合并后排序：
+
+1. 对每行计算**匹配度**：`title` 与查询词的相似度（编辑距离归一化），艺人命中加权；
+2. 按匹配度降序；同分时按源在设置里的顺序；
+3. 同一曲目（同 `title` + 同 `artists`）跨源重复时保留匹配度最高的一条，标签显示多个源；
+4. 截断到**插件设置的上限**（`max_display`，默认 50）。
+
+> 选**单个源**时不做重排，保持该源自己的顺序——这是用户对该源的预期。
+
+---
+
+## 5. 设置项
+
+| 键 | 类型 | 默认 | 作用 |
 |---|---|---|---|
-| wy | 已有（`cloudsearch/pc`） | — | 已完成 |
-| **tx** | `c.y.qq.com/soso/fcgi-bin/search_for_qq_cp`（或 `smartbox_new`） | 需要 `Referer: y.qq.com`；字段是 `data.song.list[]`，时长 `interval`（秒）；封面在 `albummid` 拼 URL，**没有完整 URL**，要按 `https://y.gtimg.cn/music/photo_new/T002R500x500M000{albummid}.jpg` 拼 | 1–1.5 天 |
-| **kg** | `mobilecdn.kugou.com/api/v3/search/song` 或 `complexsearch` | 需要签名与 UA 伪装；字段 `data.info[]`，时长 `duration`（秒）；封面 `album_id` + `imgurl` 拼 `https://imge.kugou.com/stdmusic/{size}/{hash}.jpg` | 1–1.5 天 |
+| `max_display` | **number** | 50 | 多源合并后最多显示多少行 |
+| `suggest_in_local` | switch | 关 | 本地搜索是否也取云端候选（见候选计划） |
+| `max_suggestions` | **number** | 5 | 候选下拉最多显示几条 |
 
-每个源都要实现：
-
-1. `search(query, page, limit, includeCover)` → 统一 row：`{ provider, external_id, title, artists[], album, duration, cover_url(100), cover_url_large(500) }`；
-2. `lyric.fetch(provider, external_id, ...)` → `{ lyric, tlyric?, source, synced }`，**必须校验时间轴**；
-3. 失败分类：`unavailable` / `rate_limited` / `auth`，与现有 wy 一致。
+> **依赖**：现有插件设置只支持 `switch`。本轮扩展 `type: "number"`（min/max/step），
+> 两个数字设置共用同一次扩。
 
 ---
 
-## 3. 宿主侧改动（很小）
+## 6. 宿主改动
 
 | 点 | 现状 | 需要 |
 |---|---|---|
-| 扇出 | `catalog.Service` 已按 `describe.sources` 调用插件 | 不用改：插件自己返回多个源的 row，宿主按 `provider` 去重 |
-| 可下载性 | 已有 `downloadable` + `blocked_reason` | 不用改：tx/kg 没有解析源时自动置灰，提示"需要安装支持 tx 的源" |
-| 名称展示 | 行里显示 `provider` 原值 | 改为插件上报的 `source name`（`describe.sources[].name`），没有就回落 id |
-| 设置页 | 源标签取 manifest `sources` | 自动生效，无需改 |
-
-**唯一要确认的契约**：`describe.sources` 的每一项要带 `id` 与 `name`，宿主用它渲染按钮与行内"艺人 · 源"。
+| 搜索请求 | 固定查全部源 | 增加 `sources: string[]` 参数，只查选中的源 |
+| 融合 | 插件内部或简单拼接 | 多源时走 §4 的本地排行；单源直通 |
+| 标签 | 行内有 `provider` | DTO 增加 `sources: string[]`（去重后的来源列表） |
+| 上限 | 无 | 多源时按 `max_display` 截断 |
+| 联想 | 无 | 见 `search-candidates-plan.md`，kg 提供 `HintInfo` 关键词 |
 
 ---
 
-## 4. 工作分解
+## 7. 工作分解
 
 | # | 任务 | 估时 |
 |---|---|---|
-| A1 | 插件骨架支持多源：`sources` 表 + 按 provider 分发 search/lyric | 0.5 天 |
-| A2 | tx 源：搜索、封面 URL 拼接、歌词 | 1–1.5 天 |
-| A3 | kg 源：搜索、签名/UA、封面、歌词 | 1–1.5 天 |
-| A4 | 宿主：行内显示源名（`describe.sources[].name`） | 0.5 天 |
-| A5 | 测试：每源一个真实接口回归 + 契约测试（多源扇出、去重、失败隔离） | 0.5 天 |
+| A1 | 插件：kg 搜索源（http、字段映射、错误分类） | 1 天 |
+| A2 | 插件：kg 联想关键词 | 0.5 天 |
+| A3 | 宿主：`sources` 参数、多源扇出 | 0.5 天 |
+| A4 | 宿主：匹配度排行、去重合并、标签透传、`max_display` 截断 | 1 天 |
+| A5 | 前端：源多选抽屉 + 行内源标签 | 1 天 |
+| A6 | 设置：`max_display` + **number 类型扩展** | 1 天 |
+| A7 | 测试与文档（插件解析、宿主排行、契约） | 1 天 |
 
-**合计约 3.5–4.5 天。** 之后每加一个源（kw/mg）沿用同一模板，约 1–1.5 天。
+**合计约 5.5 天**（不含 tx；tx 后续约 1–1.5 天）。
 
 ---
 
-## 5. 验收
+## 8. 验收
 
 **自动**
 
-- 插件测试：三源各自映射正确（含时长单位、封面 URL 拼接）、单源失败不影响其它源；
-- 宿主契约：`describe.sources` 三项都能渲染成按钮；同一首歌出现在两源时按 `(provider, external_id)` 去重；
-- 歌词：三源都能返回带时间轴的歌词，翻译可缺省。
+- 插件：kg 解析（秒级时长、空 `imgurl` → 空封面、错误分类）、联想解析；
+- 宿主：单源不重排；多源按匹配度排序且同分按源顺序；跨源同曲去重并合并标签；`max_display` 生效；
+- 契约：`sources` 参数为空或非法时回落到默认源。
 
 **人工（由人做，AI 不做）**
 
-1. 云端搜索"周杰伦"：`全部` 下三个源各有结果，按钮为「全部 / wy / tx / kg」；
-2. 行内显示"艺人 · 源名"（源名来自插件，不是 id）；
-3. tx/kg 的行在没装解析源时置灰，且说明原因；
-4. 装上解析源后能下载、能出封面与歌词。
+1. 只选 wy：结果与现在一致（顺序不变）；
+2. wy + kg 同选：结果混排，每行有源标签，明显相关的排前面；
+3. 把上限改成 10：结果只显示 10 行；
+4. kg 行显示占位封面（无图），且下载按钮置灰并说明原因；
+5. 重启后源选择保留。
 
 ---
 
-## 6. 风险
+## 9. 风险
 
 | 风险 | 应对 |
 |---|---|
-| tx/kg 接口有签名/风控 | 每源独立实现，失败只影响自己；接口变更是常态，预留维护时间 |
-| 封面 URL 靠拼接 | 拼接规则写进插件并加测试；拿不到就返回空，前端已回退占位图 |
-| 一个插件崩了三个源全挂 | 已知取舍（见 `aggregate-search-plugin-plan.md` 早期讨论）；进程崩溃由宿主重启预算兜底 |
-| 时长单位不统一 | 统一到秒：kg `duration` 已是秒、tx `interval` 是秒、wy `dt` 是毫秒 |
+| kg 只有 http | 插件内固定 http；不依赖 https |
+| 无封面影响观感 | 占位图已就绪；后续可用详情接口补（本轮不做） |
+| 排行口径主观 | 规则写死并加测试；不引入模型或外部服务 |
+| 多源结果过多 | `max_display` + 匹配度截断 |
+| 数字设置类型缺失 | 与候选计划共用一次类型扩展 |

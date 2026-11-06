@@ -49,6 +49,18 @@ export const useSearchStore = defineStore('search', () => {
     }, 300)
   }
 
+  /**
+   * ensureSearch runs the query only when the stored state cannot answer it.
+   * Entering the search page with the same keyword and a non-empty result set
+   * must not fire a request; a changed keyword (or a previous failure) still
+   * does. A stale result set of a different query is replaced normally.
+   */
+  function ensureSearch(q: string) {
+    const next = q.trim()
+    if (next === query.value.trim() && results.value !== null) return
+    void search(q)
+  }
+
   // Re-run the existing query after a library mutation without resetting the
   // visible results to a loading skeleton. It also supersedes any pending
   // debounced input request so an older response cannot overwrite fresh data.
@@ -74,5 +86,5 @@ export const useSearchStore = defineStore('search', () => {
     requestVersion++
   }
 
-  return { query, results, loading, search, refresh, clear }
+  return { query, results, loading, search, ensureSearch, refresh, clear }
 })

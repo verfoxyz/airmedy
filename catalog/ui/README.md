@@ -121,10 +121,19 @@ branches are separate stores because their result models differ:
 | Local | `stores/search.ts` | library entities (`tracks`, `albums`, artists, playlists, composers) |
 | Cloud | `stores/catalog.ts` | `(provider, externalId)` hits with a per-row state |
 
-The keyword drives whichever branch is on screen; switching modes re-runs the
-current keyword against the branch being entered, so neither branch can show
-results for a different keyword. Local results survive a switch because their
-store keeps its response.
+Both stores are session-scoped and keep what the user already loaded: returning to
+`/search` or switching local/cloud with an unchanged keyword restores the existing
+rows instead of re-querying. `ensureSearch(keyword)` only starts a request when the
+keyword changed, no result exists yet, or an empty cloud page needs retrying; the
+cloud store keeps `rows`, the paging offset and the active source. Nothing survives
+an app restart. A refresh button beside the search box forces the current branch to
+re-query: local refreshes silently, cloud restarts from page 1.
+
+The keyword drives whichever branch is on screen; switching modes applies the
+current keyword to the branch being entered, but only queries when that branch
+cannot answer it from its stored state, so neither branch can show results for a
+different keyword. Both branches survive a switch because their stores keep the
+response.
 
 `components/catalog/CatalogResults.vue` is the cloud branch (presentational; the
 store does search, paging and saving): a source bar (`全部` plus one button per
@@ -191,10 +200,11 @@ when `onActivated` runs. This preserves scroll/filter state and avoids fetching
 data for routes the user cannot see. `library:track-updated`, `library:updated`,
 and non-background `library:sync-finished` all use this behavior.
 
-`SearchView` uses the same invalidation flow. Its Pinia store retains a search
-response, so `useLibrarySync` calls `searchStore.refresh()` for a non-empty
-query. Refresh bypasses typing debounce, keeps the existing results visible,
-and supersedes any pending older request.
+`SearchView` uses the same invalidation flow in deferred mode: a library change
+marks its results stale but does not replace them while the user is reading. The
+stale set refreshes silently when the cached view is activated again, or when the
+refresh button is pressed. Refresh bypasses typing debounce, keeps the existing
+results visible, and supersedes any pending older request.
 
 `HomeOverview` also uses `useLibrarySync` to silently reload its listening
 carousels after library mutations. This prevents a cached home track from

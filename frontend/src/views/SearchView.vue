@@ -2,9 +2,9 @@
 import { computed, ref, watch, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Disc, Music, Search, User, Library, PenTool } from '@lucide/vue'
+import { Disc, Music, RefreshCw, Search, User, Library, PenTool } from '@lucide/vue'
 import LazyImg from '@/components/LazyImg.vue'
-import { Input, TabSwitcher } from '@airmedy/ui'
+import { IconButton, Input, TabSwitcher } from '@airmedy/ui'
 import AlbumCard from '@/components/AlbumCard.vue'
 import ArtistCard from '@/components/ArtistCard.vue'
 import PlaylistCard from '@/components/PlaylistCard.vue'
@@ -53,12 +53,12 @@ const modeOptions = computed(() => [
 function onModeChange(value: string | null) {
   if (value !== 'local' && value !== 'cloud') return
   catalogStore.setMode(value)
-  // Re-run the current keyword against the branch being entered, so the page
-  // never shows results from a different keyword than the one in the box.
+  // Restore the branch being entered only when it cannot answer the current
+  // keyword itself; an unchanged query with stored rows must not re-query.
   if (value === 'cloud') {
-    catalogStore.search(inputValue.value)
+    catalogStore.ensureSearch(inputValue.value)
   } else {
-    store.search(inputValue.value)
+    store.ensureSearch(inputValue.value)
   }
 }
 
@@ -80,12 +80,23 @@ function downloadResultAnyway(
   void catalogStore.save(row, { forceDownload: true })
 }
 
-// Search results are a stored response, not a live query. Re-run the current
-// query after metadata/import mutations; useLibrarySync defers this while the
-// route is cached by KeepAlive and refreshes when it becomes visible again.
-useLibrarySync(() => {
+// Search results are a stored response, not a live query. A library change only
+// marks them stale: re-running the same query while the view is visible would
+// replace what the user is reading. The owner refreshes on activation or when
+// the refresh button is pressed.
+const librarySync = useLibrarySync(() => {
   void store.refresh()
-})
+}, { defer: true })
+
+/** refreshResults re-runs the current branch on explicit user request. */
+function refreshResults() {
+  if (!inputValue.value.trim()) return
+  if (catalogStore.mode === 'cloud') {
+    void catalogStore.search(inputValue.value)
+    return
+  }
+  librarySync.refresh()
+}
 
 onMounted(() => {
   searchInput.value?.focus()
@@ -93,6 +104,14 @@ onMounted(() => {
 
 onActivated(() => {
   searchInput.value?.focus()
+  // Restoring a cached tab must not re-query an unchanged keyword. A stale
+  // result set is refreshed silently; changed input goes through the normal path.
+  if (librarySync.stale.value) librarySync.refresh()
+  if (catalogStore.mode === 'cloud') {
+    catalogStore.ensureSearch(inputValue.value)
+  } else {
+    store.ensureSearch(inputValue.value)
+  }
 })
 
 function navigateToAlbum(id?: string) {
@@ -144,9 +163,19 @@ const hasResults = () => hasTracks() || hasAlbums() || hasArtists() || hasPlayli
         variant="label"
         @update:model-value="onModeChange"
       />
-      <div class="relative max-w-xl">
-        <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-subdued pointer-events-none" />
-        <Input ref="searchInput" v-model="inputValue" :placeholder="$t('library.search_placeholder')" class="pl-10 pr-4" clearable />
+      <div class="flex max-w-xl items-center gap-2">
+        <div class="relative flex-1">
+          <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-subdued pointer-events-none" />
+          <Input ref="searchInput" v-model="inputValue" :placeholder="$t('library.search_placeholder')" class="pl-10 pr-4" clearable />
+        </div>
+        <IconButton
+          data-test="search-refresh"
+          :aria-label="$t('library.refresh_search')"
+          :title="$t('library.refresh_search')"
+          @click="refreshResults"
+        >
+          <RefreshCw class="w-4 h-4" aria-hidden="true" />
+        </IconButton>
       </div>
     </div>
 

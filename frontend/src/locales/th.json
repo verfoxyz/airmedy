@@ -551,6 +551,7 @@
     "unknown": "ไม่ทราบ",
     "select_item": "เลือกรายการเพื่อดูรายละเอียด",
     "search_placeholder": "ค้นหาในคลังเพลงของคุณ",
+    "refresh_search": "รีเฟรชการค้นหา",
     "search_description": "ค้นหาเพลง อัลบั้ม และศิลปิน",
     "try_different_search": "ลองใช้คำค้นหาอื่น",
     "play_count": "จำนวนครั้งที่เล่น",

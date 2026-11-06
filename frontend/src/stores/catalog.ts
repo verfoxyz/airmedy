@@ -137,6 +137,22 @@ export const useCatalogStore = defineStore('catalog', () => {
     }, SEARCH_DEBOUNCE_MS)
   }
 
+  /**
+   * ensureSearch restores the stored page instead of re-querying it.
+   *
+   * Switching modes or returning to the page with the same keyword keeps the
+   * rows, paging position, source and `hasMore` the user already loaded. A
+   * changed keyword, an empty result set or an in-flight request still goes
+   * through `search`.
+   */
+  function ensureSearch(text: string) {
+    const next = text.trim()
+    if (next === query.value.trim()) {
+      if (!next || loading.value || loadingMore.value || rows.value.length > 0) return
+    }
+    search(text)
+  }
+
   /** setSource switches the source filter and re-runs immediately (no debounce). */
   function setSource(sourceId: string) {
     activeSource.value = sourceId
@@ -313,6 +329,7 @@ export const useCatalogStore = defineStore('catalog', () => {
     setMode,
     setSource,
     search,
+    ensureSearch,
     loadMore,
     save,
     clear,

@@ -34,6 +34,18 @@ describe('useLibrarySync', () => {
     setup: () => () => h(KeepAlive, null, [show.value ? h(Probe) : null]),
   })
 
+  let deferredSync: ReturnType<typeof useLibrarySync> | null = null
+  const DeferredProbe = defineComponent({
+    setup() {
+      deferredSync = useLibrarySync(reload, { defer: true })
+      return () => h('div')
+    },
+  })
+
+  const DeferredHost = defineComponent({
+    setup: () => () => h(KeepAlive, null, [show.value ? h(DeferredProbe) : null]),
+  })
+
   beforeEach(() => {
     vi.useFakeTimers()
     handlers.clear()
@@ -41,6 +53,7 @@ describe('useLibrarySync', () => {
     show.value = true
     version.value = 0
     relevant.value = false
+    deferredSync = null
   })
 
   afterEach(() => {
@@ -144,4 +157,37 @@ describe('useLibrarySync', () => {
     expect(reload).not.toHaveBeenCalled()
   })
 
+  it('marks a deferred view stale without reloading it', async () => {
+    const wrapper = mount(DeferredHost)
+    await nextTick()
+
+    handlers.get('library:updated')?.({})
+    await vi.advanceTimersByTimeAsync(100)
+
+    expect(reload).not.toHaveBeenCalled()
+    expect(deferredSync?.stale.value).toBe(true)
+
+    deferredSync?.refresh()
+    await vi.advanceTimersByTimeAsync(50)
+
+    expect(reload).toHaveBeenCalledTimes(1)
+    expect(deferredSync?.stale.value).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('does not auto-reload a deferred view when it is activated', async () => {
+    const wrapper = mount(DeferredHost)
+    await nextTick()
+
+    show.value = false
+    await nextTick()
+    handlers.get('library:track-updated')?.({})
+    show.value = true
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(100)
+
+    expect(reload).not.toHaveBeenCalled()
+    expect(deferredSync?.stale.value).toBe(true)
+    wrapper.unmount()
+  })
 })

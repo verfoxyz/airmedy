@@ -551,6 +551,7 @@
     "unknown": "Desconhecido",
     "select_item": "Selecione um item para ver detalhes",
     "search_placeholder": "Buscar em sua biblioteca",
+    "refresh_search": "Atualizar pesquisa",
     "search_description": "Encontre faixas, álbuns e artistas",
     "try_different_search": "Tente um termo de busca diferente",
     "play_count": "Reproduções",

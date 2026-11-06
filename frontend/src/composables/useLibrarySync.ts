@@ -1,4 +1,4 @@
-import { onActivated, onDeactivated, onMounted, onUnmounted, watch } from 'vue'
+import { onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Events } from '@wailsio/runtime'
 
 const RELOAD_DEBOUNCE_MS = 50
@@ -9,10 +9,21 @@ const RELOAD_DEBOUNCE_MS = 50
 // the paired `library:track-updated` / `library:updated` events coalesced.
 type ReloadReason = 'library' | 'favorite'
 
+export interface LibrarySyncOptions {
+  favorites?: { version: () => number; relevant: () => boolean }
+  // defer marks the view stale instead of reloading it while it is visible. The
+  // caller decides when to run `refresh()` (a manual button, or on activation),
+  // which is what keeps an unchanged search result from being replaced by a
+  // background re-query.
+  defer?: boolean
+}
+
 export function useLibrarySync(
   reloadFn: (reason: ReloadReason) => void | Promise<void>,
-  options: { favorites?: { version: () => number; relevant: () => boolean } } = {},
+  options: LibrarySyncOptions = {},
 ) {
+  const defer = options.defer === true
+  const stale = ref(false)
   let offSyncFinished: (() => void) | null = null
   let offLibraryUpdated: (() => void) | null = null
   let offTrackUpdated: (() => void) | null = null
@@ -32,6 +43,7 @@ export function useLibrarySync(
       running = true
       try {
         await reloadFn(reason)
+        stale.value = false
       } catch (error) {
         console.error('Failed to refresh library view', error)
       } finally {
@@ -44,9 +56,21 @@ export function useLibrarySync(
   const invalidate = (reason: ReloadReason) => {
     // Metadata changes require the broader refresh when both arrive together.
     pending = pending === 'library' ? pending : reason
-    scheduleReload()
+    stale.value = true
+    if (!defer) scheduleReload()
   }
   const handleLibraryChange = () => invalidate('library')
+
+  const refresh = () => {
+    if (disposed) return
+    pending = 'library'
+    stale.value = true
+    scheduleReload()
+  }
+
+  const clearStale = () => {
+    stale.value = false
+  }
 
   if (options.favorites) {
     const { version, relevant } = options.favorites
@@ -75,7 +99,8 @@ export function useLibrarySync(
 
   onActivated(() => {
     isActive = true
-    scheduleReload()
+    // A deferred view is reloaded by its owner, never by the composable.
+    if (!defer) scheduleReload()
   })
 
   onDeactivated(() => {
@@ -93,5 +118,5 @@ export function useLibrarySync(
     offMobileSyncUpdated?.()
   })
 
-  return { invalidate }
+  return { invalidate, stale, refresh, clearStale }
 }

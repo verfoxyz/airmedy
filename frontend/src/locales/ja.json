@@ -551,6 +551,7 @@
     "unknown": "不明",
     "select_item": "項目を選択して詳細を表示",
     "search_placeholder": "ライブラリを検索",
+    "refresh_search": "検索を更新",
     "search_description": "トラック、アルバム、アーティストを探す",
     "try_different_search": "別の検索語を試してください",
     "play_count": "再生回数",
