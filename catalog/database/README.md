@@ -124,6 +124,7 @@ SQLite database managed via `golang-migrate` for schema versioning and `sqlx` fo
 | 000082 | `plugin_kv.up.sql` | Add `plugin_kv(plugin_id, key, value, updated_at)` with a composite primary key on `(plugin_id, key)`, the only persistence a plugin has (`storage.*`). `value` is opaque TEXT: the plugin's own JSON, never parsed by the host. Limits (64 KiB per value, 128-byte keys, 256 keys per plugin) are enforced in `app/pluginkv` rather than by CHECK constraints, so raising one needs no migration. Down drops the table |
 | 000086 | `download_jobs_keep_history.up.sql` | Rebuild `download_jobs` to drop the `track_id → tracks(id) ON DELETE CASCADE` FK. Deleting a track (or folding a remote row into the imported one) must not erase its download history; `DeleteByTrack` removes jobs explicitly when the user deletes a file. `playlist_id` keeps `ON DELETE SET NULL`, and the two indexes are recreated. Down restores the FK and copies only rows whose track still exists |
 | 000087 | `track_raw_album_name.up.sql` | Add `tracks.raw_album_name TEXT NOT NULL DEFAULT ''`. A remote row has no album entity, so this is the only place the search result's album name can live until the downloaded file is tagged with it. Down drops the column |
+| 000088 | `lyric_translation.up.sql` | Add `lyrics.translation_content/translation_source` so a provider's `tlyric` is stored apart from the original instead of concatenated, and `mobile_sync_lyric_cache` keeps the translation in the cached snapshot. Add `app_settings.lyrics_secondary_mode TEXT NOT NULL DEFAULT 'translation'`; existing rows map `romanization_enabled=true → romanization`, `false → none`. The post-migration backfill in `NewDB` splits legacy `原文 ^ 翻译` rows once. Down drops every added column |
 
 `listeningRepository.GetListeningInsights` returns up to 50 entries for both Top Artists
 (ordered by listened seconds) and Top Tracks (ordered by play count, then listened
@@ -273,6 +274,8 @@ lyrics (
     track_id TEXT PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
     content TEXT NOT NULL,
     source TEXT,
+    translation_content TEXT NOT NULL DEFAULT '',  -- provider tlyric; rendered as the secondary line
+    translation_source TEXT NOT NULL DEFAULT '',
     meta_content TEXT NOT NULL DEFAULT '',
     meta_source TEXT NOT NULL DEFAULT '',
     created_at DATETIME,
@@ -333,6 +336,7 @@ app_settings (
     lyrics_folder_path TEXT NOT NULL DEFAULT '',
     lyrics_subfolder_enabled BOOLEAN NOT NULL DEFAULT 0,
     lyrics_subfolder_name TEXT NOT NULL DEFAULT '',
+    lyrics_secondary_mode TEXT NOT NULL DEFAULT 'translation',         -- none | translation | romanization (000088)
     artist_delimiters TEXT NOT NULL DEFAULT '[";","\\\\",","]',        -- JSON array; empty [] = no splitting
     album_artist_delimiters TEXT NOT NULL DEFAULT '[";","\\\\",","]',  -- JSON array
     genre_delimiters TEXT NOT NULL DEFAULT '[";","\\\\",","]',         -- JSON array

@@ -483,6 +483,10 @@
     "romanization": "Romanizza",
     "romanization_loading": "Romanizzazione in corso…",
     "romanization_retry": "Romanizzazione non riuscita — riprova",
+    "lyrics_secondary": "Riga secondaria del testo",
+    "secondary_none": "Nessuna",
+    "secondary_translation": "Traduzione",
+    "secondary_romanization": "Romanizzazione",
     "romanization_hint": "Romanizzazione offline: cinese e coreano.",
     "romanization_mandarin": "I testi solo in caratteri Han usano il mandarino per impostazione predefinita. La lettura dei nomi può variare."
   },

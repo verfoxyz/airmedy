@@ -246,13 +246,40 @@ type SmartPlaylistConfig struct {
 
 // Lyric represents a music lyric
 type Lyric struct {
-	TrackID     string    `json:"track_id" db:"track_id"`
-	Content     string    `json:"content" db:"content"`
-	Source      string    `json:"source" db:"source"`
-	MetaContent string    `json:"meta_content" db:"meta_content"`
-	MetaSource  string    `json:"meta_source" db:"meta_source"`
-	CreatedAt   time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
+	TrackID string `json:"track_id" db:"track_id"`
+	Content string `json:"content" db:"content"`
+	Source  string `json:"source" db:"source"`
+	// TranslationContent is the provider's translated lyric body, stored apart
+	// from Content so the original always renders as the primary line and the
+	// translation as the secondary one. Empty means no translation.
+	TranslationContent string    `json:"translation_content" db:"translation_content"`
+	TranslationSource  string    `json:"translation_source" db:"translation_source"`
+	MetaContent        string    `json:"meta_content" db:"meta_content"`
+	MetaSource         string    `json:"meta_source" db:"meta_source"`
+	CreatedAt          time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at" db:"updated_at"`
+}
+
+// Lyrics secondary-line modes. The enum is persisted as
+// app_settings.lyrics_secondary_mode and replaces the old boolean romanization
+// toggle in the lyrics drawer.
+const (
+	LyricsSecondaryNone         = "none"
+	LyricsSecondaryTranslation  = "translation"
+	LyricsSecondaryRomanization = "romanization"
+)
+
+// NormalizeLyricsSecondaryMode maps a stored value onto the enum. An unknown
+// value falls back to none rather than silently choosing romanization.
+func NormalizeLyricsSecondaryMode(mode string) string {
+	switch mode {
+	case LyricsSecondaryTranslation, LyricsSecondaryRomanization:
+		return mode
+	case LyricsSecondaryNone:
+		return LyricsSecondaryNone
+	default:
+		return LyricsSecondaryNone
+	}
 }
 
 // Export errors: both are expected states a caller turns into a UI choice, not
@@ -267,15 +294,17 @@ var (
 
 // MobileSyncLyricCache stores the single lyric snapshot exported to mobile.
 // Fingerprint captures every desktop input which could change that snapshot;
-// Version changes only when the exported content/source changes.
+// Version changes only when the exported content/source/translation changes.
 type MobileSyncLyricCache struct {
-	TrackID     string    `db:"track_id"`
-	Content     string    `db:"content"`
-	Source      string    `db:"source"`
-	HasLyric    bool      `db:"has_lyric"`
-	Version     string    `db:"version"`
-	Fingerprint string    `db:"fingerprint"`
-	UpdatedAt   time.Time `db:"updated_at"`
+	TrackID            string    `db:"track_id"`
+	Content            string    `db:"content"`
+	Source             string    `db:"source"`
+	TranslationContent string    `db:"translation_content"`
+	TranslationSource  string    `db:"translation_source"`
+	HasLyric           bool      `db:"has_lyric"`
+	Version            string    `db:"version"`
+	Fingerprint        string    `db:"fingerprint"`
+	UpdatedAt          time.Time `db:"updated_at"`
 }
 
 // LyricsSearchResult represents a single search result from a lyrics provider
@@ -484,34 +513,38 @@ type FeaturePercentileRow struct {
 
 // AppSettings holds general application settings
 type AppSettings struct {
-	Language                 string  `json:"language"`
-	Theme                    string  `json:"theme"` // "system", "light", "dark"
-	PrimaryColor             string  `json:"primary_color"`
-	StartAtLogin             bool    `json:"start_at_login"`
-	ShowTrayIcon             bool    `json:"show_tray_icon"`
-	AutoCheckUpdate          bool    `json:"auto_check_update"`
-	LastFmUsername           string  `json:"lastfm_username"`
-	EQEnabled                bool    `json:"eq_enabled"`
-	EQPreamp                 float64 `json:"eq_preamp"`    // dB, global EQ gain, -12 to +12
-	StereoWidth              float64 `json:"stereo_width"` // 0=mono, 100=neutral, up to 200=wider
-	EnableLrclib             bool    `json:"enable_lrclib"`
-	EnableKugou              bool    `json:"enable_kugou"`
-	PreferLocalLyrics        bool    `json:"prefer_local_lyrics"`
-	LyricsFolderEnabled      bool    `json:"lyrics_folder_enabled"`
-	LyricsFolderPath         string  `json:"lyrics_folder_path"`
-	LyricsSubfolderEnabled   bool    `json:"lyrics_subfolder_enabled"`
-	LyricsSubfolderName      string  `json:"lyrics_subfolder_name"`
-	RomanizationEnabled      bool    `json:"romanization_enabled"`
-	UseOnlineArtistArtwork   bool    `json:"use_online_artist_artwork"`
-	PreferLocalArtistArtwork bool    `json:"prefer_local_artist_artwork"`
-	LastScanVersion          string  `json:"last_scan_version"`
-	PreventSleepWhilePlaying bool    `json:"prevent_sleep_while_playing"`
-	RemoteServerEnabled      bool    `json:"remote_server_enabled"`
-	RemoteServerPort         int     `json:"remote_server_port"`
-	RemoteServerPassword     string  `json:"remote_server_password"`
-	PairingMQTTPort          int     `json:"pairing_mqtt_port"`
-	ShowPlayerIndicator      bool    `json:"show_player_indicator"`
-	ShowPlayerFavoriteButton bool    `json:"show_player_favorite_button"`
+	Language               string  `json:"language"`
+	Theme                  string  `json:"theme"` // "system", "light", "dark"
+	PrimaryColor           string  `json:"primary_color"`
+	StartAtLogin           bool    `json:"start_at_login"`
+	ShowTrayIcon           bool    `json:"show_tray_icon"`
+	AutoCheckUpdate        bool    `json:"auto_check_update"`
+	LastFmUsername         string  `json:"lastfm_username"`
+	EQEnabled              bool    `json:"eq_enabled"`
+	EQPreamp               float64 `json:"eq_preamp"`    // dB, global EQ gain, -12 to +12
+	StereoWidth            float64 `json:"stereo_width"` // 0=mono, 100=neutral, up to 200=wider
+	EnableLrclib           bool    `json:"enable_lrclib"`
+	EnableKugou            bool    `json:"enable_kugou"`
+	PreferLocalLyrics      bool    `json:"prefer_local_lyrics"`
+	LyricsFolderEnabled    bool    `json:"lyrics_folder_enabled"`
+	LyricsFolderPath       string  `json:"lyrics_folder_path"`
+	LyricsSubfolderEnabled bool    `json:"lyrics_subfolder_enabled"`
+	LyricsSubfolderName    string  `json:"lyrics_subfolder_name"`
+	RomanizationEnabled    bool    `json:"romanization_enabled"`
+	// LyricsSecondaryMode selects what the lyrics drawer shows under a line:
+	// none, translation or romanization. One radio replaces the old boolean
+	// romanization toggle; see NormalizeLyricsSecondaryMode.
+	LyricsSecondaryMode      string `json:"lyrics_secondary_mode"`
+	UseOnlineArtistArtwork   bool   `json:"use_online_artist_artwork"`
+	PreferLocalArtistArtwork bool   `json:"prefer_local_artist_artwork"`
+	LastScanVersion          string `json:"last_scan_version"`
+	PreventSleepWhilePlaying bool   `json:"prevent_sleep_while_playing"`
+	RemoteServerEnabled      bool   `json:"remote_server_enabled"`
+	RemoteServerPort         int    `json:"remote_server_port"`
+	RemoteServerPassword     string `json:"remote_server_password"`
+	PairingMQTTPort          int    `json:"pairing_mqtt_port"`
+	ShowPlayerIndicator      bool   `json:"show_player_indicator"`
+	ShowPlayerFavoriteButton bool   `json:"show_player_favorite_button"`
 	// AutoAdvanceNotificationsEnabled controls the macOS notification shown when
 	// playback automatically advances to a different track.
 	AutoAdvanceNotificationsEnabled bool `json:"auto_advance_notifications_enabled"`

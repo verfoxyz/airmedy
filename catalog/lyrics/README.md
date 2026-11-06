@@ -62,22 +62,39 @@ the user prefers them.
 
 ```go
 type Lyric struct {
-    TrackID     string
-    Content     string    // LRC format or plain text from lrclib
-    Source      string    // e.g., "lrclib-synced", "lrclib-plain"
-    MetaContent string    // Lyrics extracted from file metadata
-    MetaSource  string    // e.g., "metadata-synced", "metadata-plain"
-    CreatedAt   time.Time
-    UpdatedAt   time.Time
+    TrackID            string
+    Content            string    // LRC format or plain text from lrclib
+    Source             string    // e.g., "lrclib-synced", "lrclib-plain"
+    TranslationContent string    // provider `tlyric`; empty when none
+    TranslationSource  string    // e.g., "wy-plugin-translation"
+    MetaContent        string    // Lyrics extracted from file metadata
+    MetaSource         string    // e.g., "metadata-synced", "metadata-plain"
+    CreatedAt          time.Time
+    UpdatedAt          time.Time
 }
 ```
 
+Translations are stored **apart** from the original (`translation_content`), never
+concatenated into `content`. The build-once backfill in `sqlite.NewDB` splits legacy
+`原文 ^ 翻译` / `原文 / 翻译` rows: the part before the separator becomes `content`, the
+part after becomes `translation_content`; a `/` only counts when surrounded by whitespace,
+so titles such as `AC/DC` stay intact. The backfill only writes rows whose
+`translation_content` is empty, so it is safe to re-run on every startup.
+
+The plugin route persists `PluginLyricResult.TLyric` even when it carries no timeline:
+a timed translation is aligned by timestamp at render time, an untimed one by line index.
+Built-in providers (LRCLIB/KuGou) do not return translations, so their rows stay empty.
+A manual lyric selection (`SaveLyrics`) clears the stored translation because it replaces
+the provider answer it belonged to.
+
 ## Mobile Library Sync Cache
 
-Mobile library-sync exports one **effective** lyric (`content` + `source`) per
-track, never the raw provider and metadata variants together. Desktop stores
-that result in `mobile_sync_lyric_cache` with an output `version` and an input
-fingerprint. A new sync plan indexes candidate lyric directories once per
+Mobile library-sync exports one **effective** lyric (`content` + `source` + its
+translation) per track, never the raw provider and metadata variants together. Desktop
+stores that result in `mobile_sync_lyric_cache` with an output `version` and an input
+fingerprint; the fingerprint and version include the translation, and the cache row
+keeps `translation_content`/`translation_source`, so a cache hit cannot silently drop
+the translated half. A new sync plan indexes candidate lyric directories once per
 unique directory and fingerprints existing candidate files by size/mtime; it
 only reads `.lrc`/`.txt` contents again when the fingerprint changes. The
 first plan resolves every selected track. When provider lyrics are preferred
@@ -409,13 +426,30 @@ Checks if `content` contains at least one valid LRC timestamp pattern: `[MM:SS.m
 
 ### Bilingual Support
 
-Lines can contain bilingual text separated by `^` or `/`:
+A stored translation (`translation_content`) is the secondary line: a timed translation
+is matched to the original timestamps within 0.5 seconds, an untimed one is matched by
+line index. The original is always the primary line.
 
-```
-[01:23.45]English text ^ 中文翻译
-```
+Legacy and local lyrics may still carry `原文 ^ 翻译` (or `原文 / 翻译`) inline. The
+frontend parser keeps those as a fallback secondary so local `.lrc` files keep working,
+but newly fetched provider lyrics never rely on separator guessing: the host stores
+`lyric` and `tlyric` separately.
 
-Parsed into `{ text: "English text", secondary: "中文翻译" }`.
+Local `.lrc` files often write the original block and then a translation block that
+repeats every timestamp exactly. `useLyrics` merges records sharing a timestamp: the
+first non-empty record is the primary line, the second is its secondary line, and any
+further same-timestamp record is dropped (logged at debug level). Grouping uses the
+exact timestamp with no tolerance, keeps the order of first appearance, and preserves
+an empty timestamped line when it is the only record for that time so Enhanced LRC
+word-end timing is unchanged. A file with no repeated timestamps renders exactly as
+before.
+
+The lyrics drawer exposes a three-way radio — `none` / `translation` / `romanization` —
+persisted as `app_settings.lyrics_secondary_mode` (`none | translation | romanization`).
+A fresh install defaults to `translation`, so a translated lyric shows its translation;
+existing installs map the old `romanization_enabled` boolean to `romanization`/`none`.
+An option a track cannot satisfy (no translation, unsupported script) is disabled and
+renders no empty line, but the stored choice is not overwritten.
 
 ## Frontend Display
 

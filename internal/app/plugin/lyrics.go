@@ -83,11 +83,27 @@ func (a *LyricsAdapter) FetchForTrack(ctx context.Context, track *domain.TrackDT
 	if source == "" {
 		source = provider + "-plugin"
 	}
+	// The translation is an optional secondary body. It deliberately skips the
+	// timeline check: a translation without timestamps is aligned to the original
+	// by line index at render time, and refusing it would drop what the plugin did
+	// return.
+	translation := strings.TrimSpace(result.TLyric)
 	return &domain.Lyric{
-		TrackID: track.ID,
-		Content: content,
-		Source:  source,
+		TrackID:            track.ID,
+		Content:            content,
+		Source:             source,
+		TranslationContent: translation,
+		TranslationSource:  translationSource(source, translation),
 	}, true, nil
+}
+
+// translationSource names the origin of the translation only when one exists,
+// so an empty translation never looks like a stored, empty provider answer.
+func translationSource(source, translation string) string {
+	if translation == "" {
+		return ""
+	}
+	return source + "-translation"
 }
 
 // hasLyricTimeline reports whether at least one line carries an LRC timestamp.

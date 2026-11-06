@@ -464,3 +464,41 @@ func TestResolveForMobileSyncUsesNormalizedMacOSSidecarName(t *testing.T) {
 		t.Fatalf("expected normalized sidecar lyric, got %+v", got)
 	}
 }
+
+type stubPluginFetcher struct {
+	lyric   *domain.Lyric
+	handled bool
+	err     error
+}
+
+func (s stubPluginFetcher) FetchForTrack(context.Context, *domain.TrackDTO) (*domain.Lyric, bool, error) {
+	return s.lyric, s.handled, s.err
+}
+
+func TestFetchFromProvidersPersistsThePluginTranslation(t *testing.T) {
+	repo := &stubRepo{}
+	service := NewLyricsService(repo, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, stubLocal{}, nil, nil)
+	service.SetPluginLyricsFetcher(stubPluginFetcher{
+		handled: true,
+		lyric: &domain.Lyric{
+			TrackID:            "t1",
+			Content:            "[00:01]晴天",
+			Source:             "wy-plugin",
+			TranslationContent: "[00:01]Clear sky",
+			TranslationSource:  "wy-plugin-translation",
+		},
+	})
+
+	got, err := service.FetchFromProviders(context.Background(),
+		&domain.TrackDTO{Track: domain.Track{ID: "t1", Provider: "wy"}}, true, true)
+	if err != nil {
+		t.Fatalf("FetchFromProviders: %v", err)
+	}
+	if got == nil || got.TranslationContent != "[00:01]Clear sky" {
+		t.Fatalf("returned lyric = %+v, want the translation", got)
+	}
+	if repo.lyric == nil || repo.lyric.TranslationContent != "[00:01]Clear sky" ||
+		repo.lyric.TranslationSource != "wy-plugin-translation" {
+		t.Fatalf("persisted lyric = %+v, want the translation saved apart", repo.lyric)
+	}
+}

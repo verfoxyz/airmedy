@@ -483,6 +483,10 @@
     "romanization": "ถอดเสียง",
     "romanization_loading": "กำลังถอดเสียง…",
     "romanization_retry": "ถอดเสียงไม่สำเร็จ — ลองอีกครั้ง",
+    "lyrics_secondary": "บรรทัดรองของเนื้อเพลง",
+    "secondary_none": "ไม่มี",
+    "secondary_translation": "คำแปล",
+    "secondary_romanization": "การถอดเสียง",
     "romanization_hint": "การถอดเสียงออฟไลน์: จีนและเกาหลี",
     "romanization_mandarin": "เนื้อเพลงที่มีเฉพาะอักษรฮั่นจะใช้ภาษาจีนกลางเป็นค่าเริ่มต้น การอ่านชื่ออาจแตกต่างกัน"
   },

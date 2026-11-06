@@ -48,6 +48,13 @@ func NewDB(dbPath string, logger *slog.Logger) (*DB, error) {
 		return nil, fmt.Errorf("failed to run migrations: %w", err)
 	}
 
+	// A legacy lyric stored as "original ^ translation" must be split once now
+	// that translations have their own column. This is best-effort: an error is
+	// logged so a single malformed row can never stop the app from starting.
+	if err := backfillLyricTranslations(&DB{db}, logger); err != nil {
+		logger.Warn("Failed to backfill legacy lyric translations", "error", err)
+	}
+
 	return &DB{db}, nil
 }
 

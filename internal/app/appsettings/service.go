@@ -82,6 +82,7 @@ func (s *SettingsService) GetSettings(ctx context.Context) (*domain.AppSettings,
 			AutoCheckUpdate:                 true,
 			EQEnabled:                       true,
 			RomanizationEnabled:             true,
+			LyricsSecondaryMode:             domain.LyricsSecondaryTranslation,
 			BlendArtworkDuringCrossfade:     true,
 			HighContrastLyrics:              true,
 			LyricsGlow:                      false,
@@ -128,6 +129,10 @@ func (s *SettingsService) SaveSettings(ctx context.Context, settings *domain.App
 		return fmt.Errorf("invalid download naming order: %w", err)
 	}
 	settings.DownloadNamingOrder = namingOrder
+
+	// An unknown secondary mode must not be persisted as a value the drawer
+	// cannot render; fall back to "none" for the same reason the reader does.
+	settings.LyricsSecondaryMode = domain.NormalizeLyricsSecondaryMode(settings.LyricsSecondaryMode)
 
 	// Validate user-configured delimiters before persisting.
 	for label, list := range map[string][]string{

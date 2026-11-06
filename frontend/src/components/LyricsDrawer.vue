@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { FileDown, Languages, Mic2, X } from '@lucide/vue'
+import { FileDown, Mic2, X } from '@lucide/vue'
 import { usePlayerStore } from '../stores/player'
+import { useAppStore, type LyricsSecondaryMode } from '../stores/app'
+import { useRomanizationStore } from '../stores/romanization'
 import { useI18n } from 'vue-i18n'
 import { useLyrics } from '../composables/useLyrics'
+import { useLyricTranslation } from '../composables/useLyricTranslation'
 import { useRomanization } from '../composables/useRomanization'
 import { useExportLyrics } from '../composables/useExportLyrics'
 import { lyricsMotionClasses, useLyricsScrollMotion } from '../composables/useLyricsScrollMotion'
@@ -11,14 +14,79 @@ import KaraokeText from './KaraokeText.vue'
 
 const { t } = useI18n()
 const store = usePlayerStore()
+const appStore = useAppStore()
+const romanizationStore = useRomanizationStore()
 const exportLyrics = useExportLyrics().open
 
 const lyricsContent = computed(() => store.lyrics?.content)
 const { isSynced, syncedLines, plainLines } = useLyrics(lyricsContent)
 const mainLines = computed(() => isSynced.value ? syncedLines.value.map(line => line.text) : plainLines.value.map(line => line.primary))
-const { supported, mandarinDefault, enabled, secondary, toggle } = useRomanization(
+const { supported, secondary: romanizationSecondary } = useRomanization(
   mainLines, computed(() => !store.lyricsLoading),
 )
+
+// A stored translation is aligned to the rendered lines by timestamp or line
+// order. Older/local bilingual lyrics still carry their translation inside the
+// line, so those parsed secondaries are the fallback when nothing is stored.
+const lineTimes = computed(() => isSynced.value ? syncedLines.value.map(line => line.time) : [])
+const lineCount = computed(() => isSynced.value ? syncedLines.value.length : plainLines.value.length)
+const translatedLines = useLyricTranslation(
+  computed(() => store.lyrics?.translation_content),
+  lineCount,
+  lineTimes,
+)
+const inlineSecondary = computed(() =>
+  (isSynced.value ? syncedLines.value : plainLines.value).map(line => line.secondary),
+)
+const translationAvailable = computed(() =>
+  translatedLines.value.some(Boolean) || inlineSecondary.value.some(Boolean),
+)
+const romanizationAvailable = computed(() => supported.value)
+
+// The stored setting is the user's choice. A choice that this track cannot
+// satisfy (no translation / unsupported script) renders no secondary line but
+// is not overwritten, so it comes back for a track that can satisfy it.
+const mode = computed<LyricsSecondaryMode>(() => {
+  if (appStore.lyricsSecondaryMode === 'translation' && translationAvailable.value) return 'translation'
+  if (appStore.lyricsSecondaryMode === 'romanization' && romanizationAvailable.value) return 'romanization'
+  return 'none'
+})
+const secondaryLines = computed<(string | undefined)[]>(() => {
+  if (mode.value === 'translation') {
+    return translatedLines.value.some(Boolean) ? translatedLines.value : inlineSecondary.value
+  }
+  if (mode.value === 'romanization') return romanizationSecondary.value
+  return []
+})
+const secondaryOptions = computed(() => [
+  { id: 'none' as const, label: t('player.secondary_none'), disabled: false },
+  { id: 'translation' as const, label: t('player.secondary_translation'), disabled: !translationAvailable.value },
+  { id: 'romanization' as const, label: t('player.secondary_romanization'), disabled: !romanizationAvailable.value },
+])
+const showSecondaryControl = computed(() => translationAvailable.value || romanizationAvailable.value)
+
+function selectSecondaryMode(next: LyricsSecondaryMode) {
+  const option = secondaryOptions.value.find(item => item.id === next)
+  if (!option || option.disabled) return
+  void appStore.updateLyricsSecondaryMode(next)
+}
+
+function onSecondaryKeydown(event: KeyboardEvent) {
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+  event.preventDefault()
+  const enabledOptions = secondaryOptions.value.filter(item => !item.disabled)
+  if (enabledOptions.length === 0) return
+  const current = enabledOptions.findIndex(item => item.id === mode.value)
+  const delta = event.key === 'ArrowRight' ? 1 : -1
+  const next = enabledOptions[(Math.max(current, 0) + delta + enabledOptions.length) % enabledOptions.length]
+  selectSecondaryMode(next.id)
+}
+
+// Choosing romanization must also start the conversion; choosing anything else
+// stops the background work for the current session.
+watch(mode, (current) => {
+  if (current === 'romanization' && !romanizationStore.enabled) void romanizationStore.setEnabled(true)
+}, { immediate: true })
 
 const activeIndex = computed(() => {
   const pos = store.position
@@ -135,14 +203,20 @@ onUnmounted(() => {
       </div>
 
       <div class="flex items-center gap-1 flex-shrink-0">
-        <button v-if="supported" type="button" data-test="drawer-romanization-toggle"
-          class="p-1.5 rounded-full hover:bg-foreground/8 transition-colors"
-          :class="enabled ? 'text-primary' : 'text-dim hover:text-foreground'"
-          :aria-pressed="enabled" :aria-label="t('player.romanization')"
-          :title="[t('player.romanization'), t(mandarinDefault ? 'player.romanization_mandarin' : 'player.romanization_hint')].join(' — ')"
-          @click="toggle()">
-          <Languages class="w-4 h-4" aria-hidden="true" />
-        </button>
+        <div v-if="showSecondaryControl" data-test="drawer-secondary-modes" role="radiogroup"
+          :aria-label="t('player.lyrics_secondary')"
+          class="flex items-center rounded-full bg-foreground/[0.06] p-0.5 text-[11px]"
+          @keydown="onSecondaryKeydown">
+          <button v-for="option in secondaryOptions" :key="option.id" type="button" role="radio"
+            :data-test="`drawer-secondary-${option.id}`"
+            :aria-checked="mode === option.id" :disabled="option.disabled"
+            :tabindex="mode === option.id ? 0 : -1"
+            class="rounded-full px-2 py-1 font-medium transition-colors disabled:opacity-40"
+            :class="mode === option.id ? 'bg-foreground/[0.12] text-foreground' : 'text-dim hover:text-foreground'"
+            @click="selectSecondaryMode(option.id)">
+            {{ option.label }}
+          </button>
+        </div>
         <button v-if="lyricsContent && store.currentTrack?.path && !store.currentTrack.path.startsWith('remote://')" type="button" data-test="drawer-export-lyrics"
           class="p-1.5 rounded-full hover:bg-foreground/8 transition-colors text-dim hover:text-foreground"
           :title="t('export_lyrics.title')" :aria-label="t('export_lyrics.title')"
@@ -192,8 +266,8 @@ onUnmounted(() => {
             ]"
             :style="line.words && store.isLyricsOpen && !isBrowsing && index === activeIndex ? { transition: 'none' } : undefined"
             @pointerdown.stop @click="seekAndResume(line.time, index)">
-            <div class="text-[19pt] font-bold"><KaraokeText :line="line" :position="store.isLyricsOpen && !isBrowsing && index === activeIndex ? store.position : undefined" /></div>
-            <div v-if="secondary[index] ?? line.secondary" class="text-[14pt] opacity-50 mt-0.5">{{ secondary[index] ?? line.secondary }}</div>
+            <div data-test="lyric-primary" class="text-[19pt] font-bold"><KaraokeText :line="line" :position="store.isLyricsOpen && !isBrowsing && index === activeIndex ? store.position : undefined" /></div>
+            <div v-if="secondaryLines[index]" data-test="lyric-secondary" class="text-[14pt] opacity-50 mt-0.5">{{ secondaryLines[index] }}</div>
           </div>
         </div>
       </div>
@@ -206,8 +280,8 @@ onUnmounted(() => {
         </p>
         <div class="space-y-3.5">
           <div v-for="(line, index) in plainLines" :key="index" class="leading-relaxed select-text">
-            <p class="text-sm text-foreground/80">{{ line.primary }}</p>
-            <p v-if="secondary[index] ?? line.secondary" class="text-xs text-foreground/40 mt-0.5">{{ secondary[index] ?? line.secondary }}</p>
+            <p data-test="lyric-primary" class="text-sm text-foreground/80">{{ line.primary }}</p>
+            <p v-if="secondaryLines[index]" data-test="lyric-secondary" class="text-xs text-foreground/40 mt-0.5">{{ secondaryLines[index] }}</p>
           </div>
         </div>
       </div>

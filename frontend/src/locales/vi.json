@@ -483,6 +483,10 @@
     "romanization": "Phiên âm",
     "romanization_loading": "Đang phiên âm…",
     "romanization_retry": "Phiên âm lỗi — thử lại",
+    "lyrics_secondary": "Dòng lời phụ",
+    "secondary_none": "Không",
+    "secondary_translation": "Bản dịch",
+    "secondary_romanization": "Phiên âm",
     "romanization_hint": "Phiên âm offline: tiếng Trung và Hàn.",
     "romanization_mandarin": "Lời chỉ có chữ Hán mặc định dùng Mandarin. Tên riêng có thể có cách đọc khác."
   },

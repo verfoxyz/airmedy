@@ -83,7 +83,13 @@ func (s *LyricsService) ResolveForMobileSync(ctx context.Context, tracks []*doma
 		fingerprint := syncLyricFingerprint(settingSig, dbLyric, candidates[track.ID], states)
 		if entry := cached[track.ID]; entry != nil && entry.Fingerprint == fingerprint {
 			if entry.HasLyric {
-				resolved[track.ID] = &domain.Lyric{TrackID: track.ID, Content: entry.Content, Source: entry.Source}
+				resolved[track.ID] = &domain.Lyric{
+					TrackID:            track.ID,
+					Content:            entry.Content,
+					Source:             entry.Source,
+					TranslationContent: entry.TranslationContent,
+					TranslationSource:  entry.TranslationSource,
+				}
 			}
 			continue
 		}
@@ -91,7 +97,8 @@ func (s *LyricsService) ResolveForMobileSync(ctx context.Context, tracks []*doma
 		entry := &domain.MobileSyncLyricCache{TrackID: track.ID, Fingerprint: fingerprint}
 		if lyric != nil {
 			entry.HasLyric, entry.Content, entry.Source = true, lyric.Content, lyric.Source
-			entry.Version = lyricVersion(lyric.Content, lyric.Source)
+			entry.TranslationContent, entry.TranslationSource = lyric.TranslationContent, lyric.TranslationSource
+			entry.Version = lyricVersion(lyric.Content, lyric.Source, lyric.TranslationContent, lyric.TranslationSource)
 			resolved[track.ID] = lyric
 		}
 		if err := cache.Upsert(ctx, entry); err != nil {
@@ -105,13 +112,14 @@ func syncLyricFingerprint(settings string, lyric *domain.Lyric, candidates []syn
 	var b strings.Builder
 	b.WriteString(settings)
 	if lyric != nil {
-		fmt.Fprintf(&b, "|db=%s|%s|%s|%s|%d", lyric.Content, lyric.Source, lyric.MetaContent, lyric.MetaSource, lyric.UpdatedAt.UnixNano())
+		fmt.Fprintf(&b, "|db=%s|%s|%s|%s|%s|%s|%d", lyric.Content, lyric.Source,
+			lyric.TranslationContent, lyric.TranslationSource, lyric.MetaContent, lyric.MetaSource, lyric.UpdatedAt.UnixNano())
 	}
 	for _, candidate := range candidates {
 		state := states[candidate.path]
 		fmt.Fprintf(&b, "|%s:%t:%d:%d", candidate.path, state.exists, state.size, state.mtime)
 	}
-	return lyricVersion(b.String(), "inputs")
+	return lyricVersion(b.String(), "inputs", "", "")
 }
 
 func resolveSyncLyric(trackID string, dbLyric *domain.Lyric, candidates []syncLyricCandidate, states map[string]syncLyricFileState, preferLocal bool) *domain.Lyric {
@@ -135,7 +143,13 @@ func resolveSyncLyric(trackID string, dbLyric *domain.Lyric, candidates []syncLy
 	}
 	var provider *domain.Lyric
 	if dbLyric != nil && dbLyric.Content != "" {
-		provider = &domain.Lyric{TrackID: trackID, Content: dbLyric.Content, Source: dbLyric.Source}
+		provider = &domain.Lyric{
+			TrackID:            trackID,
+			Content:            dbLyric.Content,
+			Source:             dbLyric.Source,
+			TranslationContent: dbLyric.TranslationContent,
+			TranslationSource:  dbLyric.TranslationSource,
+		}
 	}
 	if preferLocal {
 		if local != nil {
@@ -149,7 +163,7 @@ func resolveSyncLyric(trackID string, dbLyric *domain.Lyric, candidates []syncLy
 	return local
 }
 
-func lyricVersion(content, source string) string {
-	sum := sha256.Sum256([]byte(source + "\x00" + content))
+func lyricVersion(content, source, translationContent, translationSource string) string {
+	sum := sha256.Sum256([]byte(source + "\x00" + content + "\x00" + translationSource + "\x00" + translationContent))
 	return hex.EncodeToString(sum[:])
 }

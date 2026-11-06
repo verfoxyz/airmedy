@@ -44,6 +44,10 @@ func (s *LyricsService) SaveLyrics(ctx context.Context, trackID, content, source
 	if existing != nil {
 		existing.Content = content
 		existing.Source = source
+		// A manually chosen lyric replaces the previous provider answer, so the
+		// translation stored for that answer must not outlive it.
+		existing.TranslationContent = ""
+		existing.TranslationSource = ""
 		return s.repo.Upsert(ctx, existing)
 	}
 	return s.repo.Upsert(ctx, &domain.Lyric{
@@ -190,9 +194,10 @@ func (s *LyricsService) ResolveWithLocal(ctx context.Context, trackID, audioPath
 		s.logger.Debug("using metadata tag lyrics", "track_id", trackID, "source", localSource)
 	}
 
-	var providerContent, providerSource string
+	var providerContent, providerSource, providerTranslationContent, providerTranslationSource string
 	if lyric != nil && lyric.Content != "" {
 		providerContent, providerSource = lyric.Content, lyric.Source
+		providerTranslationContent, providerTranslationSource = lyric.TranslationContent, lyric.TranslationSource
 	}
 
 	local := func() *domain.Lyric {
@@ -205,7 +210,13 @@ func (s *LyricsService) ResolveWithLocal(ctx context.Context, trackID, audioPath
 		if providerContent == "" {
 			return nil
 		}
-		return &domain.Lyric{TrackID: trackID, Content: providerContent, Source: providerSource}
+		return &domain.Lyric{
+			TrackID:            trackID,
+			Content:            providerContent,
+			Source:             providerSource,
+			TranslationContent: providerTranslationContent,
+			TranslationSource:  providerTranslationSource,
+		}
 	}
 
 	resolved = func() *domain.Lyric {
@@ -254,7 +265,7 @@ func (s *LyricsService) FetchFromProviders(ctx context.Context, track *domain.Tr
 	if s.pluginLyrics != nil {
 		if lyric, handled, err := s.pluginLyrics.FetchForTrack(ctx, track); handled {
 			if lyric != nil {
-				return s.saveLyric(ctx, lyric.TrackID, lyric.Content, lyric.Source)
+				return s.saveLyric(ctx, lyric)
 			}
 			if err != nil {
 				s.logger.Warn("plugin lyrics unavailable; falling back to built-in providers",
@@ -278,7 +289,7 @@ func (s *LyricsService) FetchFromProviders(ctx context.Context, track *domain.Tr
 		if err != nil || l == nil {
 			return nil, err
 		}
-		return s.saveLyric(ctx, l.TrackID, l.Content, l.Source)
+		return s.saveLyric(ctx, l)
 	default:
 		return s.fetchRace(ctx, track, active)
 	}
@@ -306,7 +317,7 @@ func (s *LyricsService) fetchRace(ctx context.Context, track *domain.TrackDTO, p
 		r := <-ch
 		if r.lyric != nil {
 			cancel()
-			return s.saveLyric(ctx, r.lyric.TrackID, r.lyric.Content, r.lyric.Source)
+			return s.saveLyric(ctx, r.lyric)
 		}
 		if r.err != nil && !errors.Is(r.err, context.Canceled) {
 			lastErr = r.err
@@ -315,19 +326,30 @@ func (s *LyricsService) fetchRace(ctx context.Context, track *domain.TrackDTO, p
 	return nil, lastErr
 }
 
-func (s *LyricsService) saveLyric(ctx context.Context, trackID, content, source string) (*domain.Lyric, error) {
-	existing, _ := s.repo.GetByTrackID(ctx, trackID)
+// saveLyric persists a provider answer on top of the existing row. The
+// translation travels with the original: saving only the content would make a
+// cache hit or a restart drop the translated half.
+func (s *LyricsService) saveLyric(ctx context.Context, incoming *domain.Lyric) (*domain.Lyric, error) {
+	existing, _ := s.repo.GetByTrackID(ctx, incoming.TrackID)
 	var lyric *domain.Lyric
 	if existing != nil {
-		existing.Content = content
-		existing.Source = source
+		existing.Content = incoming.Content
+		existing.Source = incoming.Source
+		existing.TranslationContent = incoming.TranslationContent
+		existing.TranslationSource = incoming.TranslationSource
 		lyric = existing
 	} else {
-		lyric = &domain.Lyric{TrackID: trackID, Content: content, Source: source}
+		lyric = &domain.Lyric{
+			TrackID:            incoming.TrackID,
+			Content:            incoming.Content,
+			Source:             incoming.Source,
+			TranslationContent: incoming.TranslationContent,
+			TranslationSource:  incoming.TranslationSource,
+		}
 	}
 
 	if err := s.repo.Upsert(ctx, lyric); err != nil {
-		s.logger.Warn("failed to save fetched lyrics", "track_id", trackID, "error", err)
+		s.logger.Warn("failed to save fetched lyrics", "track_id", incoming.TrackID, "error", err)
 	}
 	return lyric, nil
 }

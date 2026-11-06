@@ -333,6 +333,10 @@ answer travels as a single line (8 MiB).
 
 - **The plugin must return a timeline.** The plugin rejects a body without `[mm:ss]`; the
   host validates it again before storing, because a plain text body cannot scroll.
+- **`tlyric` is stored separately.** The host persists `tlyric` as
+  `translation_content` and never concatenates it into the original. It is not required
+  to carry a timeline: a timed translation aligns by timestamp, an untimed one by line
+  index. An empty `tlyric` leaves the translation columns empty.
 - **Fallback is mandatory.** A plugin failure (`unavailable` / `rate_limited` / `auth`)
   or a non-timeline answer falls through to the built-in LRCLIB/Kugou providers, so a
   platform outage never removes lyrics entirely.

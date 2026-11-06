@@ -67,6 +67,47 @@ function parseBilingual(text: string): { primary: string; secondary?: string } {
   return { primary: text.trim() }
 }
 
+interface TimedLine {
+  primary: string
+  secondary?: string
+  time: number
+}
+
+/**
+ * mergeSameTime merges records that share a timestamp. Local `.lrc` files often
+ * write the original block first and the translation block second, repeating the
+ * timestamps; rendering them as two lines makes both scroll independently. The
+ * first non-empty record at a timestamp is the original, the second is its
+ * translation, and any further record is dropped. Grouping is keyed by the exact
+ * timestamp (no tolerance) and keeps the order of first appearance.
+ */
+function mergeSameTime(lines: TimedLine[]): TimedLine[] {
+  const groups = new Map<number, TimedLine>()
+  let dropped = 0
+  for (const line of lines) {
+    const group = groups.get(line.time)
+    if (!group) {
+      groups.set(line.time, { ...line })
+      continue
+    }
+    if (!line.primary) continue
+    if (!group.primary) {
+      group.primary = line.primary
+      if (group.secondary === undefined && line.secondary) group.secondary = line.secondary
+      continue
+    }
+    if (group.secondary === undefined) {
+      group.secondary = line.primary
+      continue
+    }
+    dropped++
+  }
+  if (dropped > 0) {
+    console.debug(`lyrics: dropped ${dropped} duplicate line(s) sharing a timestamp`)
+  }
+  return [...groups.values()]
+}
+
 export function useLyrics(lyrics: Ref<string | undefined>) {
   const decodedLyrics = computed(() => {
     if (!lyrics.value) return undefined
@@ -75,7 +116,7 @@ export function useLyrics(lyrics: Ref<string | undefined>) {
 
   const syncedLines = computed<LyricLine[]>(() => {
     if (!decodedLyrics.value) return []
-    const lines = decodedLyrics.value.split('\n').flatMap(line => {
+    const raw = decodedLyrics.value.split('\n').flatMap(line => {
       const match = line.match(LINE_PATTERN)
       if (!match) return []
       const time = Number(match[1]) * 60 + Number(match[2])
@@ -83,6 +124,7 @@ export function useLyrics(lyrics: Ref<string | undefined>) {
       const { primary, secondary } = parseBilingual(match[3])
       return [{ primary, secondary, time }]
     })
+    const lines = mergeSameTime(raw)
     return lines.map((line, index) => {
       const words = parseWords(line.primary, line.time, lines[index + 1]?.time)
       return {

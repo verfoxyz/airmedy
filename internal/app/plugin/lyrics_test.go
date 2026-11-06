@@ -9,6 +9,90 @@ import (
 	"airmedy/internal/domain"
 )
 
+// lyricReplyHost answers lyric.fetch with a canned result. It is a plugin host
+// double for the translation contract only; routing itself is covered above.
+type lyricReplyHost struct {
+	manifest domain.PluginManifest
+	reply    domain.PluginLyricResult
+}
+
+func (h *lyricReplyHost) Manifest() domain.PluginManifest { return h.manifest }
+func (h *lyricReplyHost) Capabilities() []domain.Capability {
+	return h.manifest.Capabilities
+}
+func (h *lyricReplyHost) Call(_ context.Context, _ string, _ any, result any) error {
+	if target, ok := result.(*domain.PluginLyricResult); ok {
+		*target = h.reply
+	}
+	return nil
+}
+func (h *lyricReplyHost) Close() error { return nil }
+
+func TestLyricsAdapterStoresTheTranslationApart(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	service := NewService(nil, nil, nil, logger, Config{})
+	manifest := domain.PluginManifest{
+		ID:           "wy",
+		Capabilities: []domain.Capability{domain.CapabilityLyricFetch},
+		Sources:      []string{"wy"},
+	}
+	if err := service.Register(manifest); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	host := &lyricReplyHost{
+		manifest: manifest,
+		reply: domain.PluginLyricResult{
+			Lyric:  "[00:01.00]晴天",
+			TLyric: "[00:01.00]Clear sky",
+			Source: "wy-plugin",
+		},
+	}
+	service.hosts["wy"] = host
+	service.entries["wy"].status = domain.PluginStatusRunning
+
+	lyric, handled, err := NewLyricsAdapter(service, logger).FetchForTrack(context.Background(), &domain.TrackDTO{
+		Track: domain.Track{ID: "t1", Provider: "wy", ExternalID: "1", Title: "晴天"},
+	})
+	if err != nil || !handled {
+		t.Fatalf("FetchForTrack = %v, %v; want a handled answer", lyric, err)
+	}
+	if lyric.Content != "[00:01.00]晴天" || lyric.TranslationContent != "[00:01.00]Clear sky" {
+		t.Fatalf("lyric = %+v; want original and translation stored separately", lyric)
+	}
+	if lyric.TranslationSource != "wy-plugin-translation" {
+		t.Fatalf("TranslationSource = %q, want the translation origin", lyric.TranslationSource)
+	}
+}
+
+func TestLyricsAdapterLeavesTheTranslationEmptyWhenNoneIsReturned(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	service := NewService(nil, nil, nil, logger, Config{})
+	manifest := domain.PluginManifest{
+		ID:           "wy",
+		Capabilities: []domain.Capability{domain.CapabilityLyricFetch},
+		Sources:      []string{"wy"},
+	}
+	if err := service.Register(manifest); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	host := &lyricReplyHost{
+		manifest: manifest,
+		reply:    domain.PluginLyricResult{Lyric: "[00:01.00]晴天", Source: "wy-plugin"},
+	}
+	service.hosts["wy"] = host
+	service.entries["wy"].status = domain.PluginStatusRunning
+
+	lyric, handled, err := NewLyricsAdapter(service, logger).FetchForTrack(context.Background(), &domain.TrackDTO{
+		Track: domain.Track{ID: "t1", Provider: "wy", ExternalID: "1", Title: "晴天"},
+	})
+	if err != nil || !handled {
+		t.Fatalf("FetchForTrack = %v, %v; want a handled answer", lyric, err)
+	}
+	if lyric.TranslationContent != "" || lyric.TranslationSource != "" {
+		t.Fatalf("lyric = %+v; want an empty translation", lyric)
+	}
+}
+
 func TestHasLyricTimeline(t *testing.T) {
 	if !hasLyricTimeline("[00:01.00]晴天\n[00:02.50]故事") {
 		t.Fatal("a standard LRC timeline must be accepted")

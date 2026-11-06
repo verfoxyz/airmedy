@@ -483,6 +483,10 @@
     "romanization": "Транслитерация",
     "romanization_loading": "Романизация…",
     "romanization_retry": "Не удалось выполнить романизацию — повторить",
+    "lyrics_secondary": "Вторая строка текста",
+    "secondary_none": "Нет",
+    "secondary_translation": "Перевод",
+    "secondary_romanization": "Транслитерация",
     "romanization_hint": "Офлайн-романизация: китайский и корейский.",
     "romanization_mandarin": "Для текстов только с иероглифами Han по умолчанию используется мандаринское чтение. Чтение имён может отличаться."
   },

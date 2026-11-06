@@ -27,6 +27,13 @@ export const STEREO_WIDTH_MAX = 200
 // immediate, but collapse persistence into one backend call after input settles.
 export const PRIMARY_COLOR_SAVE_DEBOUNCE_MS = 250
 
+// Mirrors domain.LyricsSecondary*: what the lyrics drawer shows under each line.
+export type LyricsSecondaryMode = 'none' | 'translation' | 'romanization'
+
+function resolveLyricsSecondaryMode(value: unknown): LyricsSecondaryMode {
+  return value === 'none' || value === 'romanization' ? value : 'translation'
+}
+
 export const useAppStore = defineStore('app', () => {
   const theme = ref<'system' | 'light' | 'dark' | 'black'>('system')
   const primaryColor = ref(DEFAULT_PRIMARY_COLOR)
@@ -44,6 +51,7 @@ export const useAppStore = defineStore('app', () => {
   const lyricsSubfolderEnabled = ref(false)
   const lyricsSubfolderName = ref('')
   const romanizationEnabled = ref(true)
+  const lyricsSecondaryMode = ref<LyricsSecondaryMode>('translation')
   const useOnlineArtistArtwork = ref(true)
   const preferLocalArtistArtwork = ref(true)
   // Round-tripped only (set by the backend's version-gated rescan); never edited
@@ -159,6 +167,7 @@ export const useAppStore = defineStore('app', () => {
         lyricsSubfolderEnabled.value = !!settings.lyrics_subfolder_enabled
         lyricsSubfolderName.value = settings.lyrics_subfolder_name || ''
         romanizationEnabled.value = settings.romanization_enabled !== false
+        lyricsSecondaryMode.value = resolveLyricsSecondaryMode(settings.lyrics_secondary_mode)
         useOnlineArtistArtwork.value = settings.use_online_artist_artwork !== false
         preferLocalArtistArtwork.value = settings.prefer_local_artist_artwork !== false
         lastScanVersion.value = settings.last_scan_version || ''
@@ -283,6 +292,7 @@ export const useAppStore = defineStore('app', () => {
         lyrics_subfolder_enabled: lyricsSubfolderEnabled.value,
         lyrics_subfolder_name: lyricsSubfolderName.value,
         romanization_enabled: romanizationEnabled.value,
+        lyrics_secondary_mode: lyricsSecondaryMode.value,
         use_online_artist_artwork: useOnlineArtistArtwork.value,
         prefer_local_artist_artwork: preferLocalArtistArtwork.value,
         last_scan_version: lastScanVersion.value,
@@ -430,6 +440,14 @@ export const useAppStore = defineStore('app', () => {
   const updateRomanizationEnabled = async (enabled: boolean) => {
     romanizationEnabled.value = enabled
     if (!enabled) await useRomanizationStore().setEnabled(false)
+    await saveSettings()
+  }
+
+  const updateLyricsSecondaryMode = async (mode: LyricsSecondaryMode) => {
+    lyricsSecondaryMode.value = mode
+    // Romanization conversion is a session preference: enable it when chosen,
+    // stop the background work when another mode is chosen.
+    await useRomanizationStore().setEnabled(mode === 'romanization')
     await saveSettings()
   }
 
@@ -685,6 +703,7 @@ export const useAppStore = defineStore('app', () => {
     lyricsSubfolderEnabled,
     lyricsSubfolderName,
     romanizationEnabled,
+    lyricsSecondaryMode,
     useOnlineArtistArtwork,
     preferLocalArtistArtwork,
     preventSleepWhilePlaying,
@@ -732,6 +751,7 @@ export const useAppStore = defineStore('app', () => {
     updateLyricsSubfolderEnabled,
     updateLyricsSubfolderName,
     updateRomanizationEnabled,
+    updateLyricsSecondaryMode,
     updateUseOnlineArtistArtwork,
     updatePreferLocalArtistArtwork,
     updatePreventSleepWhilePlaying,

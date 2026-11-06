@@ -61,7 +61,7 @@ func (r *lyricRepository) Save(ctx context.Context, l *domain.Lyric) error {
 	}
 	l.UpdatedAt = now
 
-	_, err := r.db.NamedExecContext(ctx, "INSERT INTO lyrics (track_id, content, source, meta_content, meta_source, created_at, updated_at) VALUES (:track_id, :content, :source, :meta_content, :meta_source, :created_at, :updated_at)", l)
+	_, err := r.db.NamedExecContext(ctx, "INSERT INTO lyrics (track_id, content, source, translation_content, translation_source, meta_content, meta_source, created_at, updated_at) VALUES (:track_id, :content, :source, :translation_content, :translation_source, :meta_content, :meta_source, :created_at, :updated_at)", l)
 	if err != nil {
 		return fmt.Errorf("failed to save lyric: %w", err)
 	}
@@ -76,11 +76,13 @@ func (r *lyricRepository) Upsert(ctx context.Context, l *domain.Lyric) error {
 	l.UpdatedAt = now
 
 	query := `
-		INSERT INTO lyrics (track_id, content, source, meta_content, meta_source, created_at, updated_at)
-		VALUES (:track_id, :content, :source, :meta_content, :meta_source, :created_at, :updated_at)
+		INSERT INTO lyrics (track_id, content, source, translation_content, translation_source, meta_content, meta_source, created_at, updated_at)
+		VALUES (:track_id, :content, :source, :translation_content, :translation_source, :meta_content, :meta_source, :created_at, :updated_at)
 		ON CONFLICT(track_id) DO UPDATE SET
 			content = excluded.content,
 			source = excluded.source,
+			translation_content = excluded.translation_content,
+			translation_source = excluded.translation_source,
 			meta_content = excluded.meta_content,
 			meta_source = excluded.meta_source,
 			updated_at = excluded.updated_at

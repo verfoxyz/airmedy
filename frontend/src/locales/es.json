@@ -483,6 +483,10 @@
     "romanization": "Romanizar",
     "romanization_loading": "Romanizando…",
     "romanization_retry": "Error al romanizar — reintentar",
+    "lyrics_secondary": "Línea secundaria de la letra",
+    "secondary_none": "Ninguna",
+    "secondary_translation": "Traducción",
+    "secondary_romanization": "Romanización",
     "romanization_hint": "Romanización sin conexión: chino y coreano.",
     "romanization_mandarin": "Las letras solo con caracteres Han usan mandarín de forma predeterminada. La lectura de los nombres puede variar."
   },

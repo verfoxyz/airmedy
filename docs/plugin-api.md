@@ -34,9 +34,10 @@
 插件在 manifest 的 `sources` 里声明它服务的平台，并声明 `capability: lyric.fetch`。
 宿主按 `track.provider` 找到运行中的插件，调用
 `{provider, external_id, title, artists[], album, duration}`，返回
-`{lyric, tlyric, source, synced}`。**必须带 `[mm:ss]` 时间轴**，否则按失败处理；
-失败或没有时间轴时回落内置 LRCLIB/酷狗。这样搜索到的日文/翻唱曲目不再依赖第二次
-标题+歌手反查。
+`{lyric, tlyric, source, synced}`。**`lyric` 必须带 `[mm:ss]` 时间轴**，否则按失败处理；
+`tlyric` 不要求时间轴：宿主把它单独存为 `translation_content`，不会拼进原文，显示时
+有时间轴按时间戳对齐、没有就按行号对齐。失败或没有时间轴时回落内置 LRCLIB/酷狗。这样
+搜索到的日文/翻唱曲目不再依赖第二次标题+歌手反查。
 
 ### `describe.settings`（最小设置声明）
 

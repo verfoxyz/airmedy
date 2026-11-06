@@ -483,6 +483,10 @@
     "romanization": "Romanize",
     "romanization_loading": "Romanizing…",
     "romanization_retry": "Romanization failed — retry",
+    "lyrics_secondary": "Secondary lyric line",
+    "secondary_none": "None",
+    "secondary_translation": "Translation",
+    "secondary_romanization": "Romanization",
     "romanization_hint": "Offline romanization: Chinese and Korean.",
     "romanization_mandarin": "Han-only lyrics default to Mandarin. Readings may differ for names."
   },

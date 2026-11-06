@@ -682,11 +682,16 @@ passes secondary strings separately to synced/plain views. `stores/romanization`
 holds the backend-owned, app-lifetime preference, so it synchronizes between
 the main and mini-player webviews without surviving an app restart. The fullscreen icon control is teleported into its toolbar beside the
 lyrics/queue pill; the mini-player control sits beside its action pill while its
-lyrics panel is open, and the drawer uses a header icon beside Close. All three
-controls show only on/off state with `aria-pressed`; loading and conversion
+lyrics panel is open. Those two stay on/off icon controls with `aria-pressed`; loading and conversion
 errors do not change the icon. Toggling off and on retries a failed conversion.
 The control stays visible while the next track is inspected, then hides if that
 track does not support romanization.
+The drawer instead shows a three-way radio — `none` / `translation` /
+`romanization` — because translation and romanization are mutually exclusive
+secondary lines. The choice is persisted as `app_settings.lyrics_secondary_mode`;
+an option the track cannot satisfy (no translation, unsupported script) is
+disabled and renders no secondary line without overwriting the stored choice.
+Only choosing `romanization` enables the session conversion.
 Synced browse mode survives
 secondary text changes; auto-follow remeasures only when following playback.
 See [lyrics contracts](../lyrics/README.md#offline-fullscreen-romanization) for

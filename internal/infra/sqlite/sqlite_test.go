@@ -287,6 +287,7 @@ func TestNormalizationSettingsRoundTrip(t *testing.T) {
 		LyricsGlow:                      true,
 		LivingArtworkBackground:         false,
 		RomanizationEnabled:             false,
+		LyricsSecondaryMode:             domain.LyricsSecondaryRomanization,
 		AutoAdvanceNotificationsEnabled: false,
 	}
 	if err := repo.Save(ctx, in); err != nil {
@@ -314,6 +315,9 @@ func TestNormalizationSettingsRoundTrip(t *testing.T) {
 	}
 	if out.RomanizationEnabled != false {
 		t.Errorf("RomanizationEnabled round-trip mismatch: %+v", out)
+	}
+	if out.LyricsSecondaryMode != domain.LyricsSecondaryRomanization {
+		t.Errorf("LyricsSecondaryMode round-trip mismatch: %+v", out)
 	}
 	if out.AutoAdvanceNotificationsEnabled != false {
 		t.Errorf("AutoAdvanceNotificationsEnabled round-trip mismatch: %+v", out)
