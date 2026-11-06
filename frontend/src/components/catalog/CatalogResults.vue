@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { AlertTriangle, Check, Heart, ListPlus, Loader2, Music, Download } from '@lucide/vue'
 import ContextMenu from '@/components/ContextMenu.vue'
@@ -44,26 +44,178 @@ const { t } = useI18n()
 const playlistsStore = usePlaylistsStore()
 const playlistMenu = useContextMenu()
 
-/** Covers that failed to load, so the row falls back to the placeholder icon. */
+// --- Cover thumbnails -------------------------------------------------------
+//
+// Native `loading="lazy"` is only a hint: Chromium starts a whole screen ahead,
+// so a 50-row page fires 20–30 requests at once and the slow ones compete with
+// the text. Covers are therefore loaded deterministically: a visible row asks
+// the queue for its image (IntersectionObserver, 200px pre-fetch margin), and at
+// most MAX_CONCURRENT_COVERS images are in flight. An image is rendered only
+// after it finished preloading, so a row never flashes a half-drawn picture.
+
+const MAX_CONCURRENT_COVERS = 4
+const COVER_ROOT_MARGIN = '200px 0px'
+
+const rootEl = ref<HTMLElement | null>(null)
+/** Covers that finished preloading and may be rendered. */
+const loadedCovers = reactive(new Set<string>())
+/** Covers that failed (or errored after being rendered), so the row keeps the placeholder. */
 const failedCovers = reactive(new Set<string>())
+/** Covers already queued or loaded, so scrolling back does not re-request them. */
+const requestedCovers = reactive(new Set<string>())
+
+interface CoverTask {
+  key: string
+  url: string
+}
+
+/** Placeholder element of each row, keyed by `coverKey`, observed for visibility. */
+const coverElements = new Map<string, Element>()
+/** Element → request, populated when (and only when) it is observed. */
+const observedCovers = new Map<Element, CoverTask>()
+let coverQueue: CoverTask[] = []
+let coverInFlight = 0
+const inFlightImages = new Set<HTMLImageElement>()
+let coverObserver: IntersectionObserver | null = null
+let disposed = false
 
 function coverKey(row: CatalogRowDTO): string {
   return `${row.provider}/${row.external_id}`
 }
 
-function hasCover(row: CatalogRowDTO): boolean {
-  return !!row.cover_url && !failedCovers.has(coverKey(row))
+/** coverLoaded gates the <img>; until preloading finishes the placeholder stays. */
+function coverLoaded(row: CatalogRowDTO): boolean {
+  return !!row.cover_url && loadedCovers.has(coverKey(row))
 }
 
 function onCoverError(row: CatalogRowDTO) {
-  failedCovers.add(coverKey(row))
+  // The browser cache can drop a preloaded image; fall back to the placeholder.
+  const key = coverKey(row)
+  loadedCovers.delete(key)
+  failedCovers.add(key)
 }
+
+function pumpCovers() {
+  while (!disposed && coverInFlight < MAX_CONCURRENT_COVERS && coverQueue.length > 0) {
+    const task = coverQueue.shift()!
+    if (loadedCovers.has(task.key) || failedCovers.has(task.key)) continue
+
+    coverInFlight++
+    const image = new Image()
+    inFlightImages.add(image)
+    let settled = false
+
+    const finish = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      image.onload = null
+      image.onerror = null
+      inFlightImages.delete(image)
+      coverInFlight--
+      if (!disposed) {
+        if (ok) loadedCovers.add(task.key)
+        else failedCovers.add(task.key)
+        pumpCovers()
+      }
+    }
+
+    image.onload = () => finish(true)
+    image.onerror = () => finish(false)
+    image.src = task.url
+  }
+}
+
+function requestCover(key: string, url: string) {
+  if (disposed || !url || requestedCovers.has(key) || failedCovers.has(key)) return
+  requestedCovers.add(key)
+  coverQueue.push({ key, url })
+  pumpCovers()
+}
+
+/** setCoverRef collects the placeholder element of each row for the observer. */
+function setCoverRef(key: string, el: unknown) {
+  const node = el as Element | null
+  if (node && node.nodeType === 1) coverElements.set(key, node)
+  else coverElements.delete(key)
+}
+
+/** findScrollParent returns the list's scroller; observing the viewport would
+ *  ignore the clipping by the overflow container. */
+function findScrollParent(el: HTMLElement | null): Element | null {
+  let node = el?.parentElement ?? null
+  while (node) {
+    const overflowY = window.getComputedStyle(node).overflowY
+    if (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay') return node
+    node = node.parentElement
+  }
+  return null
+}
+
+function onCoverVisible(entries: IntersectionObserverEntry[]) {
+  for (const entry of entries) {
+    if (!entry.isIntersecting) continue
+    const task = observedCovers.get(entry.target)
+    if (!task) continue
+    coverObserver?.unobserve(entry.target)
+    observedCovers.delete(entry.target)
+    requestCover(task.key, task.url)
+  }
+}
+
+/** rebuildCoverObserver re-arms every row the current page added; loaded and
+ *  failed rows are skipped so an append never re-requests them. */
+function rebuildCoverObserver() {
+  coverObserver?.disconnect()
+  observedCovers.clear()
+  if (!coverObserver || disposed) return
+
+  for (const [key, element] of coverElements) {
+    const row = rowsByKey.value.get(key)
+    if (!row?.cover_url || requestedCovers.has(key) || failedCovers.has(key)) continue
+    observedCovers.set(element, { key, url: row.cover_url })
+    coverObserver.observe(element)
+  }
+}
+
+const rowsByKey = computed(() => {
+  const map = new Map<string, CatalogRowDTO>()
+  for (const row of props.rows) map.set(coverKey(row), row)
+  return map
+})
 
 const isAllSources = computed(() => props.activeSource === '')
 const showList = computed(() => props.hasQuery && !props.loading && props.rows.length > 0)
 const showEmpty = computed(
   () => props.hasQuery && !props.loading && props.errorKind === '' && props.rows.length === 0,
 )
+
+// Re-arm the observer after every page append or source switch; refs are
+// refreshed by the DOM update before this post-flush callback runs.
+watch([() => props.rows, showList], () => {
+  void nextTick(rebuildCoverObserver)
+})
+
+onMounted(() => {
+  if (typeof IntersectionObserver === 'undefined') return
+  coverObserver = new IntersectionObserver(onCoverVisible, {
+    root: findScrollParent(rootEl.value),
+    rootMargin: COVER_ROOT_MARGIN,
+  })
+  void nextTick(rebuildCoverObserver)
+})
+
+onUnmounted(() => {
+  disposed = true
+  coverObserver?.disconnect()
+  coverObserver = null
+  coverQueue = []
+  for (const image of inFlightImages) {
+    image.onload = null
+    image.onerror = null
+  }
+  inFlightImages.clear()
+  coverInFlight = 0
+})
 
 /** sourceName falls back to the id, so a plugin without a label still reads. */
 function sourceName(id: string): string {
@@ -120,11 +272,17 @@ function openPlaylistMenu(event: MouseEvent, row: CatalogRowDTO) {
   playlistMenu.open(event, items)
 }
 
-defineExpose({ failureText, subtitle, canAct })
+defineExpose({
+  failureText,
+  subtitle,
+  canAct,
+  coverQueueSize: () => coverQueue.length,
+  coverInFlightCount: () => coverInFlight,
+})
 </script>
 
 <template>
-  <div class="space-y-6">
+  <div ref="rootEl" class="space-y-6">
     <!-- Source bar: 全部 + one button per source the plugin reported. -->
     <div v-if="sources.length > 0" class="flex flex-wrap items-center gap-2">
       <button
@@ -217,14 +375,16 @@ defineExpose({ failureText, subtitle, canAct })
         :data-identity="`${row.provider}/${row.external_id}`"
         class="group flex items-center gap-3 rounded-xl p-2 transition-colors hover:bg-foreground/[0.04]"
       >
-        <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg bg-foreground/[0.06] ring-1 ring-foreground/[0.06]">
+        <div
+          :ref="(el) => setCoverRef(coverKey(row), el)"
+          class="flex h-10 w-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg bg-foreground/[0.06] ring-1 ring-foreground/[0.06]"
+        >
           <img
-            v-if="hasCover(row)"
+            v-if="coverLoaded(row)"
             :src="row.cover_url"
             :alt="row.title"
-            loading="lazy"
             data-test="catalog-cover"
-            class="h-full w-full object-cover"
+            class="catalog-cover-fade h-full w-full object-cover"
             @error="onCoverError(row)"
           />
           <Music v-else class="h-5 w-5 text-dimmer" data-test="catalog-cover-placeholder" />
@@ -348,3 +508,20 @@ defineExpose({ failureText, subtitle, canAct })
     />
   </div>
 </template>
+
+<style scoped>
+/* Preloaded images fade in; the placeholder never animates, so scrolling does
+   not flicker. Fixed 150ms keeps the row height stable. */
+.catalog-cover-fade {
+  animation: catalog-cover-fade-in 150ms ease-out both;
+}
+
+@keyframes catalog-cover-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+</style>

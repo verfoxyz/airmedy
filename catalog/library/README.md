@@ -240,7 +240,7 @@ with Add/Remove/Sync All/Optimize Search, a Rescan Interval section (`SYNC_INTER
 
 ## Orphan Cleanup
 
-After syncing, `AlbumRepository.DeleteOrphaned()`, `ArtistRepository.DeleteOrphaned()`, `GenreRepository.DeleteOrphaned()`, `ComposerRepository.DeleteOrphaned()` remove entities no longer referenced by any track. Artwork cleanup is handled by `ArtworkCache.CleanupOrphaned()` using the set of active artwork keys from `TrackRepository.GetAllArtworkKeys()`.
+After syncing and after a single-file deletion (`DeleteTrackFile`), `AlbumRepository.DeleteOrphaned()`, `ArtistRepository.DeleteOrphaned()`, `GenreRepository.DeleteOrphaned()`, `ComposerRepository.DeleteOrphaned()` remove entities no longer referenced by any track. Artwork cleanup is handled by `ArtworkCache.CleanupOrphaned()` using the set of active artwork keys from `TrackRepository.GetAllArtworkKeys()`, `ArtistRepository.GetAllArtworkKeys()` and `PlaylistRepository.GetAllArtworkKeys()`. Both steps are best-effort: failures are logged and never fail the caller.
 
 ## Metadata Update Flow
 
@@ -261,8 +261,10 @@ runs only after the user picks "delete file" in `DeleteTrackDialog.vue`. It refu
 before any DB change, so the row never points at a missing file silently), then in one
 transaction deletes the `tracks` row and its `download_jobs` (`DownloadJobRepository.DeleteByTrack`).
 Playlist membership disappears through the `playlist_tracks` FK cascade. The Bleve entry is
-removed afterwards (a failure is logged, not fatal), and `library:track-deleted` lets views
-drop the row in place.
+removed afterwards (a failure is logged, not fatal), then the orphaned albums/artists/
+composers/genres and their unreferenced artwork are pruned (also non-fatal). `library:track-deleted`
+lets views drop the row in place, and `library:updated` makes album/artist/genre/composer
+list views reload so a now-empty entity disappears.
 
 ## Play Count & Recently Played
 

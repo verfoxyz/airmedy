@@ -25,6 +25,82 @@ vi.mock('../../../bindings/airmedy/internal/infra/wails/playlistservice', () => 
   GetPlaylistByID: vi.fn().mockResolvedValue(null),
 }))
 
+// --- Cover loading doubles ---------------------------------------------------
+//
+// jsdom has neither IntersectionObserver nor image fetching, so the component's
+// deterministic pipeline is driven by these two fakes: the test decides when a
+// row becomes visible and when its preload settles.
+
+class FakeIntersectionObserver {
+  static instances: FakeIntersectionObserver[] = []
+
+  readonly observed: Element[] = []
+  readonly root: Element | null
+  readonly rootMargin: string
+  disconnected = false
+
+  constructor(
+    private readonly callback: (
+      entries: Array<{ target: Element; isIntersecting: boolean }>,
+      observer: FakeIntersectionObserver,
+    ) => void,
+    options?: { root?: Element | null; rootMargin?: string },
+  ) {
+    this.root = options?.root ?? null
+    this.rootMargin = options?.rootMargin ?? '0px'
+    FakeIntersectionObserver.instances.push(this)
+  }
+
+  observe(element: Element) {
+    if (!this.observed.includes(element)) this.observed.push(element)
+  }
+
+  unobserve(element: Element) {
+    const index = this.observed.indexOf(element)
+    if (index >= 0) this.observed.splice(index, 1)
+  }
+
+  disconnect() {
+    this.disconnected = true
+    this.observed.length = 0
+  }
+
+  intersect(element: Element) {
+    this.callback([{ target: element, isIntersecting: true }], this)
+  }
+
+  intersectAll() {
+    for (const element of [...this.observed]) {
+      this.intersect(element)
+    }
+  }
+}
+
+class FakeImage {
+  static instances: FakeImage[] = []
+
+  onload: (() => void) | null = null
+  onerror: (() => void) | null = null
+  src = ''
+
+  constructor() {
+    FakeImage.instances.push(this)
+  }
+
+  succeed() {
+    this.onload?.()
+  }
+
+  fail() {
+    this.onerror?.()
+  }
+}
+
+// The component reads these globals at runtime; installing them per test keeps
+// every mount deterministic.
+vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver)
+vi.stubGlobal('Image', FakeImage)
+
 const SOURCES: CatalogSourceDTO[] = [
   { id: 'wy', name: 'NetEase' },
   { id: 'kg', name: 'Kugou' },
@@ -75,6 +151,8 @@ describe('CatalogResults', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
+    FakeIntersectionObserver.instances = []
+    FakeImage.instances = []
   })
 
   it('renders 全部 plus one button per source and emits the chosen source', async () => {
@@ -100,19 +178,164 @@ describe('CatalogResults', () => {
     wrapper.unmount()
   })
 
-  it('renders a cover thumbnail and falls back to the placeholder on load failure', async () => {
+  it('does not request a cover until its row enters the viewport', async () => {
     const wrapper = mountResults({
       sources: SOURCES,
       rows: [row({ cover_url: 'https://p1.music.126.net/cover.jpg?param=100y100' })],
     })
+    await flushPromises()
+
+    const observer = FakeIntersectionObserver.instances.at(-1)!
+    // The observer must target the list scroller with a pre-fetch boundary.
+    expect(observer.rootMargin).toBe('200px 0px')
+    expect(observer.observed).toHaveLength(1)
+    // Nothing is fetched and no <img> exists while the row is off-screen.
+    expect(FakeImage.instances).toHaveLength(0)
+    expect(wrapper.find('[data-test="catalog-cover"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="catalog-cover-placeholder"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('preloads a visible cover once, then renders it', async () => {
+    const wrapper = mountResults({
+      sources: SOURCES,
+      rows: [row({ cover_url: 'https://p1.music.126.net/cover.jpg?param=100y100' })],
+    })
+    await flushPromises()
+
+    const observer = FakeIntersectionObserver.instances.at(-1)!
+    const target = observer.observed[0]
+    observer.intersect(target)
+    // Entering the queue unobserves the row, so visibility cannot loop.
+    expect(observer.observed).toHaveLength(0)
+    expect(FakeImage.instances).toHaveLength(1)
+    expect(FakeImage.instances[0].src).toContain('param=100y100')
+
+    // A second visibility report for the same key must not request it again.
+    observer.intersect(target)
+    expect(FakeImage.instances).toHaveLength(1)
+
+    FakeImage.instances[0].succeed()
+    await flushPromises()
 
     const img = wrapper.get('[data-test="catalog-cover"]')
     expect(img.attributes('src')).toContain('param=100y100')
-    expect(img.attributes('loading')).toBe('lazy')
+    // The native hint is gone: the queue, not the browser, decides when to load.
+    expect(img.attributes('loading')).toBeUndefined()
+    wrapper.unmount()
+  })
 
-    await img.trigger('error')
+  it('falls back to the placeholder when a preload fails and never retries it', async () => {
+    const wrapper = mountResults({
+      sources: SOURCES,
+      rows: [row({ cover_url: 'https://p1.music.126.net/cover.jpg?param=100y100' })],
+    })
+    await flushPromises()
+
+    const observer = FakeIntersectionObserver.instances.at(-1)!
+    const target = observer.observed[0]
+    observer.intersect(target)
+    FakeImage.instances[0].fail()
+    await flushPromises()
+
     expect(wrapper.find('[data-test="catalog-cover"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="catalog-cover-placeholder"]').exists()).toBe(true)
+
+    // Failed keys stay out of the queue even if the row is reported again.
+    observer.intersect(target)
+    expect(FakeImage.instances).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('falls back to the placeholder if the rendered image errors', async () => {
+    const wrapper = mountResults({
+      sources: SOURCES,
+      rows: [row({ cover_url: 'https://p1.music.126.net/cover.jpg?param=100y100' })],
+    })
+    await flushPromises()
+    FakeIntersectionObserver.instances.at(-1)!.intersectAll()
+    FakeImage.instances[0].succeed()
+    await flushPromises()
+
+    await wrapper.get('[data-test="catalog-cover"]').trigger('error')
+    expect(wrapper.find('[data-test="catalog-cover"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="catalog-cover-placeholder"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('keeps at most four cover requests in flight', async () => {
+    const rows = Array.from({ length: 10 }, (_, index) =>
+      row({ external_id: String(index), cover_url: `https://cdn.example/${index}.jpg` }),
+    )
+    const wrapper = mountResults({ sources: SOURCES, rows })
+    await flushPromises()
+
+    const observer = FakeIntersectionObserver.instances.at(-1)!
+    expect(observer.observed).toHaveLength(10)
+    observer.intersectAll()
+
+    const exposed = wrapper.vm as unknown as {
+      coverQueueSize: () => number
+      coverInFlightCount: () => number
+    }
+    expect(FakeImage.instances).toHaveLength(4)
+    expect(exposed.coverInFlightCount()).toBe(4)
+    expect(exposed.coverQueueSize()).toBe(6)
+
+    // One completion admits exactly one queued image.
+    FakeImage.instances[0].succeed()
+    await flushPromises()
+    expect(FakeImage.instances).toHaveLength(5)
+    expect(exposed.coverInFlightCount()).toBe(4)
+    expect(exposed.coverQueueSize()).toBe(5)
+    wrapper.unmount()
+  })
+
+  it('disconnects the observer and clears pending covers on unmount', async () => {
+    const rows = Array.from({ length: 10 }, (_, index) =>
+      row({ external_id: String(index), cover_url: `https://cdn.example/${index}.jpg` }),
+    )
+    const wrapper = mountResults({ sources: SOURCES, rows })
+    await flushPromises()
+
+    const observer = FakeIntersectionObserver.instances.at(-1)!
+    observer.intersectAll()
+    const exposed = wrapper.vm as unknown as { coverQueueSize: () => number }
+    const queued = exposed.coverQueueSize
+    expect(queued()).toBe(6)
+
+    wrapper.unmount()
+
+    expect(observer.disconnected).toBe(true)
+    expect(queued()).toBe(0)
+    // In-flight callbacks are detached, so a late image cannot touch unmounted state.
+    for (const image of FakeImage.instances) {
+      expect(image.onload).toBeNull()
+      expect(image.onerror).toBeNull()
+    }
+    FakeImage.instances[0].succeed()
+    expect(FakeImage.instances).toHaveLength(4)
+  })
+
+  it('observes appended rows without re-requesting covers already loaded', async () => {
+    const first = row({ external_id: 'one', cover_url: 'https://cdn.example/one.jpg' })
+    const wrapper = mountResults({ sources: SOURCES, rows: [first] })
+    await flushPromises()
+
+    const observer = FakeIntersectionObserver.instances.at(-1)!
+    observer.intersectAll()
+    FakeImage.instances[0].succeed()
+    await flushPromises()
+
+    await wrapper.setProps({
+      rows: [first, row({ external_id: 'two', cover_url: 'https://cdn.example/two.jpg' })],
+    })
+    await flushPromises()
+
+    // Only the new row is left to observe; the loaded one is never re-queued.
+    expect(observer.observed).toHaveLength(1)
+    observer.intersectAll()
+    expect(FakeImage.instances).toHaveLength(2)
     wrapper.unmount()
   })
 

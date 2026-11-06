@@ -1708,10 +1708,22 @@ func (s *LibraryService) DeleteTrackFile(ctx context.Context, id string) error {
 		s.logger.Warn("Failed to remove the deleted track from the search index", "track_id", id, "error", err)
 	}
 
+	// Prune entities the deleted row was the last reference to, and the artwork
+	// files nobody points at anymore — the same best-effort pair the
+	// folder-removal and resync paths run, so "delete file" and "delete folder"
+	// leave the library in the same state.
+	s.cleanupOrphanedEntities(ctx)
+	if err := s.CleanupOrphanedArtworks(ctx); err != nil {
+		s.logger.Warn("Failed to cleanup orphaned artworks", "error", err)
+	}
+
 	// Listeners first (analysis pool), then the UI so both see one deletion.
 	s.notifyTracksDeleted([]string{id})
 	if app := application.Get(); app != nil && app.Event != nil {
 		app.Event.Emit("library:track-deleted", id)
+		// Albums/artists/genres/composers views reload on this event; without it a
+		// just-orphaned entity would keep its now-empty page until a manual refresh.
+		app.Event.Emit("library:updated", nil)
 	}
 	s.logger.Info("Deleted track file", "track_id", id, "path", path)
 	return nil

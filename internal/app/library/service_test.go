@@ -276,13 +276,18 @@ func (m *mockDownloadJobs) DeleteByTrack(ctx context.Context, trackID string) er
 	return nil
 }
 
-type mockArtworkCache struct{ domain.ArtworkCache }
+type mockArtworkCache struct {
+	domain.ArtworkCache
+	cleanupCalls int
+	cleanupErr   error
+}
 
 func (m *mockArtworkCache) Save(ctx context.Context, data []byte, mimeType string) (string, error) {
 	return "", nil
 }
 func (m *mockArtworkCache) CleanupOrphaned(ctx context.Context, activeKeys map[string]bool) error {
-	return nil
+	m.cleanupCalls++
+	return m.cleanupErr
 }
 
 type mockMetadataWriter struct{}
