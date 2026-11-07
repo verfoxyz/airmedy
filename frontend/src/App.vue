@@ -7,6 +7,7 @@ import DeleteTrackDialog from './components/DeleteTrackDialog.vue'
 import ExportLyricsDialog from './components/ExportLyricsDialog.vue'
 import CreatePlaylistWithTracksDialog from './components/CreatePlaylistWithTracksDialog.vue'
 import MobilePairingDialog from './components/MobilePairingDialog.vue'
+import SyncProgressDialog from './components/settings/SyncProgressDialog.vue'
 import DevToolsOverlay from './components/DevToolsOverlay.vue'
 import { hexToRgba } from '@airmedy/utils'
 import { usePlayerStore } from './stores/player'
@@ -18,6 +19,7 @@ import { useAppStore } from './stores/app'
 import { useMobilePairingStore } from './stores/mobilePairing'
 import { useDownloadStore } from './stores/download'
 import { useCatalogStore } from './stores/catalog'
+import { useLibrarySyncStore } from './stores/librarySync'
 import { useI18n } from 'vue-i18n'
 import { Events } from '@wailsio/runtime'
 import * as WindowService from '../bindings/airmedy/internal/infra/wails/windowservice'
@@ -34,6 +36,7 @@ const appStore = useAppStore()
 const mobilePairingStore = useMobilePairingStore()
 const downloadStore = useDownloadStore()
 const catalogStore = useCatalogStore()
+const librarySyncStore = useLibrarySyncStore()
 const isDevelopment = import.meta.env.DEV
 
 const isRouterReady = ref(false)
@@ -140,6 +143,8 @@ onMounted(async () => {
   playlistsStore.loadAll()
   moodRadioStore.init()
   mobilePairingStore.init()
+  // The sync dialog is global so page switches cannot leave it behind.
+  librarySyncStore.init()
   // Pull the queue once at startup: jobs queued or failed before a restart are
   // otherwise invisible until the next download event.
   void downloadStore.hydrate()
@@ -168,6 +173,7 @@ onUnmounted(() => {
   mobilePairingStore.dispose()
   downloadStore.dispose()
   catalogStore.dispose()
+  librarySyncStore.dispose()
   appStore.dispose()
 })
 
@@ -220,6 +226,13 @@ watch(() => playerStore.playerMode, (newMode) => {
   <ExportLyricsDialog />
   <CreatePlaylistWithTracksDialog v-if="!isMiniPlayer" />
   <MobilePairingDialog v-if="!isMiniPlayer" />
+  <SyncProgressDialog
+    v-if="!isMiniPlayer"
+    :open="librarySyncStore.visible"
+    :type="librarySyncStore.displayType"
+    :progress="librarySyncStore.progress"
+    :complete="librarySyncStore.complete"
+  />
 </template>
 
 <style>

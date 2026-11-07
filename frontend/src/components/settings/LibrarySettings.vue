@@ -5,10 +5,9 @@ import { useI18n } from 'vue-i18n'
 import * as LibraryService from '../../../bindings/airmedy/internal/infra/wails/libraryservice'
 import { GetProgress, ListFailedTracks, RetryFailedTracks } from '../../../bindings/airmedy/internal/infra/wails/analysisservice'
 import { RotateCcw, Plus, Trash2, Folder, Loader2, DatabaseZap, Info, Tags, RefreshCw, Gauge, Music, TimerReset } from '@lucide/vue'
-import type { WatchedFolder, SyncProgress } from '../../../bindings/airmedy/internal/domain/models'
+import type { WatchedFolder } from '../../../bindings/airmedy/internal/domain/models'
 import { Events } from '@wailsio/runtime'
 import ConfirmDialog from '../ConfirmDialog.vue'
-import SyncProgressDialog from './SyncProgressDialog.vue'
 import DelimiterInput from './DelimiterInput.vue'
 import SettingSection from './SettingSection.vue'
 import SettingRow from './SettingRow.vue'
@@ -27,10 +26,12 @@ import LazyImg from '../LazyImg.vue'
 import { buildArtworkUrl } from '@airmedy/utils'
 import { VISIBLE_SYNC_INTERVALS, type SyncInterval } from '@/lib/librarySync'
 import { useAppStore } from '../../stores/app'
+import { useLibrarySyncStore } from '../../stores/librarySync'
 
 const { t } = useI18n()
 
 const appStore = useAppStore()
+const librarySyncStore = useLibrarySyncStore()
 const { artistDelimiters, albumArtistDelimiters, genreDelimiters, composerDelimiters, librarySyncInterval } = storeToRefs(appStore)
 
 // Library analysis progress + worker-count slider.
@@ -136,16 +137,12 @@ const onDelimitersChange = async (
 
 // State
 const folders = ref<WatchedFolder[]>([])
-const isSyncing = ref(false)
-const syncType = ref<'sync' | 'optimize' | null>(null)
+// Sync/optimize state and events live in the global store so the dialog can
+// render from App.vue and survive page switches.
+const isSyncing = computed(() => librarySyncStore.isSyncing)
+const removingFolderIds = computed(() => librarySyncStore.removingFolderIds)
 const isLoading = ref(true)
-const syncProgress = ref<SyncProgress | null>(null)
-const syncComplete = ref(false)
-// True while an automatic background sync is running: the button still shows
-// busy, but the overlay stays hidden (see showSyncDialog below).
-const backgroundSyncActive = ref(false)
 const folderToDelete = ref<string | null>(null)
-const removingFolderIds = ref<string[]>([])
 
 const loadFolders = async (showLoader = true) => {
   if (showLoader) isLoading.value = true
@@ -175,7 +172,7 @@ const removeFolder = async () => {
   if (!folderToDelete.value) return
   const id = folderToDelete.value
   folderToDelete.value = null
-  removingFolderIds.value.push(id)
+  librarySyncStore.addRemovingFolder(id)
 
   try {
     await LibraryService.RemoveFolder(id)
@@ -183,34 +180,16 @@ const removeFolder = async () => {
   } catch (err) {
     console.error('Failed to remove folder:', err)
   } finally {
-    removingFolderIds.value = removingFolderIds.value.filter(fid => fid !== id)
+    librarySyncStore.removeRemovingFolder(id)
   }
 }
 
-const syncLibrary = async () => {
-  if (isSyncing.value) return
-  isSyncing.value = true
-  syncType.value = 'sync'
-  try {
-    await LibraryService.SyncAll()
-  } catch (err) {
-    console.error('Sync failed:', err)
-    isSyncing.value = false
-    syncType.value = null
-  }
+const syncLibrary = () => {
+  void librarySyncStore.runSync()
 }
 
-const optimizeSearch = async () => {
-  if (isSyncing.value) return
-  isSyncing.value = true
-  syncType.value = 'optimize'
-  try {
-    await LibraryService.ReindexAll()
-  } catch (err) {
-    console.error('Optimization failed:', err)
-    isSyncing.value = false
-    syncType.value = null
-  }
+const optimizeSearch = () => {
+  void librarySyncStore.runOptimize()
 }
 
 // User-triggered repair for rows whose stored duration is implausible (older
@@ -247,29 +226,6 @@ const repairDurations = async () => {
   }
 }
 
-const handleSyncStarted = (ev: Events.WailsEvent) => {
-  const data = ev.data as any
-  isSyncing.value = true
-  if (data.background) {
-    backgroundSyncActive.value = true
-    return
-  }
-  backgroundSyncActive.value = false
-  syncComplete.value = false
-  syncProgress.value = {
-    current: 0,
-    total: data.total || 0,
-    path: data.path || ''
-  }
-}
-
-const handleSyncProgress = (ev: Events.WailsEvent) => {
-  const progress = ev.data as SyncProgress
-  isSyncing.value = true
-  backgroundSyncActive.value = false
-  syncProgress.value = progress
-}
-
 const refreshDelimitersPending = async () => {
   try {
     delimitersDirty.value = await LibraryService.DelimitersPendingResync()
@@ -278,47 +234,15 @@ const refreshDelimitersPending = async () => {
   }
 }
 
-const handleSyncFinished = (ev: Events.WailsEvent) => {
-  const data = ev.data as any
-  isSyncing.value = false
-  if (!data?.background) {
-    syncComplete.value = true
-  }
-  backgroundSyncActive.value = false
-  // Re-query the backend so the banner reflects the actual applied state. Always
-  // (not gated on syncType): a Sync Library run emits several sync-finished
-  // events — folder sync, re-split, then re-index — and only the last one lands
-  // after the delimiter signature is persisted.
-  refreshDelimitersPending()
-}
-
-// Background syncs keep the button spinning (isSyncing) but never show the
-// overlay — only a foreground (user-triggered) sync does.
-const showSyncDialog = computed(
-  () =>
-    (isSyncing.value && !backgroundSyncActive.value) ||
-    removingFolderIds.value.length > 0 ||
-    syncComplete.value
-)
-
-watch(syncComplete, (val) => {
-  if (val) setTimeout(() => {
-    syncProgress.value = null
-    syncComplete.value = false
-    syncType.value = null
-  }, 1500)
+// The global sync store owns the sync-finished subscription; bumping its
+// counter lets this page re-read the delimiter state after any sync.
+watch(() => librarySyncStore.finishedCount, () => {
+  void refreshDelimitersPending()
 })
-
-let offSyncStarted: (() => void) | null = null
-let offSyncProgress: (() => void) | null = null
-let offSyncFinished: (() => void) | null = null
 
 onMounted(() => {
   loadFolders()
   refreshDelimitersPending()
-  offSyncStarted = Events.On('library:sync-started', handleSyncStarted)
-  offSyncProgress = Events.On('library:sync-progress', handleSyncProgress)
-  offSyncFinished = Events.On('library:sync-finished', handleSyncFinished)
 
   // Subscribe first so no event landing between the fetch and its resolution
   // is missed, then fetch the current snapshot immediately — otherwise the
@@ -334,9 +258,6 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  offSyncStarted?.()
-  offSyncProgress?.()
-  offSyncFinished?.()
   offAnalysisProgress?.()
 })
 </script>
@@ -497,9 +418,6 @@ onUnmounted(() => {
     <ConfirmDialog :open="!!folderToDelete" @cancel="folderToDelete = null"
       :title="t('settings.folders.remove_folder_title')" :message="t('settings.folders.remove_folder_confirm')"
       :confirm-label="t('settings.folders.remove_folder')" danger @confirm="removeFolder" />
-
-    <SyncProgressDialog :open="showSyncDialog" :type="removingFolderIds.length > 0 ? 'deleting' : (syncType || 'sync')"
-      :progress="syncProgress" :complete="syncComplete" />
 
     <Modal :open="showDurationRepair" :title="t('settings.sync.duration_repair_title')" width-class="w-[36rem]"
       @close="showDurationRepair = false">
