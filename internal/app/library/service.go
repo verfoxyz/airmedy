@@ -33,6 +33,48 @@ type ctxKey int
 
 const backgroundSyncKey ctxKey = iota
 
+// syncProgressInterval bounds how often a progress event reaches the webview.
+// A full re-index of ~5k items used to emit ~5k events in under a second; the
+// frontend could not keep up and the finished event sat behind the backlog.
+const syncProgressInterval = 100 * time.Millisecond
+
+// syncProgressEmitter is one throttled progress sink. The first and final
+// values always pass, so the UI never misses the start or the 100% mark.
+type syncProgressEmitter func(current, total int, path string)
+
+// newProgressEmitter builds the production emitter bound to the Wails event bus.
+func newProgressEmitter(show bool) syncProgressEmitter {
+	return newProgressEmitterWith(show, emitLibrarySyncProgress)
+}
+
+// newProgressEmitterWith is the testable form: `emit` receives only the events
+// that survive the throttle.
+func newProgressEmitterWith(show bool, emit func(domain.SyncProgress)) syncProgressEmitter {
+	var last time.Time
+	return func(current, total int, path string) {
+		if !show {
+			return
+		}
+		if current != 1 && current != total && time.Since(last) < syncProgressInterval {
+			return
+		}
+		if emit == nil {
+			return
+		}
+		last = time.Now()
+		emit(domain.SyncProgress{Current: current, Total: total, Path: path})
+	}
+}
+
+// emitLibrarySyncProgress sends one event through the Wails event bus.
+func emitLibrarySyncProgress(progress domain.SyncProgress) {
+	app := application.Get()
+	if app == nil || app.Event == nil {
+		return
+	}
+	app.Event.Emit("library:sync-progress", progress)
+}
+
 // withBackgroundSync returns a context flagged as an automatic background sync.
 func withBackgroundSync(ctx context.Context) context.Context {
 	return context.WithValue(ctx, backgroundSyncKey, true)
@@ -801,20 +843,16 @@ func (s *LibraryService) syncFolderLocked(ctx context.Context, root string) erro
 	// Single consumer: serialize all DB writes and emit progress. Start the counter
 	// past the files skipped as unchanged so the bar still advances to Total.
 	current := total - len(toImport)
-	emitProgress := !isBackgroundSync(ctx) // background syncs run without the dialog
+	progress := newProgressEmitter(!isBackgroundSync(ctx)) // background syncs run without the dialog
 	for job := range jobs {
 		current++
-		if app := application.Get(); emitProgress && app != nil && app.Event != nil {
-			app.Event.Emit("library:sync-progress", domain.SyncProgress{
-				Current: current,
-				Total:   total,
-				Path:    job.path,
-			})
-		}
+		progress(current, total, job.path)
 		if err := s.persistImported(ctx, job); err != nil {
 			s.logger.Error("Failed to import file", "path", job.path, "error", err)
 		}
 	}
+	// Always land on 100%, even when the loop had no jobs (all files unchanged).
+	progress(total, total, "")
 
 	// 2b. Apply local artist images in one batch (per image directory).
 	s.applyLocalArtistImagesForDirs(ctx, imageDirs)
@@ -1399,7 +1437,7 @@ func (s *LibraryService) resplitLibraryLocked(ctx context.Context) error {
 	}()
 
 	total := len(tracks)
-	emitProgress := !isBackgroundSync(ctx) // background syncs run without the dialog
+	progress := newProgressEmitter(!isBackgroundSync(ctx)) // background syncs run without the dialog
 	if app := application.Get(); app != nil && app.Event != nil {
 		app.Event.Emit("library:sync-started", map[string]interface{}{
 			"path":       "",
@@ -1415,14 +1453,9 @@ func (s *LibraryService) resplitLibraryLocked(ctx context.Context) error {
 		}); err != nil {
 			s.logger.Error("Failed to re-split track", "path", dto.Path, "error", err)
 		}
-		if app := application.Get(); emitProgress && app != nil && app.Event != nil {
-			app.Event.Emit("library:sync-progress", domain.SyncProgress{
-				Current: i + 1,
-				Total:   total,
-				Path:    dto.Path,
-			})
-		}
+		progress(i+1, total, dto.Path)
 	}
+	progress(total, total, "")
 
 	// Drop artists/genres/composers/albums no longer referenced after re-splitting.
 	s.cleanupOrphanedEntities(ctx)
@@ -2015,16 +2048,10 @@ func (s *LibraryService) reindexAllLocked(ctx context.Context) error {
 	total := len(tracks) + len(albums) + len(artists) + len(composers) + len(playlists)
 	current := 0
 
-	showDialog := !isBackgroundSync(ctx) // background syncs run without the dialog
+	progress := newProgressEmitter(!isBackgroundSync(ctx)) // background syncs run without the dialog
 	emitProgress := func(path string) {
 		current++
-		if app := application.Get(); showDialog && app != nil && app.Event != nil {
-			app.Event.Emit("library:sync-progress", domain.SyncProgress{
-				Current: current,
-				Total:   total,
-				Path:    path,
-			})
-		}
+		progress(current, total, path)
 	}
 
 	if app := application.Get(); app != nil && app.Event != nil {
@@ -2056,6 +2083,8 @@ func (s *LibraryService) reindexAllLocked(ctx context.Context) error {
 	}, emitProgress)
 	if err != nil {
 		s.logger.Warn("Re-indexing did not complete", "error", err)
+	} else {
+		progress(total, total, "Search Index")
 	}
 
 	s.logger.Info("Finished full library re-indexing")
