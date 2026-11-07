@@ -328,7 +328,7 @@ func main() {
 			application.NewService(catalogService),
 		},
 		Assets: application.AssetOptions{
-			Handler: wails.NewAssetHandler(assets, artworkCache),
+			Handler: wails.NewAssetHandler(assets, artworkCache, bootCfg.CoverCachePath()),
 		},
 		Mac: application.MacOptions{
 			ApplicationShouldTerminateAfterLastWindowClosed: false,

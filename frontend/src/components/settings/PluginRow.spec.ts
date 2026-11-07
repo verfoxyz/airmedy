@@ -10,6 +10,12 @@ vi.mock('@airmedy/ui', () => ({
     props: ['modelValue', 'disabled'],
     template: '<button class="switch-stub" :data-disabled="disabled" @click="$emit(\'update:modelValue\', !modelValue)" />',
   },
+  Input: {
+    name: 'Input',
+    props: ['modelValue', 'disabled'],
+    emits: ['update:modelValue'],
+    template: '<input class="input-stub" :value="modelValue" :disabled="disabled" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+  },
 }))
 
 import PluginRow from './PluginRow.vue'
@@ -81,6 +87,27 @@ describe('PluginRow', () => {
 
     await wrapper.get('[data-test="plugin-setting-cover_in_results"]').trigger('click')
     expect(wrapper.emitted('setting-change')?.[0]).toEqual(['cover_in_results', false])
+  })
+
+  it('renders a declared number setting and emits its clamped value', async () => {
+    const wrapper = mountRow({
+      enabled: true,
+      settings: [{
+        key: 'max_display',
+        type: 'number',
+        label: { en: 'Rows shown after merging sources' },
+        value: 10,
+        min: 1,
+        max: 50,
+        step: 1,
+      }],
+    })
+
+    expect(wrapper.find('[data-test="plugin-settings"]').text()).toContain('Rows shown after merging sources')
+    const input = wrapper.get('[data-test="plugin-setting-max_display"]')
+    await input.setValue('99')
+
+    expect(wrapper.emitted('setting-change')?.[0]).toEqual(['max_display', 50])
   })
 
   it('maps the status to a translated label', () => {

@@ -59,8 +59,8 @@ func startWYPlugin(t *testing.T) domain.PluginHost {
 }
 
 // TestWYPluginIsSearchOnly pins the manifest contract: the plugin declares
-// catalog.search, serves no audio provider, and reports its one source on
-// describe rather than hard-coding it in the app.
+// catalog.search, serves no audio provider, and reports its sources on
+// describe rather than hard-coding them in the app.
 func TestWYPluginIsSearchOnly(t *testing.T) {
 	host := startWYPlugin(t)
 
@@ -82,11 +82,16 @@ func TestWYPluginIsSearchOnly(t *testing.T) {
 	if err := host.Call(context.Background(), domain.MethodDescribe, nil, &describe); err != nil {
 		t.Fatalf("describe: %v", err)
 	}
-	if len(describe.SearchSources) != 1 {
-		t.Fatalf("search sources = %+v, want one", describe.SearchSources)
+	if len(describe.SearchSources) != 2 {
+		t.Fatalf("search sources = %+v, want wy and kg", describe.SearchSources)
 	}
-	if got := describe.SearchSources[0]; got.ID != "wy" || got.Name == "" {
-		t.Fatalf("search source = %+v, want {wy, a label}", got)
+	for _, got := range describe.SearchSources {
+		if got.ID != "wy" && got.ID != "kg" {
+			t.Fatalf("search source = %+v, want wy or kg", got)
+		}
+		if got.Name == "" {
+			t.Fatalf("search source = %+v, want a label", got)
+		}
 	}
 	if len(describe.Providers) != 0 {
 		t.Fatalf("describe providers = %v, want none", describe.Providers)
@@ -115,7 +120,7 @@ func TestWYPluginAnswersCallerMistakesWithStructuredErrors(t *testing.T) {
 	}
 
 	err = host.Call(context.Background(), domain.MethodSearch, domain.PluginSearchRequest{
-		Source: "kg", Query: "x",
+		Source: "tx", Query: "x",
 	}, &result)
 	if !errors.As(err, &rpcErr) || rpcErr.Code != domain.RPCErrorInvalidParams {
 		t.Fatalf("error for an unknown source = %v, want invalid params", err)
@@ -135,7 +140,7 @@ func TestWYPluginSurvivesAMalformedRequest(t *testing.T) {
 	if err := host.Call(context.Background(), domain.MethodDescribe, nil, &describe); err != nil {
 		t.Fatalf("describe after a bad request: %v", err)
 	}
-	if len(describe.SearchSources) != 1 {
+	if len(describe.SearchSources) != 2 {
 		t.Fatalf("search sources = %+v, want the plugin still alive", describe.SearchSources)
 	}
 }

@@ -35,17 +35,19 @@ type Config struct {
 // source table behind CatalogSearchSourceRegistry, so this package is testable
 // without a process, and app/catalog never imports app/plugin.
 type Service struct {
-	sources       domain.CatalogSearchSourceRegistry
-	searcher      domain.CatalogSearcher
-	resolver      ResolverAvailability
-	states        domain.CatalogRowStateResolver
-	library       RemoteTracks
-	localTracks   LocalTracks
-	favorites     FavoritesWriter
-	playlists     PlaylistMembership
-	settings      SettingsReader
-	logger        *slog.Logger
-	sourceTimeout time.Duration
+	sources        domain.CatalogSearchSourceRegistry
+	searcher       domain.CatalogSearcher
+	resolver       ResolverAvailability
+	states         domain.CatalogRowStateResolver
+	library        RemoteTracks
+	localTracks    LocalTracks
+	favorites      FavoritesWriter
+	playlists      PlaylistMembership
+	settings       SettingsReader
+	sourceSettings domain.CatalogSourceSettingReader
+	covers         domain.CatalogCoverCache
+	logger         *slog.Logger
+	sourceTimeout  time.Duration
 
 	// coverMu guards the in-memory cover cache. A search only hands URLs to the
 	// UI; the cache keeps them so an action can still embed artwork after the
@@ -72,17 +74,19 @@ type ResolverAvailability interface {
 // downloadable"; a missing searcher means "no source can answer"; a missing
 // library means the actions fail while search still works.
 type Deps struct {
-	Sources     domain.CatalogSearchSourceRegistry
-	Searcher    domain.CatalogSearcher
-	Resolver    ResolverAvailability
-	States      domain.CatalogRowStateResolver
-	Library     RemoteTracks
-	LocalTracks LocalTracks
-	Favorites   FavoritesWriter
-	Playlists   PlaylistMembership
-	Settings    SettingsReader
-	Logger      *slog.Logger
-	Config      Config
+	Sources        domain.CatalogSearchSourceRegistry
+	Searcher       domain.CatalogSearcher
+	Resolver       ResolverAvailability
+	States         domain.CatalogRowStateResolver
+	Library        RemoteTracks
+	LocalTracks    LocalTracks
+	Favorites      FavoritesWriter
+	Playlists      PlaylistMembership
+	Settings       SettingsReader
+	SourceSettings domain.CatalogSourceSettingReader
+	Covers         domain.CatalogCoverCache
+	Logger         *slog.Logger
+	Config         Config
 }
 
 // NewService builds the catalog service.
@@ -96,18 +100,20 @@ func NewService(deps Deps) *Service {
 		timeout = defaultSourceTimeout
 	}
 	return &Service{
-		sources:       deps.Sources,
-		searcher:      deps.Searcher,
-		resolver:      deps.Resolver,
-		states:        deps.States,
-		library:       deps.Library,
-		localTracks:   deps.LocalTracks,
-		favorites:     deps.Favorites,
-		playlists:     deps.Playlists,
-		settings:      deps.Settings,
-		logger:        logger,
-		sourceTimeout: timeout,
-		coverCache:    make(map[domain.CatalogIdentity]string),
+		sources:        deps.Sources,
+		searcher:       deps.Searcher,
+		resolver:       deps.Resolver,
+		states:         deps.States,
+		library:        deps.Library,
+		localTracks:    deps.LocalTracks,
+		favorites:      deps.Favorites,
+		playlists:      deps.Playlists,
+		settings:       deps.Settings,
+		sourceSettings: deps.SourceSettings,
+		covers:         deps.Covers,
+		logger:         logger,
+		sourceTimeout:  timeout,
+		coverCache:     make(map[domain.CatalogIdentity]string),
 	}
 }
 
@@ -141,13 +147,37 @@ func (s *Service) Search(ctx context.Context, request domain.CatalogSearchReques
 	}
 
 	outcome := s.searchSources(ctx, selected, normalised)
-	fused := fuseRanks(normalised.Query, selected, outcome.results)
-	s.rememberCovers(fused)
-	applyAvailability(available, s.resolver, fused)
+	var ranked []domain.CatalogSearchResult
+	if len(selected) == 1 {
+		// A single source keeps its own order; only unusable identities are removed.
+		if result, ok := outcome.results[selected[0]]; ok {
+			ranked = rankSingleSource(selected[0], result)
+		}
+	} else {
+		ranked = rankMultiSource(normalised.Query, selected, outcome.results)
+	}
+	s.rememberCovers(ranked)
+	applyAvailability(available, s.resolver, ranked)
 
-	rows, hasMore := pageOf(fused, normalised.Offset, normalised.Limit)
+	if normalised.Offset >= domain.MaxCatalogSearchPageSize {
+		// The UI stops at the window cap; an out-of-range offset is simply empty.
+		return domain.CatalogSearchPage{Sources: sourceList(available)}, nil
+	}
+	limit := normalised.Limit
+	if remaining := domain.MaxCatalogSearchPageSize - normalised.Offset; limit > remaining {
+		limit = remaining
+	}
+	rows, hasMore := pageOf(ranked, normalised.Offset, limit)
+	// A page is only the fetched window: the source is the authority on whether
+	// rows exist past it. Without this a single source can never page.
+	if !hasMore {
+		hasMore = sourceHasMore(selected, outcome.results)
+	}
+	if normalised.Offset+limit >= domain.MaxCatalogSearchPageSize {
+		hasMore = false
+	}
 	// State is resolved for the page the caller will render, not for the whole
-	// merged list: a page of 50 identities is one cheap lookup each, and rows
+	// merged list: a page of 100 identities is one cheap lookup each, and rows
 	// past it are never shown.
 	s.applyStates(ctx, rows)
 	return domain.CatalogSearchPage{
@@ -156,6 +186,22 @@ func (s *Service) Search(ctx context.Context, request domain.CatalogSearchReques
 		Sources:  sourceList(available),
 		Failures: outcome.failures,
 	}, errors.Join(outcome.errs...)
+}
+
+// sourceHasMore reports whether any selected source answered with rows past
+// the window the host fetched.
+//
+// The merged page can be shorter than the window even though a source has more
+// (one source per selected provider is the normal case), so the source's own
+// flag is the only reliable "load more" signal. Failed or unselected sources
+// simply have no entry here and are skipped.
+func sourceHasMore(selected []string, results map[string]domain.PluginSearchResult) bool {
+	for _, source := range selected {
+		if result, ok := results[source]; ok && result.HasMore {
+			return true
+		}
+	}
+	return false
 }
 
 // searchOutcome is the gathered answers of one search.
@@ -249,6 +295,77 @@ func classifySourceFailure(source string, err error) domain.CatalogSearchSourceF
 		kind = domain.CatalogSearchFailureDisabled
 	}
 	return domain.CatalogSearchSourceFailure{Provider: source, Kind: kind, Message: err.Error()}
+}
+
+// Covers resolves a batch of search-row covers into host-local asset URLs.
+//
+// A failure is per row and never fails the call: the UI turns every `Error`
+// into the placeholder, so one unreachable image host must not blank the others.
+func (s *Service) Covers(ctx context.Context, requests []domain.CatalogCoverRequest) []domain.CatalogCoverResult {
+	results := make([]domain.CatalogCoverResult, 0, len(requests))
+	for _, request := range requests {
+		identity := domain.CatalogIdentity{
+			Provider:   domain.NormalizeProvider(request.Identity.Provider),
+			ExternalID: strings.TrimSpace(request.Identity.ExternalID),
+		}
+		if identity.Provider == "" || identity.ExternalID == "" {
+			results = append(results, domain.CatalogCoverResult{Identity: identity, Error: "no_cover_url"})
+			continue
+		}
+
+		remote := strings.TrimSpace(request.URL)
+		if remote == "" {
+			// A caller may ask by identity alone; the last search's URL is still
+			// the right artwork for that row.
+			remote = s.cachedCover(identity)
+		}
+		if remote == "" {
+			results = append(results, domain.CatalogCoverResult{Identity: identity, Error: "no_cover_url"})
+			continue
+		}
+		if s.covers == nil {
+			results = append(results, domain.CatalogCoverResult{Identity: identity, Error: "cache_unavailable"})
+			continue
+		}
+
+		assetURL, err := s.covers.Get(ctx, remote, s.coverCacheLimitBytes(ctx, identity.Provider))
+		if err != nil {
+			s.logger.Warn("catalog: cover cache failed",
+				"provider", identity.Provider, "external_id", identity.ExternalID, "error", err)
+			results = append(results, domain.CatalogCoverResult{Identity: identity, Error: "unavailable"})
+			continue
+		}
+		results = append(results, domain.CatalogCoverResult{Identity: identity, URL: assetURL})
+	}
+	return results
+}
+
+// coverCacheLimitBytes resolves the plugin's `cover_cache_mb` setting.
+//
+// The value is clamped here, not in the cache: the cache is a storage adapter
+// and must not know which plugin declared the limit.
+func (s *Service) coverCacheLimitBytes(ctx context.Context, provider string) int64 {
+	mb := domain.DefaultCatalogCoverCacheMB
+	if s.sourceSettings != nil {
+		mb = s.sourceSettings.SourceInt(ctx, provider, domain.CatalogSettingCoverCacheMB, mb)
+	}
+	if mb < domain.MinCatalogCoverCacheMB {
+		mb = domain.MinCatalogCoverCacheMB
+	}
+	if mb > domain.MaxCatalogCoverCacheMB {
+		mb = domain.MaxCatalogCoverCacheMB
+	}
+	return int64(mb) << 20
+}
+
+// Sources returns the source table without running a search, so the search page
+// can render selectable chips before the user types anything.
+func (s *Service) Sources(ctx context.Context) ([]domain.CatalogSearchSource, error) {
+	available, err := s.availableSources(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list catalog sources: %w", err)
+	}
+	return sourceList(available), nil
 }
 
 // availableSources returns the source table every running plugin reported.

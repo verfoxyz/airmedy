@@ -3,6 +3,8 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"airmedy/internal/domain"
 )
@@ -54,4 +56,19 @@ func (s *SettingStore) GetBool(ctx context.Context, pluginID, key string, fallba
 		return fallback
 	}
 	return value == "true"
+}
+
+// GetInt reads a `type: "number"` value, falling back to fallback when the user
+// never changed it, the store is unavailable, or the stored text is not an
+// integer. Callers clamp the result to the declaration's own range.
+func (s *SettingStore) GetInt(ctx context.Context, pluginID, key string, fallback int) int {
+	value, found, err := s.Get(ctx, pluginID, key)
+	if err != nil || !found {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }

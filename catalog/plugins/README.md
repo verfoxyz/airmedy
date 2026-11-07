@@ -287,23 +287,39 @@ sent by the host so a plugin can omit the URLs. The host caches the large URL it
 when a save has none, re-asks the source once with covers forced on, so hiding thumbnails
 does not strip artwork from the downloaded file. The host asks for **one source per call**:
 it resolves "全部" into one call per source, so no plugin ever fans out internally.
+`limit`/`offset` are merged-row counts: the host asks each source for the whole
+`offset+limit` window (`offset=0` on the wire) and slices the ranked result once. A source
+whose upstream pages at fewer rows than the window (KuGou: 30) pages internally; the host
+still sees one `catalog.search` answer.
+
+**KuGou covers are resolved inside the plugin.** The search answer carries no image, so
+`kg` issues one `POST` to `media.store.kugou.com/v1/get_res_privilege` with the page's
+hashes and returns `cover_url` at 240 px (`cover_url_large` at 400/480 when advertised).
+One invalid hash makes the endpoint reject the whole batch; the plugin then retries the
+missing hashes one at a time within a shared budget. A cover failure is silent and never
+fails the search. The host does not know this endpoint — it only sees the resulting URLs.
 
 **The source list comes from `describe`.** A search plugin reports
 `searchSources: [{id, name}]` on its existing `describe` answer — the same mechanism the
 lx plugin uses for routes. Adding a source is therefore a plugin change with **no new
 protocol method** and no plugin-to-plugin calls (see `docs/plugin-api.md` §6.1).
 
-**One plugin per source.** `plugins/wy` is the first implementation and the reference
-shape: one process, one source, no credentials. It declares `catalog.search` and no
-`stream.resolve` — search and resolve are separate capabilities — reports
-`searchSources: [{id: "wy"}]`, and maps HTTP/body failures onto the three kinds above
+**One process may serve several sources.** `plugins/wy` (display name 聚合搜索) is the
+reference aggregate: one process, five search endpoints, no credentials — NetEase (`wy`),
+KuGou (`kg`), KuWo (`kw`), QQ Music (`tx`) and Migu (`mg`). It declares `catalog.search`
+and no `stream.resolve` — search and resolve are separate capabilities — reports all
+five ids through `searchSources`, and maps HTTP/body failures onto the three kinds above
 (`rate_limited` for 429, `auth` for 401/403 and the platform's login-required codes,
 `unavailable` for timeouts, 5xx, unreadable JSON and everything else). A caller mistake
 (blank query, unknown source) is `-32602` instead: retrying cannot grow correct params.
+Adding another platform means adding a source branch inside the plugin and a manifest
+`sources` entry; it still does not change the host or the search screen.
 
-Adding `kg` / `kw` / `mg` / `tx` is one plugin each, not a branch in an existing one: the
-platforms share neither endpoints nor signing nor rate limits, and the host and the search
-screen must not change when one is added.
+A new source is **search-only** unless a resolver plugin claims its provider: KuGou, KuWo,
+QQ Music and Migu rows are shown, merged and paged, but their download action stays
+disabled (`no_resolver`) until such a plugin exists. Artwork differs per source: NetEase
+returns sized URLs, KuGou needs the privilege endpoint described below, KuWo fetches one
+image per row, and QQ Music/Migu derive or embed the URL in the search answer.
 
 **Host responsibilities** (`internal/app/catalog`):
 
@@ -311,18 +327,22 @@ screen must not change when one is added.
 |---|---|
 | fan-out | one concurrent call per selected source, each with its own 10 s budget |
 | partial failure | a failed source is reported alongside the rows; it never blanks the page |
-| ranking | reciprocal-rank fusion `Σ 1/(rank+3)` over the *source's row order*, plus a title/artist hit bonus. A source's own "score" is never used — the platforms' scales are not comparable |
-| identity | `(source, externalId)`. The same track from two sources stays two rows, each naming its own source |
-| paging | 50/page over the *merged* list; `hasMore` is derived from the slice, not from a full page |
+| single source | the host keeps that source's own order; only unusable and duplicate identities are removed |
+| multi-source ranking | normalized title edit-distance similarity plus an artist-hit bonus; ties keep the selection order of the sources, then the source's own order. A source's "score" is never used |
+| de-duplication | same normalized title + artist set across sources is one row labelled with every source (`sources[]`); the highest-scoring copy supplies its identity. The same `(source, externalId)` twice is also one row |
+| covers | the host downloads the remote URL once into `<DataDir>/cover-cache/`, indexes it in `cover_cache`, and serves it at `/cover-cache/<hash>.<ext>`. `GetCatalogCovers` resolves visible rows to local URLs; the page never fetches a remote image itself |
+| identity | `(source, externalId)` is what a download registers; a merged row keeps the winner's identity |
+| paging | the UI starts at 5 merged rows and adds 10 per "load more". The host asks every source for the same `offset+limit` window, merges, then slices `[offset, offset+limit)`; `hasMore` is derived from the slice, not from a full page. The window is capped at 100 |
 | downloadability | a row is enabled only when a resolver claims its provider; otherwise `no_resolver` disables it with a reason ("可搜 ≠ 可下") |
 
 **Errors.** A plugin reports `data.kind` of `rate_limited` / `unavailable` / `auth`; the
 message is never parsed. A plugin that declares the capability without implementing the
 method is reported as such rather than retried.
 
-**Limits.** 50 rows per page, at most 32 reported sources, 200 characters of query. The
-host caps the row count it accepts regardless of what a plugin returns, because one
-answer travels as a single line (8 MiB).
+**Limits.** A 100-row merged window per request (the UI page itself starts at 5 and grows
+by 10), at most 32 reported sources, 200 characters of query. The host caps the row count
+it accepts regardless of what a plugin returns, because one answer travels as a single
+line (8 MiB).
 
 ## Lyrics from a source plugin
 
@@ -342,6 +362,11 @@ answer travels as a single line (8 MiB).
   platform outage never removes lyrics entirely.
 - **No title/artist second lookup for plugin rows.** The plugin already knows the platform
   id, which is exactly the case a title+artist search misses (Japanese titles, covers).
+- **Every catalogue source owns its native lyric.** The reference aggregate answers `wy`
+  (NetEase JSON), `kg` (KuGou KRC: zlib + XOR), `kw` (KuWo `tp=content` body: zlib +
+  base64/XOR), `tx` (QQ Music QRC: non-standard 3DES + zlib, after resolving the numeric
+  song id) and `mg` (Migu MRC: TEA, with an LRC/TRC fallback). Private encodings stay
+  inside the plugin; the host only sees the LRC timeline.
 - `synced` is the plugin's claim; the host still requires the timeline tags above.
 
 ## Lifecycle notification
@@ -515,11 +540,14 @@ states the capability ("may store data on this device") rather than a promise. B
 badges dim with opacity while the plugin is disabled and stay legible, because
 "what will this get access to?" is the question being decided at that moment.
 
-A plugin may also declare **switches** through `describe.settings` (today only
-`type: "switch"`). The settings row renders them under the plugin's own toggle; the
-value is stored in the plugin's KV under the host-owned `host.setting.` prefix and is
-passed to the plugin on the call it affects (`include_cover` for `catalog.search`).
-A plugin that declares no settings keeps the documented defaults.
+A plugin may also declare **settings** through `describe.settings`: `type: "switch"`
+(boolean) and `type: "number"` (bounded integer with `min`/`max`/`step`; all three are
+optional, `0` means "not declared"). The settings row renders the matching control under
+the plugin's own toggle; the value is stored in the plugin's KV under the host-owned
+`host.setting.` prefix and is passed to the plugin on the call it affects, or read by the
+host for its own decision (`include_cover` for `catalog.search`, `cover_cache_mb` for the
+persistent cover-cache limit). A plugin that declares no settings keeps the documented
+defaults. `cover_cache_mb` is 128–8192 MB (default 1024).
 
 Empty state names `<DataDir>/plugins/` and offers a refresh button that calls
 `RescanPlugins` (re-scan + reload flags) without an app restart.

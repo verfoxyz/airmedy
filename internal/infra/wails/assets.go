@@ -1,19 +1,19 @@
 package wails
 
 import (
-	"embed"
 	"io/fs"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"airmedy/internal/domain"
 )
 
-func NewAssetHandler(assets embed.FS, artworkCache domain.ArtworkCache) http.Handler {
+func NewAssetHandler(assets fs.FS, artworkCache domain.ArtworkCache, coverCacheDir string) http.Handler {
 	distFS, err := fs.Sub(assets, "frontend/dist")
 	if err != nil {
 		panic(err)
@@ -31,6 +31,21 @@ func NewAssetHandler(assets embed.FS, artworkCache domain.ArtworkCache) http.Han
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/cover-cache/") {
+			name := strings.TrimPrefix(r.URL.Path, "/cover-cache/")
+			if coverCacheDir == "" || !safeCoverName(name) {
+				http.NotFound(w, r)
+				return
+			}
+			filePath := filepath.Join(coverCacheDir, name)
+			if _, err := os.Stat(filePath); os.IsNotExist(err) {
+				http.NotFound(w, r)
+				return
+			}
+			http.ServeFile(w, r, filePath)
+			return
+		}
+
 		if strings.HasPrefix(r.URL.Path, "/artwork/") {
 			key := strings.TrimPrefix(r.URL.Path, "/artwork/")
 			if key == "" {
@@ -79,6 +94,16 @@ func NewAssetHandler(assets embed.FS, artworkCache domain.ArtworkCache) http.Han
 
 		embeddedHandler.ServeHTTP(w, r)
 	})
+}
+
+// safeCoverName accepts only a flat cache file name. The cover URL is built by
+// the host from a hash and an extension, so any separator or parent segment is
+// a probe, not a legitimate request.
+func safeCoverName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	return name == filepath.Base(name) && !strings.ContainsAny(name, `/\`)
 }
 
 func serveArtworkVariant(w http.ResponseWriter, r *http.Request, data []byte) {

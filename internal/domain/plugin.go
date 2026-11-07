@@ -149,10 +149,13 @@ type PluginPermissions struct {
 	KV      bool     `json:"kv,omitempty"`
 }
 
-// PluginSettingType is the control a declaration renders. Today only a switch
-// exists; the type is a string so an older host can ignore an unknown control
-// instead of refusing the whole declaration.
-const PluginSettingTypeSwitch = "switch"
+// PluginSettingType is the control a declaration renders. A string so an older
+// host can ignore an unknown control instead of refusing the whole declaration.
+const (
+	PluginSettingTypeSwitch = "switch"
+	// PluginSettingTypeNumber is a bounded integer input (min/max/step).
+	PluginSettingTypeNumber = "number"
+)
 
 // PluginSettingDeclaration is one setting a plugin reports through describe.
 //
@@ -160,9 +163,15 @@ const PluginSettingTypeSwitch = "switch"
 // affects; the plugin never reads the KV for this. Label is a locale map so the
 // translation travels with the declaration.
 type PluginSettingDeclaration struct {
-	Key     string `json:"key"`
-	Type    string `json:"type"`
-	Default bool   `json:"default"`
+	Key  string `json:"key"`
+	Type string `json:"type"`
+	// Default is a bool for a switch and a number for a number input. It is
+	// `any` so one declaration shape covers both without a second struct.
+	Default any `json:"default"`
+	// Min/Max/Step bound a number input; zero means "not declared".
+	Min  int `json:"min,omitempty"`
+	Max  int `json:"max,omitempty"`
+	Step int `json:"step,omitempty"`
 	// Label maps a locale tag ("en", "zh") to the text. The frontend falls back
 	// to Key when its locale is absent.
 	Label map[string]string `json:"label,omitempty"`
@@ -171,7 +180,7 @@ type PluginSettingDeclaration struct {
 // PluginSettingValue is a declaration plus the value the host currently stores.
 type PluginSettingValue struct {
 	PluginSettingDeclaration
-	Value bool `json:"value"`
+	Value any `json:"value"`
 }
 
 // MethodLyricFetch is the plugin method that returns lyrics for a track it

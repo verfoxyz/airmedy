@@ -100,7 +100,7 @@ async function setEnabled(plugin: PluginInfo, enabled: boolean) {
   }
 }
 
-async function setSetting(plugin: PluginInfo, key: string, value: boolean) {
+async function setSetting(plugin: PluginInfo, key: string, value: boolean | number) {
   busyIds.value = [...busyIds.value, plugin.id]
   actionError.value = ''
   try {

@@ -25,6 +25,7 @@ import (
 	"airmedy/internal/infra/artwork"
 	"airmedy/internal/infra/audio"
 	"airmedy/internal/infra/bleve"
+	"airmedy/internal/infra/covercache"
 	keyringinfra "airmedy/internal/infra/keyring"
 	"airmedy/internal/infra/logging"
 	lyricsinfra "airmedy/internal/infra/lyrics"
@@ -72,6 +73,13 @@ var Module = fx.Module("app",
 		},
 		func(c *config.Config) (domain.ArtworkCache, error) {
 			return artwork.NewDiskArtworkCache(c.ArtworkCachePath())
+		},
+		func(db *sqlite.DB, c *config.Config, logger *slog.Logger) (domain.CatalogCoverCache, error) {
+			return covercache.New(covercache.Config{
+				Dir:    c.CoverCachePath(),
+				DB:     db.DB.DB,
+				Logger: logger,
+			})
 		},
 		func() domain.MetadataExtractor { return metadata.NewTagLibExtractor() },
 		func() domain.MetadataWriter { return metadata.NewTagLibWriter() },

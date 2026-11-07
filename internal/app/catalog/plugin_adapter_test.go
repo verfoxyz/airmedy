@@ -172,6 +172,9 @@ func TestSearchSource_ForceCoverOverridesTheSwitch(t *testing.T) {
 type fakeSettingReader struct{ include bool }
 
 func (r fakeSettingReader) GetBool(context.Context, string, string, bool) bool { return r.include }
+func (r fakeSettingReader) GetInt(_ context.Context, _ string, _ string, fallback int) int {
+	return fallback
+}
 
 // TestSearchSource_CapsTheRowCount: a plugin that ignores Limit cannot make one
 // answer enormous.

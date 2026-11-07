@@ -90,9 +90,10 @@ func kgSource() domain.CatalogSearchSource {
 
 // --- ranking ----------------------------------------------------------------
 
-// TestFuseRanks_UsesPositionNotScore pins the fusion contract: a source's numeric
-// "relevance score" never enters the maths, only its row order.
-func TestFuseRanks_UsesPositionNotScore(t *testing.T) {
+// TestFuseRanks_EmptyQueryFallsBackToSourceOrder: with no keyword no row earns a
+// similarity score, so the documented tie-break (source order, then the source's
+// own row order) decides the page.
+func TestFuseRanks_EmptyQueryFallsBackToSourceOrder(t *testing.T) {
 	results := map[string]domain.PluginSearchResult{
 		"wy": {Rows: []domain.PluginSearchResultRow{row("1", "first"), row("2", "second")}},
 		"kg": {Rows: []domain.PluginSearchResultRow{row("k1", "k-first")}},
@@ -102,11 +103,11 @@ func TestFuseRanks_UsesPositionNotScore(t *testing.T) {
 	if len(fused) != 3 {
 		t.Fatalf("fused %d rows, want 3", len(fused))
 	}
-	// Rank 0 from either source scores 1/(0+3) = 0.333; the tie breaks on the
-	// declared source order, so wy's first row comes before kg's.
-	if fused[0].Provider != "wy" || fused[1].Provider != "kg" {
-		t.Fatalf("order = %s, %s; want wy, kg for tied rank-0 rows",
-			fused[0].Provider, fused[1].Provider)
+	want := []string{"1", "2", "k1"}
+	for index, id := range want {
+		if fused[index].ExternalID != id {
+			t.Fatalf("row %d = %q, want %q", index, fused[index].ExternalID, id)
+		}
 	}
 }
 
@@ -352,8 +353,18 @@ func TestSearch_MergesSourcesAndPages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	if len(page.Rows) != 3 {
-		t.Fatalf("rows = %d, want 3", len(page.Rows))
+	if len(page.Rows) != 2 {
+		t.Fatalf("rows = %d, want 2 (the same title+artists across sources is one row)", len(page.Rows))
+	}
+	merged := page.Rows[0]
+	if merged.Title != "晴天" {
+		t.Fatalf("first row = %q, want the exact title match", merged.Title)
+	}
+	if len(merged.Sources) != 2 || merged.Sources[0] != "kg" || merged.Sources[1] != "wy" {
+		t.Fatalf("merged sources = %v, want both providers in selection order", merged.Sources)
+	}
+	if page.Rows[1].Title != "夜曲" {
+		t.Fatalf("second row = %q, want 夜曲", page.Rows[1].Title)
 	}
 	if len(page.Sources) != 2 {
 		t.Fatalf("sources = %+v, want both", page.Sources)
@@ -368,6 +379,252 @@ func TestSearch_MergesSourcesAndPages(t *testing.T) {
 	// ranking is a host concern, and each plugin owns one source.
 	if calls := searcher.called(); len(calls) != 2 {
 		t.Fatalf("searcher called %d times, want one per source", len(calls))
+	}
+}
+
+// TestSearch_SingleSourceKeepsItsOwnOrder: selecting one source must not re-rank
+// it; the user expects that platform's order.
+func TestSearch_SingleSourceKeepsItsOwnOrder(t *testing.T) {
+	searcher := &fakeSearcher{results: map[string]domain.PluginSearchResult{
+		"wy": {Rows: []domain.PluginSearchResultRow{row("b", "unrelated"), row("a", "exact hit")}},
+		"kg": {Rows: []domain.PluginSearchResultRow{row("k", "exact hit")}},
+	}}
+	service := newTestService(
+		fakeSources{"wy": wySource(), "kg": kgSource()},
+		searcher,
+		fakeResolver{"wy": true},
+		Config{},
+	)
+
+	page, err := service.Search(context.Background(), domain.CatalogSearchRequest{
+		Query:   "exact hit",
+		Sources: []string{"wy"},
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(page.Rows) != 2 || page.Rows[0].ExternalID != "b" || page.Rows[1].ExternalID != "a" {
+		t.Fatalf("single-source order changed: %+v", page.Rows)
+	}
+	if len(page.Rows[0].Sources) != 1 || page.Rows[0].Sources[0] != "wy" {
+		t.Fatalf("row sources = %v, want the single source", page.Rows[0].Sources)
+	}
+}
+
+// TestSearch_PagesFiveThenTenWithoutDuplicates: the UI's first screen is five
+// merged rows and each "load more" asks for ten more. The same query must page
+// the same ordered list, so no row appears twice across pages.
+func TestSearch_PagesFiveThenTenWithoutDuplicates(t *testing.T) {
+	wyRows := make([]domain.PluginSearchResultRow, 0, 30)
+	for index := 0; index < 30; index++ {
+		wyRows = append(wyRows, row(fmt.Sprintf("w%02d", index), fmt.Sprintf("track %02d", index)))
+	}
+	kgRows := make([]domain.PluginSearchResultRow, 0, 10)
+	for index := 0; index < 10; index++ {
+		kgRows = append(kgRows, row(fmt.Sprintf("k%02d", index), fmt.Sprintf("kg track %02d", index)))
+	}
+	searcher := &fakeSearcher{results: map[string]domain.PluginSearchResult{
+		"wy": {Rows: wyRows},
+		"kg": {Rows: kgRows},
+	}}
+	service := newTestService(
+		fakeSources{"wy": wySource(), "kg": kgSource()},
+		searcher,
+		fakeResolver{},
+		Config{},
+	)
+
+	seen := make(map[string]bool)
+	offset := 0
+	for pageIndex, limit := range []int{5, 10, 10, 10} {
+		page, err := service.Search(context.Background(), domain.CatalogSearchRequest{
+			Query: "track", Limit: limit, Offset: offset,
+		})
+		if err != nil {
+			t.Fatalf("page %d: %v", pageIndex, err)
+		}
+		if len(page.Rows) != limit {
+			t.Fatalf("page %d returned %d rows, want %d", pageIndex, len(page.Rows), limit)
+		}
+		for _, result := range page.Rows {
+			identity := result.Provider + "/" + result.ExternalID
+			if seen[identity] {
+				t.Fatalf("page %d repeated identity %s", pageIndex, identity)
+			}
+			seen[identity] = true
+		}
+		offset += len(page.Rows)
+		if pageIndex == 0 && !page.HasMore {
+			t.Fatal("the first page must offer more rows")
+		}
+	}
+}
+
+// TestSearch_SingleSourceHasMoreFromTheSource: the fetched window can be the
+// whole ranked list even when the source has more rows; the source flag must win.
+func TestSearch_SingleSourceHasMoreFromTheSource(t *testing.T) {
+	rows := make([]domain.PluginSearchResultRow, 0, 5)
+	for index := 0; index < 5; index++ {
+		rows = append(rows, row(fmt.Sprintf("w%02d", index), fmt.Sprintf("track %02d", index)))
+	}
+	searcher := &fakeSearcher{results: map[string]domain.PluginSearchResult{
+		"wy": {Rows: rows, HasMore: true},
+	}}
+	service := newTestService(
+		fakeSources{"wy": wySource()},
+		searcher,
+		fakeResolver{},
+		Config{},
+	)
+
+	page, err := service.Search(context.Background(), domain.CatalogSearchRequest{Query: "track", Limit: 5})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(page.Rows) != 5 {
+		t.Fatalf("rows = %d, want the 5-row window", len(page.Rows))
+	}
+	if !page.HasMore {
+		t.Fatal("a single source with HasMore=true must offer load more")
+	}
+}
+
+// TestSearch_SingleSourceAtTheEnd: the source says there is nothing past the
+// window, so the page must not offer another one.
+func TestSearch_SingleSourceAtTheEnd(t *testing.T) {
+	rows := make([]domain.PluginSearchResultRow, 0, 5)
+	for index := 0; index < 5; index++ {
+		rows = append(rows, row(fmt.Sprintf("w%02d", index), fmt.Sprintf("track %02d", index)))
+	}
+	searcher := &fakeSearcher{results: map[string]domain.PluginSearchResult{
+		"wy": {Rows: rows, HasMore: false},
+	}}
+	service := newTestService(
+		fakeSources{"wy": wySource()},
+		searcher,
+		fakeResolver{},
+		Config{},
+	)
+
+	page, err := service.Search(context.Background(), domain.CatalogSearchRequest{Query: "track", Limit: 5})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if page.HasMore {
+		t.Fatal("hasMore must be false when the source has no rows past the window")
+	}
+}
+
+// TestSearch_MultiSourceAnySourceHasMore: a second source can be the only one
+// with rows past the window.
+func TestSearch_MultiSourceAnySourceHasMore(t *testing.T) {
+	wyRows := make([]domain.PluginSearchResultRow, 0, 5)
+	for index := 0; index < 5; index++ {
+		wyRows = append(wyRows, row(fmt.Sprintf("w%02d", index), fmt.Sprintf("track %02d", index)))
+	}
+	searcher := &fakeSearcher{results: map[string]domain.PluginSearchResult{
+		"wy": {Rows: wyRows, HasMore: false},
+		"kg": {Rows: nil, HasMore: true},
+	}}
+	service := newTestService(
+		fakeSources{"wy": wySource(), "kg": kgSource()},
+		searcher,
+		fakeResolver{},
+		Config{},
+	)
+
+	page, err := service.Search(context.Background(), domain.CatalogSearchRequest{Query: "track", Limit: 5})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(page.Rows) != 5 {
+		t.Fatalf("rows = %d, want the merged window", len(page.Rows))
+	}
+	if !page.HasMore {
+		t.Fatal("any selected source with HasMore=true must offer load more")
+	}
+}
+
+// TestSearch_UnselectedSourceHasMoreIsIgnored: only the selected sources may
+// contribute the "load more" flag.
+func TestSearch_UnselectedSourceHasMoreIsIgnored(t *testing.T) {
+	wyRows := make([]domain.PluginSearchResultRow, 0, 5)
+	for index := 0; index < 5; index++ {
+		wyRows = append(wyRows, row(fmt.Sprintf("w%02d", index), fmt.Sprintf("track %02d", index)))
+	}
+	searcher := &fakeSearcher{results: map[string]domain.PluginSearchResult{
+		"wy": {Rows: wyRows, HasMore: false},
+		"kg": {Rows: nil, HasMore: true},
+	}}
+	service := newTestService(
+		fakeSources{"wy": wySource(), "kg": kgSource()},
+		searcher,
+		fakeResolver{},
+		Config{},
+	)
+
+	page, err := service.Search(context.Background(), domain.CatalogSearchRequest{
+		Query: "track", Sources: []string{"wy"}, Limit: 5,
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if page.HasMore {
+		t.Fatal("an unselected source's HasMore must not count")
+	}
+}
+
+// TestSearch_StopsAtTheWindowCap: the merged window is capped at 100; a page
+// that reaches it must not advertise another "load more".
+func TestSearch_StopsAtTheWindowCap(t *testing.T) {
+	rows := make([]domain.PluginSearchResultRow, 0, 120)
+	for index := 0; index < 120; index++ {
+		rows = append(rows, row(fmt.Sprintf("w%03d", index), fmt.Sprintf("track %03d", index)))
+	}
+	searcher := &fakeSearcher{results: map[string]domain.PluginSearchResult{
+		"wy": {Rows: rows, HasMore: true},
+	}}
+	service := newTestService(
+		fakeSources{"wy": wySource()},
+		searcher,
+		fakeResolver{},
+		Config{},
+	)
+
+	page, err := service.Search(context.Background(), domain.CatalogSearchRequest{
+		Query: "track", Limit: 10, Offset: 95,
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(page.Rows) != 5 {
+		t.Fatalf("rows = %d, want the 5 rows left before the 100 cap", len(page.Rows))
+	}
+	if page.HasMore {
+		t.Fatal("hasMore must be false at the window cap")
+	}
+}
+
+// TestSources_ListWithoutSearching: the search page renders its chips before the
+// first query, so the source table must be readable without a search.
+func TestSources_ListWithoutSearching(t *testing.T) {
+	searcher := &fakeSearcher{}
+	service := newTestService(
+		fakeSources{"wy": wySource(), "kg": kgSource()},
+		searcher,
+		fakeResolver{},
+		Config{},
+	)
+
+	sources, err := service.Sources(context.Background())
+	if err != nil {
+		t.Fatalf("Sources: %v", err)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("sources = %+v, want both", sources)
+	}
+	if calls := searcher.called(); len(calls) != 0 {
+		t.Fatalf("Sources ran %d searches, want none", len(calls))
 	}
 }
 
@@ -637,9 +894,9 @@ func TestSearch_StateLookupFailureKeepsThePage(t *testing.T) {
 // TestSearch_StatesAreOnlyAskedForThePage: rows past the page are not resolved,
 // because the caller never renders them.
 func TestSearch_StatesAreOnlyAskedForThePage(t *testing.T) {
-	rows := make([]domain.PluginSearchResultRow, 0, 60)
-	for i := 0; i < 60; i++ {
-		rows = append(rows, row(fmt.Sprintf("w%02d", i), fmt.Sprintf("track %d", i)))
+	rows := make([]domain.PluginSearchResultRow, 0, domain.MaxCatalogSearchPageSize+10)
+	for i := 0; i < domain.MaxCatalogSearchPageSize+10; i++ {
+		rows = append(rows, row(fmt.Sprintf("w%03d", i), fmt.Sprintf("track %d", i)))
 	}
 	searcher := &fakeSearcher{results: map[string]domain.PluginSearchResult{
 		"wy": {Rows: rows, HasMore: true},

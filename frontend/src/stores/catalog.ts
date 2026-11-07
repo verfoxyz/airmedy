@@ -18,13 +18,38 @@ import type {
  * (provider, externalId) identities with their own states, sources and paging.
  * Sharing one store would mean every consumer branching on the mode.
  *
- * The page size mirrors the backend cap: the service clamps a request to 50 and
- * `hasMore` is derived from the merged slice, so "load more" is an offset bump.
+ * The first screen is five merged rows; each "load more" adds ten. Both are
+ * merged-row counts, so the backend asks every source for the same window
+ * (`offset+limit`, capped at 100) and slices the ranked list once.
  */
-const PAGE_SIZE = 50
+const PAGE_INITIAL = 5
+const PAGE_STEP = 10
 const SEARCH_DEBOUNCE_MS = 300
+const ACTIVE_SOURCES_KEY = 'airmedy.catalog.sources'
 
 export type CatalogMode = 'local' | 'cloud'
+
+/** loadActiveSources restores the result-page source selection across restarts. */
+function loadActiveSources(): string[] {
+  try {
+    const raw = localStorage.getItem(ACTIVE_SOURCES_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((value): value is string => typeof value === 'string' && value.trim() !== '')
+  } catch {
+    return []
+  }
+}
+
+function saveActiveSources(sources: string[]) {
+  try {
+    localStorage.setItem(ACTIVE_SOURCES_KEY, JSON.stringify(sources))
+  } catch {
+    // Storage can be unavailable or full; the in-memory selection still works
+    // for this session.
+  }
+}
 
 export interface CatalogSaveOptions {
   favorite?: boolean
@@ -41,8 +66,11 @@ export function identityKey(provider: string, externalId: string): string {
 export const useCatalogStore = defineStore('catalog', () => {
   const mode = ref<CatalogMode>('local')
   const query = ref('')
-  /** activeSource is the provider id being searched; '' means "全部". */
-  const activeSource = ref('')
+  /**
+   * activeSources is the multi-source selection. An empty list means "全部"
+   * (every available source); selecting one or more sends only those sources.
+   */
+  const activeSources = ref<string[]>(loadActiveSources())
   const rows = ref<CatalogRowDTO[]>([])
   const sources = ref<CatalogSourceDTO[]>([])
   const failures = ref<CatalogFailureDTO[]>([])
@@ -79,11 +107,12 @@ export const useCatalogStore = defineStore('catalog', () => {
     }
 
     const offset = reset ? 0 : rows.value.length
+    const limit = reset ? PAGE_INITIAL : PAGE_STEP
     try {
       const page = await CatalogService.SearchCatalog({
         query: text,
-        sources: activeSource.value ? [activeSource.value] : [],
-        limit: PAGE_SIZE,
+        sources: [...activeSources.value],
+        limit,
         offset,
       })
       if (version !== requestVersion) return
@@ -153,14 +182,40 @@ export const useCatalogStore = defineStore('catalog', () => {
     search(text)
   }
 
-  /** setSource switches the source filter and re-runs immediately (no debounce). */
-  function setSource(sourceId: string) {
-    activeSource.value = sourceId
+  /** setSources switches the source filter and re-runs immediately (no debounce). */
+  function setSources(sources: string[]) {
+    const seen = new Set<string>()
+    activeSources.value = sources
+      .map((source) => source.trim().toLowerCase())
+      .filter((source) => source !== '' && !seen.has(source) && seen.add(source))
+    saveActiveSources(activeSources.value)
     cancelDebounce()
     if (!hasQuery.value) return
     const version = ++requestVersion
     loading.value = true
     void run(true, version)
+  }
+
+  /**
+   * toggleSource adds or removes one source. An empty id means "全部", which
+   * clears the selection; clicking it again is idempotent.
+   */
+  function toggleSource(sourceId: string) {
+    const id = sourceId.trim().toLowerCase()
+    if (id === '') return setSources([])
+    const current = activeSources.value
+    setSources(current.includes(id) ? current.filter((source) => source !== id) : [...current, id])
+  }
+
+  /** loadSources renders the source chips before the first search. */
+  async function loadSources() {
+    try {
+      const list = ((await CatalogService.GetCatalogSources()) ?? []) as CatalogSourceDTO[]
+      sources.value = list.filter(Boolean)
+    } catch (e) {
+      // The chips fall back to whatever a later search response reports.
+      console.error('Catalog: cannot list sources', e)
+    }
   }
 
   /**
@@ -305,7 +360,8 @@ export const useCatalogStore = defineStore('catalog', () => {
     cancelDebounce()
     requestVersion++
     query.value = ''
-    activeSource.value = ''
+    activeSources.value = []
+    saveActiveSources([])
     clearResults()
     sources.value = []
     actionError.value = ''
@@ -316,7 +372,8 @@ export const useCatalogStore = defineStore('catalog', () => {
   return {
     mode,
     query,
-    activeSource,
+    activeSources,
+    activeSource: computed(() => activeSources.value[0] ?? ''),
     rows,
     sources,
     failures,
@@ -327,7 +384,9 @@ export const useCatalogStore = defineStore('catalog', () => {
     actionError,
     hasQuery,
     setMode,
-    setSource,
+    setSources,
+    toggleSource,
+    loadSources,
     search,
     ensureSearch,
     loadMore,

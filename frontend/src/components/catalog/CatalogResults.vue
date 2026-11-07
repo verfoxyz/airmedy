@@ -6,7 +6,9 @@ import ContextMenu from '@/components/ContextMenu.vue'
 import { usePlaylistsStore } from '@/stores/playlists'
 import { useContextMenu } from '@/composables/useContextMenu'
 import type { ContextMenuItem } from '@/composables/useContextMenu'
+import * as CatalogService from '../../../bindings/airmedy/internal/infra/wails/catalogservice'
 import type {
+  CatalogCoverRequestDTO,
   CatalogFailureDTO,
   CatalogRowDTO,
   CatalogSourceDTO,
@@ -21,7 +23,8 @@ import type {
  */
 const props = defineProps<{
   sources: CatalogSourceDTO[]
-  activeSource: string
+  /** Selected source ids; an empty list means "全部". */
+  activeSources: string[]
   rows: CatalogRowDTO[]
   failures: CatalogFailureDTO[]
   hasMore: boolean
@@ -33,7 +36,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'update:source', id: string): void
+  (e: 'toggle-source', id: string): void
   (e: 'load-more'): void
   (e: 'favorite', row: CatalogRowDTO): void
   (e: 'add-to-playlist', row: CatalogRowDTO, playlistId: string): void
@@ -46,37 +49,41 @@ const playlistMenu = useContextMenu()
 
 // --- Cover thumbnails -------------------------------------------------------
 //
-// Native `loading="lazy"` is only a hint: Chromium starts a whole screen ahead,
-// so a 50-row page fires 20–30 requests at once and the slow ones compete with
-// the text. Covers are therefore loaded deterministically: a visible row asks
-// the queue for its image (IntersectionObserver, 200px pre-fetch margin), and at
-// most MAX_CONCURRENT_COVERS images are in flight. An image is rendered only
-// after it finished preloading, so a row never flashes a half-drawn picture.
+// The host downloads and caches remote covers; the browser renders only a
+// host-local asset URL. A row asks for its cover only when it enters the viewport
+// (200px early), so a long page never fetches images the user did not see. The
+// image queue keeps at most MAX_CONCURRENT_COVERS preloads in flight, and a row
+// renders only after its preload finished.
 
 const MAX_CONCURRENT_COVERS = 4
-const COVER_ROOT_MARGIN = '200px 0px'
+const COVER_BATCH_LIMIT = 10
 
 const rootEl = ref<HTMLElement | null>(null)
+/** The list element whose rows are observed for lazy covers. */
+const rowsEl = ref<HTMLElement | null>(null)
 /** Covers that finished preloading and may be rendered. */
 const loadedCovers = reactive(new Set<string>())
 /** Covers that failed (or errored after being rendered), so the row keeps the placeholder. */
 const failedCovers = reactive(new Set<string>())
-/** Covers already queued or loaded, so scrolling back does not re-request them. */
+/** Covers already requested or loaded, so repeated visibility does not re-request them. */
 const requestedCovers = reactive(new Set<string>())
+/** Identity -> host-local asset URL returned by GetCatalogCovers. */
+const coverURLs = reactive(new Map<string, string>())
 
 interface CoverTask {
   key: string
   url: string
 }
 
-/** Placeholder element of each row, keyed by `coverKey`, observed for visibility. */
-const coverElements = new Map<string, Element>()
-/** Element → request, populated when (and only when) it is observed. */
-const observedCovers = new Map<Element, CoverTask>()
 let coverQueue: CoverTask[] = []
 let coverInFlight = 0
 const inFlightImages = new Set<HTMLImageElement>()
 let coverObserver: IntersectionObserver | null = null
+let observedRows = new Map<Element, CatalogRowDTO>()
+let pendingRows: CatalogRowDTO[] = []
+let flushScheduled = false
+let coverRpcInFlight = false
+let lastFirstKey = ''
 let disposed = false
 
 function coverKey(row: CatalogRowDTO): string {
@@ -85,7 +92,13 @@ function coverKey(row: CatalogRowDTO): string {
 
 /** coverLoaded gates the <img>; until preloading finishes the placeholder stays. */
 function coverLoaded(row: CatalogRowDTO): boolean {
-  return !!row.cover_url && loadedCovers.has(coverKey(row))
+  // `cover_url` is the source's "this row has artwork" flag; a local URL without
+  // it belongs to a page fetched before the user hid result covers.
+  return !!row.cover_url && !!coverURLs.get(coverKey(row)) && loadedCovers.has(coverKey(row))
+}
+
+function coverSrc(row: CatalogRowDTO): string {
+  return coverURLs.get(coverKey(row)) ?? ''
 }
 
 function onCoverError(row: CatalogRowDTO) {
@@ -125,22 +138,8 @@ function pumpCovers() {
   }
 }
 
-function requestCover(key: string, url: string) {
-  if (disposed || !url || requestedCovers.has(key) || failedCovers.has(key)) return
-  requestedCovers.add(key)
-  coverQueue.push({ key, url })
-  pumpCovers()
-}
-
-/** setCoverRef collects the placeholder element of each row for the observer. */
-function setCoverRef(key: string, el: unknown) {
-  const node = el as Element | null
-  if (node && node.nodeType === 1) coverElements.set(key, node)
-  else coverElements.delete(key)
-}
-
-/** findScrollParent returns the list's scroller; observing the viewport would
- *  ignore the clipping by the overflow container. */
+/** findScrollParent returns the list's scroller; the viewport would ignore the
+ *  clipping by the overflow container. */
 function findScrollParent(el: HTMLElement | null): Element | null {
   let node = el?.parentElement ?? null
   while (node) {
@@ -151,63 +150,157 @@ function findScrollParent(el: HTMLElement | null): Element | null {
   return null
 }
 
+/** onCoverVisible queues the rows that just entered the viewport. */
 function onCoverVisible(entries: IntersectionObserverEntry[]) {
   for (const entry of entries) {
     if (!entry.isIntersecting) continue
-    const task = observedCovers.get(entry.target)
-    if (!task) continue
+    const row = observedRows.get(entry.target)
+    if (!row) continue
     coverObserver?.unobserve(entry.target)
-    observedCovers.delete(entry.target)
-    requestCover(task.key, task.url)
+    observedRows.delete(entry.target)
+    if (!row.cover_url || !row.external_id) continue
+
+    const key = coverKey(row)
+    if (requestedCovers.has(key) || failedCovers.has(key) || loadedCovers.has(key)) continue
+
+    requestedCovers.add(key)
+    pendingRows.push(row)
   }
+  if (pendingRows.length > 0) scheduleFlush()
 }
 
-/** rebuildCoverObserver re-arms every row the current page added; loaded and
- *  failed rows are skipped so an append never re-requests them. */
-function rebuildCoverObserver() {
+/** observeCoverRows re-arms every row that still needs its artwork. */
+function observeCoverRows() {
   coverObserver?.disconnect()
-  observedCovers.clear()
-  if (!coverObserver || disposed) return
+  coverObserver = null
+  observedRows = new Map()
+  if (disposed) return
 
-  for (const [key, element] of coverElements) {
-    const row = rowsByKey.value.get(key)
-    if (!row?.cover_url || requestedCovers.has(key) || failedCovers.has(key)) continue
-    observedCovers.set(element, { key, url: row.cover_url })
+  if (typeof IntersectionObserver === 'undefined') return
+  const root = findScrollParent(rootEl.value)
+  coverObserver = new IntersectionObserver(onCoverVisible, {
+    root,
+    rootMargin: '0px 0px 200px 0px',
+    threshold: 0,
+  })
+
+  const elements = rowsEl.value?.querySelectorAll<HTMLElement>('[data-row-index]') ?? []
+  for (const element of elements) {
+    const index = Number(element.dataset.rowIndex)
+    const row = props.rows[index]
+    if (!row || !row.cover_url || !row.external_id) continue
+    const key = coverKey(row)
+    if (requestedCovers.has(key) || failedCovers.has(key) || loadedCovers.has(key)) continue
+    observedRows.set(element, row)
     coverObserver.observe(element)
   }
 }
 
-const rowsByKey = computed(() => {
-  const map = new Map<string, CatalogRowDTO>()
-  for (const row of props.rows) map.set(coverKey(row), row)
-  return map
-})
+/** scheduleFlush coalesces the rows visible in one turn into one RPC. */
+function scheduleFlush() {
+  if (flushScheduled || coverRpcInFlight || disposed) return
+  flushScheduled = true
+  queueMicrotask(() => {
+    flushScheduled = false
+    void flushCovers()
+  })
+}
 
-const isAllSources = computed(() => props.activeSource === '')
+/** flushCovers asks the host for at most COVER_BATCH_LIMIT queued rows. */
+async function flushCovers() {
+  if (disposed || coverRpcInFlight) return
+  const rows = pendingRows.splice(0, COVER_BATCH_LIMIT)
+  if (rows.length === 0) return
+
+  const requests: CatalogCoverRequestDTO[] = rows.map((row) => ({
+    provider: row.provider,
+    external_id: row.external_id,
+    url: row.cover_url_large || row.cover_url,
+  }))
+
+  coverRpcInFlight = true
+  try {
+    const answers = ((await CatalogService.GetCatalogCovers(requests)) ?? []) as Array<{
+      provider?: string
+      external_id?: string
+      url?: string
+      error?: string
+    }>
+    if (disposed) return
+
+    for (const answer of answers) {
+      if (!answer || !answer.provider || !answer.external_id) continue
+      const key = `${answer.provider}/${answer.external_id}`
+      if (!answer.url || answer.error) {
+        failedCovers.add(key)
+        continue
+      }
+      coverURLs.set(key, answer.url)
+      coverQueue.push({ key, url: answer.url })
+    }
+    pumpCovers()
+  } catch (error) {
+    // The call itself failed: keep placeholders and do not retry this page.
+    for (const request of requests) {
+      failedCovers.add(`${request.provider}/${request.external_id}`)
+    }
+    console.error('Catalog covers failed', error)
+  } finally {
+    coverRpcInFlight = false
+    if (!disposed && pendingRows.length > 0) scheduleFlush()
+  }
+}
+
+/** resetCoverState drops everything tied to the previous result page. */
+function resetCoverState() {
+  loadedCovers.clear()
+  failedCovers.clear()
+  requestedCovers.clear()
+  coverURLs.clear()
+  coverQueue = []
+  pendingRows = []
+  observedRows = new Map()
+}
+
+const isAllSources = computed(() => props.activeSources.length === 0)
 const showList = computed(() => props.hasQuery && !props.loading && props.rows.length > 0)
 const showEmpty = computed(
   () => props.hasQuery && !props.loading && props.errorKind === '' && props.rows.length === 0,
 )
 
-// Re-arm the observer after every page append or source switch; refs are
-// refreshed by the DOM update before this post-flush callback runs.
-watch([() => props.rows, showList], () => {
-  void nextTick(rebuildCoverObserver)
+// A changed first row or a shorter list means a new search page; an append
+// re-arms only the rows that still lack artwork.
+watch(
+  () => props.rows,
+  (next, previous) => {
+    void nextTick(() => {
+      if (disposed) return
+      const firstKey = next.length > 0 ? coverKey(next[0]) : ''
+      if (firstKey !== lastFirstKey || next.length < (previous?.length ?? 0)) {
+        resetCoverState()
+        lastFirstKey = firstKey
+      }
+      observeCoverRows()
+    })
+  },
+)
+
+// Rows live inside `showList`; observe them whenever that block appears.
+watch(showList, () => {
+  void nextTick(observeCoverRows)
 })
 
 onMounted(() => {
-  if (typeof IntersectionObserver === 'undefined') return
-  coverObserver = new IntersectionObserver(onCoverVisible, {
-    root: findScrollParent(rootEl.value),
-    rootMargin: COVER_ROOT_MARGIN,
-  })
-  void nextTick(rebuildCoverObserver)
+  lastFirstKey = props.rows.length > 0 ? coverKey(props.rows[0]) : ''
+  void nextTick(observeCoverRows)
 })
 
 onUnmounted(() => {
   disposed = true
   coverObserver?.disconnect()
   coverObserver = null
+  observedRows = new Map()
+  pendingRows = []
   coverQueue = []
   for (const image of inFlightImages) {
     image.onload = null
@@ -234,8 +327,14 @@ function failureText(failure: CatalogFailureDTO): string {
   }
 }
 
+/** subtitle lists the artists; source names are rendered as separate badges. */
 function subtitle(row: CatalogRowDTO): string {
-  return [...(row.artists ?? []), sourceName(row.provider)].filter(Boolean).join(' · ')
+  return (row.artists ?? []).filter(Boolean).join(' · ')
+}
+
+/** rowSources falls back to the row's provider for a pre-merge payload. */
+function rowSources(row: CatalogRowDTO): string[] {
+  return row.sources && row.sources.length > 0 ? row.sources : [row.provider]
 }
 
 /** stateKey maps a backend row state onto a chip, or null for "nothing yet". */
@@ -293,7 +392,7 @@ defineExpose({
         :class="isAllSources
           ? 'bg-foreground/[0.10] text-foreground'
           : 'text-subdued hover:bg-foreground/[0.04] hover:text-foreground'"
-        @click="emit('update:source', '')"
+        @click="emit('toggle-source', '')"
       >
         {{ $t('cloud_search.all_sources') }}
       </button>
@@ -304,10 +403,10 @@ defineExpose({
         data-test="catalog-source"
         :data-source-id="source.id"
         class="px-3 py-1.5 rounded-full text-xs font-medium transition-colors"
-        :class="activeSource === source.id
+        :class="activeSources.includes(source.id)
           ? 'bg-foreground/[0.10] text-foreground'
           : 'text-subdued hover:bg-foreground/[0.04] hover:text-foreground'"
-        @click="emit('update:source', source.id)"
+        @click="emit('toggle-source', source.id)"
       >
         {{ source.name || source.id }}
       </button>
@@ -364,24 +463,24 @@ defineExpose({
     <p v-if="actionError" class="text-xs text-dim">{{ $t(`cloud_search.${actionError}`) }}</p>
 
     <!-- Results -->
-    <div v-if="showList" class="space-y-1">
+    <div v-if="showList" ref="rowsEl" class="space-y-1">
       <p class="pb-2 text-xs font-semibold uppercase tracking-wide text-dimmer">
         {{ $t('cloud_search.results') }}
       </p>
       <div
-        v-for="row in rows"
+        v-for="(row, index) in rows"
         :key="`${row.provider}/${row.external_id}`"
         data-test="catalog-row"
+        :data-row-index="index"
         :data-identity="`${row.provider}/${row.external_id}`"
         class="group flex items-center gap-3 rounded-xl p-2 transition-colors hover:bg-foreground/[0.04]"
       >
         <div
-          :ref="(el) => setCoverRef(coverKey(row), el)"
           class="flex h-10 w-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg bg-foreground/[0.06] ring-1 ring-foreground/[0.06]"
         >
           <img
             v-if="coverLoaded(row)"
-            :src="row.cover_url"
+            :src="coverSrc(row)"
             :alt="row.title"
             data-test="catalog-cover"
             class="catalog-cover-fade h-full w-full object-cover"
@@ -392,7 +491,15 @@ defineExpose({
 
         <div class="min-w-0 flex-1">
           <p class="truncate text-sm font-semibold text-foreground">{{ row.title }}</p>
-          <p class="truncate text-xs text-dim">{{ subtitle(row) }}</p>
+          <div class="flex min-w-0 items-center gap-1.5">
+            <p class="truncate text-xs text-dim">{{ subtitle(row) }}</p>
+            <span
+              v-for="source in rowSources(row)"
+              :key="source"
+              data-test="catalog-row-source"
+              class="shrink-0 rounded-full bg-foreground/[0.06] px-1.5 py-0.5 text-[10px] font-medium text-dimmer"
+            >{{ sourceName(source) }}</span>
+          </div>
         </div>
 
         <span v-if="row.duration" class="text-xs tabular-nums text-dimmer">

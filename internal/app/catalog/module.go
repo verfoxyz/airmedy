@@ -28,9 +28,18 @@ var Module = fx.Module("catalog",
 			// keeps the default (covers requested).
 			fx.ParamTags(``, `optional:"true"`, ``),
 		),
-		// The two ports the service consumes, bound from the adapters above.
+		fx.Annotate(
+			func(sources *PluginSources, settings PluginSettingReader) *SourceSettingReader {
+				return NewSourceSettingReader(sources, settings)
+			},
+			// Same optional store; without it the multi-source cap falls back to
+			// one page instead of failing the search.
+			fx.ParamTags(``, `optional:"true"`),
+		),
+		// The three ports the service consumes, bound from the adapters above.
 		func(sources *PluginSources) domain.CatalogSearchSourceRegistry { return sources },
 		func(searcher *PluginSearcher) domain.CatalogSearcher { return searcher },
+		func(reader *SourceSettingReader) domain.CatalogSourceSettingReader { return reader },
 		func(
 			sources *PluginSources,
 			searcher domain.CatalogSearcher,
@@ -41,19 +50,23 @@ var Module = fx.Module("catalog",
 			favorites FavoritesWriter,
 			playlists PlaylistMembership,
 			settings SettingsReader,
+			sourceSettings domain.CatalogSourceSettingReader,
+			covers domain.CatalogCoverCache,
 			logger *slog.Logger,
 		) *Service {
 			return NewService(Deps{
-				Sources:     sources,
-				Searcher:    searcher,
-				Resolver:    resolver,
-				States:      states,
-				Library:     library,
-				LocalTracks: localTracks,
-				Favorites:   favorites,
-				Playlists:   playlists,
-				Settings:    settings,
-				Logger:      logger,
+				Sources:        sources,
+				Searcher:       searcher,
+				Resolver:       resolver,
+				States:         states,
+				Library:        library,
+				LocalTracks:    localTracks,
+				Favorites:      favorites,
+				Playlists:      playlists,
+				Settings:       settings,
+				SourceSettings: sourceSettings,
+				Covers:         covers,
+				Logger:         logger,
 			})
 		},
 	),

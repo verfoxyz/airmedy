@@ -55,6 +55,13 @@ func (c *Config) ArtworkCachePath() string {
 	return filepath.Join(c.DataDir, "artwork")
 }
 
+// CoverCachePath is the persistent remote-cover directory. It is separate from
+// the artwork cache because its files are addressed by remote URL hash and
+// evicted by an LRU index, while artwork files are addressed by content hash.
+func (c *Config) CoverCachePath() string {
+	return filepath.Join(c.DataDir, "cover-cache")
+}
+
 func (c *Config) LogDir() string {
 	return filepath.Join(c.DataDir, "logs")
 }

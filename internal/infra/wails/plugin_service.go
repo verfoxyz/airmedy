@@ -2,9 +2,12 @@ package wails
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
+	"strings"
 
 	"airmedy/internal/app/plugin"
 	"airmedy/internal/domain"
@@ -59,12 +62,17 @@ type PluginStatusDTO struct {
 	LastError string `json:"last_error"`
 }
 
-// PluginSettingDTO is one declared switch and its stored value.
+// PluginSettingDTO is one declared setting and its stored value.
 type PluginSettingDTO struct {
 	Key   string            `json:"key"`
 	Type  string            `json:"type"`
 	Label map[string]string `json:"label"`
-	Value bool              `json:"value"`
+	// Value is a bool for a switch and an integer for a number input.
+	Value any `json:"value"`
+	// Min/Max/Step describe a number input; zero means "not declared".
+	Min  int `json:"min"`
+	Max  int `json:"max"`
+	Step int `json:"step"`
 }
 
 // PluginService is the Wails binding for the plugin registry: translation only,
@@ -98,15 +106,86 @@ func (s *PluginService) ListPlugins(ctx context.Context) ([]PluginInfoDTO, error
 	return dtos, nil
 }
 
-// SetPluginSetting stores one declared switch value in the plugin's KV.
-func (s *PluginService) SetPluginSetting(ctx context.Context, id, key string, value bool) error {
+// SetPluginSetting stores one declared setting value in the plugin's KV.
+//
+// The value is a bool for a switch and an integer for a number input; the
+// declaration itself is not looked up again here, so a stale UI can still save
+// the control it rendered.
+func (s *PluginService) SetPluginSetting(ctx context.Context, id, key string, value any) error {
 	if s.settings == nil {
 		return domain.ErrPluginSettingsUnavailable
 	}
-	if err := s.settings.Set(ctx, id, key, strconv.FormatBool(value)); err != nil {
+	text, err := settingValueText(value)
+	if err != nil {
+		return err
+	}
+	if err := s.settings.Set(ctx, id, key, text); err != nil {
 		return translatePluginError(err)
 	}
 	return nil
+}
+
+// settingValueText normalises the JSON values a binding can carry onto the KV's
+// text form.
+func settingValueText(value any) (string, error) {
+	switch typed := value.(type) {
+	case bool:
+		return strconv.FormatBool(typed), nil
+	case int:
+		return strconv.Itoa(typed), nil
+	case int64:
+		return strconv.FormatInt(typed, 10), nil
+	case float64:
+		if math.Trunc(typed) != typed {
+			return "", fmt.Errorf("plugin setting must be a whole number")
+		}
+		return strconv.Itoa(int(typed)), nil
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err != nil {
+			return "", fmt.Errorf("plugin setting must be a whole number: %w", err)
+		}
+		return strconv.FormatInt(parsed, 10), nil
+	case string:
+		return strings.TrimSpace(typed), nil
+	}
+	return "", fmt.Errorf("plugin setting has an unsupported value type %T", value)
+}
+
+// settingDefaultInt reads a declaration's numeric default. A JSON-decoded
+// number arrives as float64, while a Go-built declaration may use int.
+func settingDefaultInt(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err == nil {
+			return int(parsed)
+		}
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
+		if err == nil {
+			return parsed
+		}
+	}
+	return 0
+}
+
+// clampSettingInt applies the declaration's own min/max to a stored value.
+func clampSettingInt(value any, min, max int) int {
+	number := settingDefaultInt(value)
+	if min > 0 && number < min {
+		number = min
+	}
+	if max > 0 && number > max {
+		number = max
+	}
+	return number
 }
 
 // SetPluginEnabled persists the user's choice and applies it immediately.
@@ -167,8 +246,18 @@ func (s *PluginService) toPluginInfoDTO(ctx context.Context, info plugin.PluginI
 	settings := make([]PluginSettingDTO, 0, len(info.Settings))
 	for _, declaration := range info.Settings {
 		value := declaration.Default
-		if s.settings != nil {
-			value = s.settings.GetBool(ctx, info.Manifest.ID, declaration.Key, declaration.Default)
+		switch declaration.Type {
+		case domain.PluginSettingTypeNumber:
+			fallback := settingDefaultInt(declaration.Default)
+			if s.settings != nil {
+				value = s.settings.GetInt(ctx, info.Manifest.ID, declaration.Key, fallback)
+			}
+			value = clampSettingInt(value, declaration.Min, declaration.Max)
+		case domain.PluginSettingTypeSwitch:
+			fallback, _ := declaration.Default.(bool)
+			if s.settings != nil {
+				value = s.settings.GetBool(ctx, info.Manifest.ID, declaration.Key, fallback)
+			}
 		}
 		label := declaration.Label
 		if label == nil {
@@ -179,6 +268,9 @@ func (s *PluginService) toPluginInfoDTO(ctx context.Context, info plugin.PluginI
 			Type:  declaration.Type,
 			Label: label,
 			Value: value,
+			Min:   declaration.Min,
+			Max:   declaration.Max,
+			Step:  declaration.Step,
 		})
 	}
 

@@ -136,11 +136,19 @@ different keyword. Both branches survive a switch because their stores keep the
 response.
 
 `components/catalog/CatalogResults.vue` is the cloud branch (presentational; the
-store does search, paging and saving): a source bar (`全部` plus one button per
-source the plugin reported through `describe`), rows showing **title** and
-**artist · source** (the same track from two sources stays two rows), a state chip
+store does search, paging and saving): a **multi-select** source bar (`全部` plus one
+toggle per source the plugin reported through `describe`; no selection = all sources),
+rows showing **title**, **artist**, and one **source badge per contributing provider**
+(a cross-source duplicate is one row with several badges), a state chip
 (`in_library` / `saved` / `downloading` / `failed`), an inline chip per failed
-source, and a 50-per-page "load more".
+source, a 5-row first screen, and a "load more" that adds 10 merged rows each time
+(capped at 100). The source selection persists across restarts
+in `localStorage` (`airmedy.catalog.sources`); the candidate drawer's selection (see
+`search-candidates-plan.md`) is independent. `SearchView` calls
+`CatalogService.GetCatalogSources()` on mount and on activation, so the chips are
+selectable before the first keyword and reflect a plugin enabled/disabled in
+settings; the call does not run a search, and a failure falls back to the sources
+reported by the next search response.
 
 Per-row actions (`收藏`, `加入歌单`) both register the track and start its download
 through `CatalogService.SaveCatalogResult`; the download setting does not gate
@@ -151,6 +159,14 @@ actions instead of offering a second download — unless it carries
 favorite/playlist reuse that row and a separate `download_anyway` button asks for
 the provider's copy. A `failed` row offers nothing extra: requesting it again
 reuses the failed job via the download queue.
+
+Rows render covers from a **host-local asset URL** and load them lazily per row.
+`CatalogResults` observes each row with a 200px preload margin; only a row that enters
+the viewport asks `GetCatalogCovers` for its artwork. Rows visible in the same turn are
+coalesced into one call (at most 10 rows per call, the rest on the next turn). At most
+four preloads are in flight, a row renders only after its image settled, and a failed
+row keeps the placeholder without retrying on the same page. `cover_url` remains only
+as the remote URL used for saving and debugging, never as an `<img>` source.
 
 After `download:done` the page re-reads the row by identity through
 `GetCatalogRowStates`, because the merge deletes the remote row that the event's

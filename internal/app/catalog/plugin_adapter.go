@@ -142,11 +142,41 @@ func (p *PluginSources) pluginForSource(ctx context.Context, source string) (dom
 	return nil, false
 }
 
-// PluginSettingReader reads the host-owned value of a switch a plugin declared.
+// PluginSettingReader reads the host-owned value of a setting a plugin declared.
 // *plugin.SettingStore satisfies it; the interface keeps app/catalog free of an
 // app/plugin import.
 type PluginSettingReader interface {
 	GetBool(ctx context.Context, pluginID, key string, fallback bool) bool
+	// GetInt reads a `type: "number"` declaration. A missing or unparsable value
+	// returns fallback, so an older plugin image cannot break paging.
+	GetInt(ctx context.Context, pluginID, key string, fallback int) int
+}
+
+// SourceSettingReader resolves a setting through the plugin that owns a source.
+//
+// The catalog service knows providers, not plugin ids, while the setting lives
+// in the plugin's KV. This adapter joins the two without either package
+// importing the other.
+type SourceSettingReader struct {
+	sources  *PluginSources
+	settings PluginSettingReader
+}
+
+// NewSourceSettingReader builds the per-source setting lookup.
+func NewSourceSettingReader(sources *PluginSources, settings PluginSettingReader) *SourceSettingReader {
+	return &SourceSettingReader{sources: sources, settings: settings}
+}
+
+// SourceInt implements domain.CatalogSourceSettingReader.
+func (r *SourceSettingReader) SourceInt(ctx context.Context, source, key string, fallback int) int {
+	if r == nil || r.sources == nil || r.settings == nil {
+		return fallback
+	}
+	host, ok := r.sources.pluginForSource(ctx, source)
+	if !ok {
+		return fallback
+	}
+	return r.settings.GetInt(ctx, host.Manifest().ID, key, fallback)
 }
 
 // PluginSearcher implements domain.CatalogSearcher by calling the one plugin that
@@ -277,4 +307,5 @@ func pluginErrorKind(rpcErr *domain.RPCError) string {
 var (
 	_ domain.CatalogSearchSourceRegistry = (*PluginSources)(nil)
 	_ domain.CatalogSearcher             = (*PluginSearcher)(nil)
+	_ domain.CatalogSourceSettingReader  = (*SourceSettingReader)(nil)
 )

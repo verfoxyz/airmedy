@@ -125,6 +125,7 @@ SQLite database managed via `golang-migrate` for schema versioning and `sqlx` fo
 | 000086 | `download_jobs_keep_history.up.sql` | Rebuild `download_jobs` to drop the `track_id → tracks(id) ON DELETE CASCADE` FK. Deleting a track (or folding a remote row into the imported one) must not erase its download history; `DeleteByTrack` removes jobs explicitly when the user deletes a file. `playlist_id` keeps `ON DELETE SET NULL`, and the two indexes are recreated. Down restores the FK and copies only rows whose track still exists |
 | 000087 | `track_raw_album_name.up.sql` | Add `tracks.raw_album_name TEXT NOT NULL DEFAULT ''`. A remote row has no album entity, so this is the only place the search result's album name can live until the downloaded file is tagged with it. Down drops the column |
 | 000088 | `lyric_translation.up.sql` | Add `lyrics.translation_content/translation_source` so a provider's `tlyric` is stored apart from the original instead of concatenated, and `mobile_sync_lyric_cache` keeps the translation in the cached snapshot. Add `app_settings.lyrics_secondary_mode TEXT NOT NULL DEFAULT 'translation'`; existing rows map `romanization_enabled=true → romanization`, `false → none`. The post-migration backfill in `NewDB` splits legacy `原文 ^ 翻译` rows once. Down drops every added column |
+| 000089 | `cover_cache.up.sql` | Add `cover_cache(url_hash, path, bytes, mime, last_used)` plus `idx_cover_cache_last_used`, the index for the persistent remote-cover cache (`internal/infra/covercache`). `url_hash` is the remote URL's sha256 so the same image is downloaded once; `path` is a flat file name relative to `<DataDir>/cover-cache/`; `bytes` is recorded at write time so eviction can SUM without stat-ing files; `last_used` is the LRU key updated on every hit. Down drops the index and table |
 
 `listeningRepository.GetListeningInsights` returns up to 50 entries for both Top Artists
 (ordered by listened seconds) and Top Tracks (ordered by play count, then listened
@@ -372,6 +373,15 @@ mini_player_state (
     has_position INTEGER DEFAULT 0,  -- 0 until first move/resize; geometry ignored while 0
     updated_at DATETIME
 )
+
+cover_cache (   -- persistent remote cover cache (000089)
+    url_hash TEXT PRIMARY KEY,   -- sha256 of the remote URL; the same image is fetched once
+    path TEXT NOT NULL,          -- flat file name in <DataDir>/cover-cache/; the directory may move
+    bytes INTEGER NOT NULL,      -- recorded on write so eviction SUMs without stat-ing files
+    mime TEXT NOT NULL,          -- image/jpeg | image/png | image/webp
+    last_used INTEGER NOT NULL   -- unix seconds; the LRU key, updated on every hit
+)
+-- idx_cover_cache_last_used: INDEX(last_used)
 ```
 
 ### Listening Insights Tables

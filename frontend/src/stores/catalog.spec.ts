@@ -10,6 +10,7 @@ import { useCatalogStore } from './catalog'
  */
 const api = vi.hoisted(() => ({
   SearchCatalog: vi.fn(),
+  GetCatalogSources: vi.fn(),
   SaveCatalogResult: vi.fn(),
   GetCatalogRowStates: vi.fn(),
   GetTracksByIDs: vi.fn(),
@@ -27,6 +28,7 @@ vi.mock('@wailsio/runtime', () => ({
 
 vi.mock('../../bindings/airmedy/internal/infra/wails/catalogservice', () => ({
   SearchCatalog: api.SearchCatalog,
+  GetCatalogSources: api.GetCatalogSources,
   SaveCatalogResult: api.SaveCatalogResult,
   GetCatalogRowStates: api.GetCatalogRowStates,
 }))
@@ -48,6 +50,7 @@ function row(externalId: string, overrides: Record<string, unknown> = {}) {
     artists: ['周杰伦'],
     album_name: '专辑',
     duration: 200,
+    sources: ['wy'],
     cover_url: '',
     cover_url_large: '',
     downloadable: true,
@@ -69,6 +72,7 @@ function page(rows: ReturnType<typeof row>[], hasMore = false) {
 
 describe('catalog store', () => {
   beforeEach(() => {
+    localStorage.clear()
     setActivePinia(createPinia())
     vi.clearAllMocks()
     api.handlers.clear()
@@ -88,13 +92,23 @@ describe('catalog store', () => {
     expect(api.SearchCatalog).toHaveBeenCalledWith({
       query: '周杰伦',
       sources: [],
-      limit: 50,
+      limit: 5,
       offset: 0,
     })
     expect(store.rows).toHaveLength(1)
     expect(store.sources).toHaveLength(2)
     expect(store.hasMore).toBe(true)
     expect(store.loading).toBe(false)
+  })
+
+  it('lists sources without searching, so chips render before a query', async () => {
+    api.GetCatalogSources.mockResolvedValue(SOURCES)
+    const store = useCatalogStore()
+
+    await store.loadSources()
+
+    expect(store.sources).toEqual(SOURCES)
+    expect(api.SearchCatalog).not.toHaveBeenCalled()
   })
 
   it('restores the loaded page when re-entering with the same keyword', async () => {
@@ -108,7 +122,7 @@ describe('catalog store', () => {
 
     // Returning to cloud with the same keyword must keep rows, hasMore and the
     // source filter rather than fetching page 1 again.
-    store.activeSource = 'wy'
+    store.activeSources = ['wy']
     store.setMode('local')
     store.ensureSearch('周杰伦')
     await vi.advanceTimersByTimeAsync(300)
@@ -116,7 +130,7 @@ describe('catalog store', () => {
     expect(api.SearchCatalog).toHaveBeenCalledTimes(1)
     expect(store.rows).toHaveLength(2)
     expect(store.hasMore).toBe(true)
-    expect(store.activeSource).toBe('wy')
+    expect(store.activeSources).toEqual(['wy'])
   })
 
   it('searches a changed keyword instead of restoring the old page', async () => {
@@ -133,7 +147,7 @@ describe('catalog store', () => {
     expect(api.SearchCatalog).toHaveBeenLastCalledWith({
       query: '晴天',
       sources: [],
-      limit: 50,
+      limit: 5,
       offset: 0,
     })
     expect(store.rows).toHaveLength(1)
@@ -149,23 +163,53 @@ describe('catalog store', () => {
     store.loadMore()
     await vi.advanceTimersByTimeAsync(0)
 
-    expect(api.SearchCatalog).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 1 }))
+    expect(api.SearchCatalog).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 10, offset: 1 }))
     expect(store.rows.map((r) => r.external_id)).toEqual(['1', '2'])
     expect(store.hasMore).toBe(false)
   })
 
-  it('filters by source and re-searches without the debounce', async () => {
+  it('loads ten more at the current merged offset', async () => {
+    api.SearchCatalog.mockResolvedValueOnce(page(Array.from({ length: 5 }, (_, i) => row(`a${i}`)), true))
+    api.SearchCatalog.mockResolvedValueOnce(page(Array.from({ length: 10 }, (_, i) => row(`b${i}`)), true))
+    api.SearchCatalog.mockResolvedValueOnce(page(Array.from({ length: 10 }, (_, i) => row(`c${i}`)), false))
+    const store = useCatalogStore()
+
+    store.search('周杰伦')
+    await vi.advanceTimersByTimeAsync(300)
+    expect(store.rows).toHaveLength(5)
+
+    store.loadMore()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(api.SearchCatalog).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 10, offset: 5 }))
+    expect(store.rows).toHaveLength(15)
+
+    store.loadMore()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(api.SearchCatalog).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 10, offset: 15 }))
+    expect(store.rows).toHaveLength(25)
+    expect(store.hasMore).toBe(false)
+  })
+
+  it('toggles sources, re-searches without the debounce and persists the choice', async () => {
     api.SearchCatalog.mockResolvedValue(page([row('1')]))
     const store = useCatalogStore()
 
     store.search('周杰伦')
     await vi.advanceTimersByTimeAsync(300)
 
-    store.setSource('kg')
+    store.toggleSource('kg')
     await vi.advanceTimersByTimeAsync(0)
-
-    expect(store.activeSource).toBe('kg')
+    expect(store.activeSources).toEqual(['kg'])
     expect(api.SearchCatalog).toHaveBeenLastCalledWith(expect.objectContaining({ sources: ['kg'] }))
+
+    store.toggleSource('wy')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.activeSources).toEqual(['kg', 'wy'])
+    expect(api.SearchCatalog).toHaveBeenLastCalledWith(expect.objectContaining({ sources: ['kg', 'wy'] }))
+    expect(JSON.parse(localStorage.getItem('airmedy.catalog.sources') ?? '[]')).toEqual(['kg', 'wy'])
+
+    store.toggleSource('')
+    expect(store.activeSources).toEqual([])
   })
 
   it('clears rows when the keyword is emptied', async () => {

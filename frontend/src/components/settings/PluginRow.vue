@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { ChevronRight, Globe, HardDrive } from '@lucide/vue'
-import { Switch } from '@airmedy/ui'
+import { Switch, Input } from '@airmedy/ui'
 import type { PluginInfo, PluginRowLabels } from './pluginTypes'
 
 /**
@@ -31,7 +31,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   toggle: [enabled: boolean]
   open: []
-  'setting-change': [key: string, value: boolean]
+  'setting-change': [key: string, value: boolean | number]
 }>()
 
 const expanded = ref(false)
@@ -99,6 +99,16 @@ const networkClass = computed(() => (props.plugin.enabled ? 'opacity-100' : 'opa
 function settingLabel(setting: PluginInfo['settings'][number]): string {
   const label = setting.label ?? {}
   return label[props.locale ?? ''] || label.en || label.zh || setting.key
+}
+
+/** settingNumber clamps a number input to its declared min/max and whole steps. */
+function settingNumber(setting: PluginInfo['settings'][number], value: string | number): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return Number(setting.value ?? 0)
+  let next = Math.round(parsed)
+  if (setting.min > 0) next = Math.max(setting.min, next)
+  if (setting.max > 0) next = Math.min(setting.max, next)
+  return next
 }
 </script>
 
@@ -224,6 +234,18 @@ function settingLabel(setting: PluginInfo['settings'][number]): string {
           :disabled="!plugin.enabled || busy"
           :data-test="`plugin-setting-${setting.key}`"
           @update:model-value="(value: boolean) => emit('setting-change', setting.key, value)"
+        />
+        <Input
+          v-else-if="setting.type === 'number'"
+          type="number"
+          :min="setting.min > 0 ? setting.min : undefined"
+          :max="setting.max > 0 ? setting.max : undefined"
+          :step="setting.step > 0 ? setting.step : 1"
+          :model-value="Number(setting.value ?? 0)"
+          :disabled="!plugin.enabled || busy"
+          :data-test="`plugin-setting-${setting.key}`"
+          class="w-24 text-right tabular-nums"
+          @update:model-value="(value: string | number) => emit('setting-change', setting.key, settingNumber(setting, value))"
         />
       </div>
     </div>

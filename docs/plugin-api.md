@@ -41,10 +41,12 @@
 
 ### `describe.settings`（最小设置声明）
 
-插件可在 `describe` 返回 `settings: [{key, type:"switch", default, label}]`。宿主把开关
+插件可在 `describe` 返回
+`settings: [{key, type:"switch"|"number", default, min?, max?, step?, label}]`。宿主把控件
 渲染在该插件行内，值存插件 KV 的 `host.setting.` 前缀下，并在受影响的调用里下发
-（目前是 `catalog.search` 的 `include_cover`）。这不是完整的 `ui.settingsSchema`，
-等后者落地再迁移；插件不声明时按默认值处理。
+（`include_cover`），或由宿主自己读取（`cover_cache_mb`，封面持久缓存上限）。数字控件
+的 `min/max` 为 0 表示未声明。这不是完整的 `ui.settingsSchema`，等后者落地再迁移；插件
+不声明时按默认值处理。
 
 ### `catalog.search`（在线目录搜索）
 

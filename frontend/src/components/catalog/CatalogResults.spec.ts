@@ -3,7 +3,10 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import CatalogResults from './CatalogResults.vue'
 import { usePlaylistsStore } from '@/stores/playlists'
+import * as CatalogService from '../../../bindings/airmedy/internal/infra/wails/catalogservice'
 import type {
+  CatalogCoverDTO,
+  CatalogCoverRequestDTO,
   CatalogFailureDTO,
   CatalogRowDTO,
   CatalogSourceDTO,
@@ -25,11 +28,17 @@ vi.mock('../../../bindings/airmedy/internal/infra/wails/playlistservice', () => 
   GetPlaylistByID: vi.fn().mockResolvedValue(null),
 }))
 
+// The cover batch is resolved by the host. The default implementation answers
+// one local asset URL per request; individual tests override it to fail a row.
+vi.mock('../../../bindings/airmedy/internal/infra/wails/catalogservice', () => ({
+  GetCatalogCovers: vi.fn(),
+}))
+
 // --- Cover loading doubles ---------------------------------------------------
 //
-// jsdom has neither IntersectionObserver nor image fetching, so the component's
-// deterministic pipeline is driven by these two fakes: the test decides when a
-// row becomes visible and when its preload settles.
+// jsdom has no layout or image fetching, so `Image` and `IntersectionObserver`
+// are faked: the test decides when a row becomes visible and when a preload
+// settles. The host RPC is mocked above and returns local URLs.
 
 class FakeIntersectionObserver {
   static instances: FakeIntersectionObserver[] = []
@@ -44,9 +53,9 @@ class FakeIntersectionObserver {
       entries: Array<{ target: Element; isIntersecting: boolean }>,
       observer: FakeIntersectionObserver,
     ) => void,
-    options?: { root?: Element | null; rootMargin?: string },
+    options?: { root?: Element | Document | null; rootMargin?: string; threshold?: number },
   ) {
-    this.root = options?.root ?? null
+    this.root = (options?.root as Element | null) ?? null
     this.rootMargin = options?.rootMargin ?? '0px'
     FakeIntersectionObserver.instances.push(this)
   }
@@ -65,13 +74,18 @@ class FakeIntersectionObserver {
     this.observed.length = 0
   }
 
-  intersect(element: Element) {
+  intersect() {
+    this.intersectElement(this.observed[0])
+  }
+
+  intersectElement(element: Element | undefined) {
+    if (!element) return
     this.callback([{ target: element, isIntersecting: true }], this)
   }
 
   intersectAll() {
     for (const element of [...this.observed]) {
-      this.intersect(element)
+      this.intersectElement(element)
     }
   }
 }
@@ -96,10 +110,18 @@ class FakeImage {
   }
 }
 
-// The component reads these globals at runtime; installing them per test keeps
-// every mount deterministic.
-vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver)
 vi.stubGlobal('Image', FakeImage)
+vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver)
+
+/** answerCovers makes every requested row resolve to a local asset URL. */
+function answerCovers(requests: CatalogCoverRequestDTO[]): CatalogCoverDTO[] {
+  return requests.map((request) => ({
+    provider: request.provider,
+    external_id: request.external_id,
+    url: `/cover-cache/${request.external_id}.jpg`,
+    error: '',
+  }))
+}
 
 const SOURCES: CatalogSourceDTO[] = [
   { id: 'wy', name: 'NetEase' },
@@ -114,6 +136,7 @@ function row(overrides: Partial<CatalogRowDTO> = {}): CatalogRowDTO {
     artists: ['周杰伦'],
     album_name: '叶惠美',
     duration: 239,
+    sources: ['wy'],
     cover_url: '',
     cover_url_large: '',
     downloadable: true,
@@ -125,7 +148,7 @@ function row(overrides: Partial<CatalogRowDTO> = {}): CatalogRowDTO {
 
 const EMPTY_PROPS = {
   sources: [] as CatalogSourceDTO[],
-  activeSource: '',
+  activeSources: [] as string[],
   rows: [] as CatalogRowDTO[],
   failures: [] as CatalogFailureDTO[],
   hasMore: false,
@@ -151,11 +174,14 @@ describe('CatalogResults', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
-    FakeIntersectionObserver.instances = []
     FakeImage.instances = []
+    FakeIntersectionObserver.instances = []
+    vi.mocked(CatalogService.GetCatalogCovers).mockImplementation(
+      async (requests: CatalogCoverRequestDTO[]) => answerCovers(requests),
+    )
   })
 
-  it('renders 全部 plus one button per source and emits the chosen source', async () => {
+  it('renders 全部 plus one button per source and toggles the chosen source', async () => {
     const wrapper = mountResults({ sources: SOURCES })
 
     const buttons = wrapper.findAll('[data-test="catalog-source"]')
@@ -164,7 +190,7 @@ describe('CatalogResults', () => {
     expect(buttons[1].text()).toBe('NetEase')
 
     await buttons[2].trigger('click')
-    expect(wrapper.emitted('update:source')?.[0]).toEqual(['kg'])
+    expect(wrapper.emitted('toggle-source')?.[0]).toEqual(['kg'])
     wrapper.unmount()
   })
 
@@ -173,59 +199,157 @@ describe('CatalogResults', () => {
 
     const listRow = wrapper.find('[data-test="catalog-row"]')
     expect(listRow.text()).toContain('晴天')
-    // The subtitle names the source, because the same track can come from two.
-    expect(listRow.text()).toContain('周杰伦 · NetEase')
+    // The artist is the subtitle; the source is a separate badge.
+    expect(listRow.text()).toContain('周杰伦')
+    expect(listRow.get('[data-test="catalog-row-source"]').text()).toBe('NetEase')
     wrapper.unmount()
   })
 
-  it('does not request a cover until its row enters the viewport', async () => {
+  it('labels every source of a cross-source duplicate row', () => {
     const wrapper = mountResults({
       sources: SOURCES,
-      rows: [row({ cover_url: 'https://p1.music.126.net/cover.jpg?param=100y100' })],
+      rows: [row({ sources: ['wy', 'kg'] })],
     })
+
+    expect(wrapper.findAll('[data-test="catalog-row-source"]').map(badge => badge.text())).toEqual(['NetEase', 'Kugou'])
+    wrapper.unmount()
+  })
+
+  it('does not request covers for rows that never entered the viewport', async () => {
+    const rows = ['a', 'b', 'c'].map((id) =>
+      row({ external_id: id, cover_url: `https://cdn.example/${id}.jpg` }),
+    )
+    const wrapper = mountResults({ sources: SOURCES, rows })
     await flushPromises()
 
     const observer = FakeIntersectionObserver.instances.at(-1)!
-    // The observer must target the list scroller with a pre-fetch boundary.
-    expect(observer.rootMargin).toBe('200px 0px')
-    expect(observer.observed).toHaveLength(1)
-    // Nothing is fetched and no <img> exists while the row is off-screen.
-    expect(FakeImage.instances).toHaveLength(0)
-    expect(wrapper.find('[data-test="catalog-cover"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="catalog-cover-placeholder"]').exists()).toBe(true)
+    expect(observer.rootMargin).toContain('200px')
+    expect(observer.observed).toHaveLength(3)
+    expect(CatalogService.GetCatalogCovers).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
-  it('preloads a visible cover once, then renders it', async () => {
-    const wrapper = mountResults({
-      sources: SOURCES,
-      rows: [row({ cover_url: 'https://p1.music.126.net/cover.jpg?param=100y100' })],
-    })
+  it('requests only the row that entered the viewport', async () => {
+    const rows = ['a', 'b', 'c'].map((id) =>
+      row({ external_id: id, cover_url: `https://cdn.example/${id}.jpg` }),
+    )
+    const wrapper = mountResults({ sources: SOURCES, rows })
+    await flushPromises()
+
+    const observer = FakeIntersectionObserver.instances.at(-1)!
+    const target = observer.observed[1] as HTMLElement
+    expect(target.dataset.rowIndex).toBe('1')
+    observer.intersectElement(target)
+    await flushPromises()
+
+    const calls = vi.mocked(CatalogService.GetCatalogCovers).mock.calls
+    expect(calls).toHaveLength(1)
+    expect((calls[0][0] as CatalogCoverRequestDTO[]).map((item) => item.external_id)).toEqual(['b'])
+    wrapper.unmount()
+  })
+
+  it('does not observe rows without a cover', async () => {
+    const rows = [
+      row({ external_id: 'w', cover_url: 'https://cdn.example/w.jpg' }),
+      row({ provider: 'kg', external_id: 'k', sources: ['kg'] }),
+    ]
+    const wrapper = mountResults({ sources: SOURCES, rows })
+    await flushPromises()
+
+    const observer = FakeIntersectionObserver.instances.at(-1)!
+    expect(observer.observed).toHaveLength(1)
+    observer.intersectAll()
+    await flushPromises()
+
+    const calls = vi.mocked(CatalogService.GetCatalogCovers).mock.calls
+    expect(calls).toHaveLength(1)
+    expect((calls[0][0] as CatalogCoverRequestDTO[]).map((item) => item.external_id)).toEqual(['w'])
+    wrapper.unmount()
+  })
+
+  it('batches rows visible in one turn into one host call', async () => {
+    const rows = ['a', 'b', 'c'].map((id) =>
+      row({ external_id: id, cover_url: `https://cdn.example/${id}.jpg` }),
+    )
+    const wrapper = mountResults({ sources: SOURCES, rows })
+    await flushPromises()
+
+    FakeIntersectionObserver.instances.at(-1)!.intersectAll()
+    await flushPromises()
+
+    const calls = vi.mocked(CatalogService.GetCatalogCovers).mock.calls
+    expect(calls).toHaveLength(1)
+    expect((calls[0][0] as CatalogCoverRequestDTO[]).map((item) => item.external_id)).toEqual(['a', 'b', 'c'])
+    wrapper.unmount()
+  })
+
+  it('splits more than ten visible rows into two host calls', async () => {
+    const rows = Array.from({ length: 12 }, (_, index) =>
+      row({ external_id: `r${index}`, cover_url: `https://cdn.example/${index}.jpg` }),
+    )
+    const wrapper = mountResults({ sources: SOURCES, rows })
+    await flushPromises()
+
+    FakeIntersectionObserver.instances.at(-1)!.intersectAll()
+    await flushPromises()
+    await flushPromises()
+
+    const calls = vi.mocked(CatalogService.GetCatalogCovers).mock.calls
+    expect(calls).toHaveLength(2)
+    expect((calls[0][0] as CatalogCoverRequestDTO[])).toHaveLength(10)
+    expect((calls[1][0] as CatalogCoverRequestDTO[])).toHaveLength(2)
+    wrapper.unmount()
+  })
+
+  it('requests a visible row only once', async () => {
+    const rows = [row({ external_id: 'a', cover_url: 'https://cdn.example/a.jpg' })]
+    const wrapper = mountResults({ sources: SOURCES, rows })
     await flushPromises()
 
     const observer = FakeIntersectionObserver.instances.at(-1)!
     const target = observer.observed[0]
-    observer.intersect(target)
-    // Entering the queue unobserves the row, so visibility cannot loop.
-    expect(observer.observed).toHaveLength(0)
-    expect(FakeImage.instances).toHaveLength(1)
-    expect(FakeImage.instances[0].src).toContain('param=100y100')
+    observer.intersectElement(target)
+    await flushPromises()
+    observer.intersectElement(target)
+    await flushPromises()
 
-    // A second visibility report for the same key must not request it again.
-    observer.intersect(target)
+    expect(CatalogService.GetCatalogCovers).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('preloads covers and renders host-local asset URLs', async () => {
+    const wrapper = mountResults({
+      sources: SOURCES,
+      rows: [row({ cover_url: 'https://p1.music.126.net/cover.jpg?param=100y100' })],
+    })
+    await flushPromises()
+
+    FakeIntersectionObserver.instances.at(-1)!.intersectAll()
+    await flushPromises()
+
     expect(FakeImage.instances).toHaveLength(1)
+    expect(FakeImage.instances[0].src).toBe('/cover-cache/509781655.jpg')
 
     FakeImage.instances[0].succeed()
     await flushPromises()
 
     const img = wrapper.get('[data-test="catalog-cover"]')
-    expect(img.attributes('src')).toContain('param=100y100')
-    // The native hint is gone: the queue, not the browser, decides when to load.
+    expect(img.attributes('src')).toBe('/cover-cache/509781655.jpg')
+    // The native hint is gone: the queue decides when to load.
     expect(img.attributes('loading')).toBeUndefined()
     wrapper.unmount()
   })
 
-  it('falls back to the placeholder when a preload fails and never retries it', async () => {
+  it('falls back to the placeholder when the host reports an error and never retries it', async () => {
+    vi.mocked(CatalogService.GetCatalogCovers).mockImplementation(
+      async (requests: CatalogCoverRequestDTO[]) =>
+        requests.map((request) => ({
+          provider: request.provider,
+          external_id: request.external_id,
+          url: '',
+          error: 'unavailable',
+        })),
+    )
     const wrapper = mountResults({
       sources: SOURCES,
       rows: [row({ cover_url: 'https://p1.music.126.net/cover.jpg?param=100y100' })],
@@ -234,16 +358,16 @@ describe('CatalogResults', () => {
 
     const observer = FakeIntersectionObserver.instances.at(-1)!
     const target = observer.observed[0]
-    observer.intersect(target)
-    FakeImage.instances[0].fail()
+    observer.intersectElement(target)
     await flushPromises()
 
     expect(wrapper.find('[data-test="catalog-cover"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="catalog-cover-placeholder"]').exists()).toBe(true)
+    expect(FakeImage.instances).toHaveLength(0)
 
-    // Failed keys stay out of the queue even if the row is reported again.
-    observer.intersect(target)
-    expect(FakeImage.instances).toHaveLength(1)
+    observer.intersectElement(target)
+    await flushPromises()
+    expect(CatalogService.GetCatalogCovers).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
 
@@ -254,6 +378,7 @@ describe('CatalogResults', () => {
     })
     await flushPromises()
     FakeIntersectionObserver.instances.at(-1)!.intersectAll()
+    await flushPromises()
     FakeImage.instances[0].succeed()
     await flushPromises()
 
@@ -263,16 +388,14 @@ describe('CatalogResults', () => {
     wrapper.unmount()
   })
 
-  it('keeps at most four cover requests in flight', async () => {
+  it('keeps at most four cover images in flight', async () => {
     const rows = Array.from({ length: 10 }, (_, index) =>
       row({ external_id: String(index), cover_url: `https://cdn.example/${index}.jpg` }),
     )
     const wrapper = mountResults({ sources: SOURCES, rows })
     await flushPromises()
-
-    const observer = FakeIntersectionObserver.instances.at(-1)!
-    expect(observer.observed).toHaveLength(10)
-    observer.intersectAll()
+    FakeIntersectionObserver.instances.at(-1)!.intersectAll()
+    await flushPromises()
 
     const exposed = wrapper.vm as unknown as {
       coverQueueSize: () => number
@@ -291,18 +414,19 @@ describe('CatalogResults', () => {
     wrapper.unmount()
   })
 
-  it('disconnects the observer and clears pending covers on unmount', async () => {
+  it('clears pending covers and detaches images on unmount', async () => {
     const rows = Array.from({ length: 10 }, (_, index) =>
       row({ external_id: String(index), cover_url: `https://cdn.example/${index}.jpg` }),
     )
     const wrapper = mountResults({ sources: SOURCES, rows })
     await flushPromises()
+    FakeIntersectionObserver.instances.at(-1)!.intersectAll()
+    await flushPromises()
 
-    const observer = FakeIntersectionObserver.instances.at(-1)!
-    observer.intersectAll()
     const exposed = wrapper.vm as unknown as { coverQueueSize: () => number }
     const queued = exposed.coverQueueSize
     expect(queued()).toBe(6)
+    const observer = FakeIntersectionObserver.instances.at(-1)!
 
     wrapper.unmount()
 
@@ -317,25 +441,52 @@ describe('CatalogResults', () => {
     expect(FakeImage.instances).toHaveLength(4)
   })
 
-  it('observes appended rows without re-requesting covers already loaded', async () => {
-    const first = row({ external_id: 'one', cover_url: 'https://cdn.example/one.jpg' })
-    const wrapper = mountResults({ sources: SOURCES, rows: [first] })
+  it('observes appended rows and requests them when they become visible', async () => {
+    const initial = ['a', 'b'].map((id) =>
+      row({ external_id: id, cover_url: `https://cdn.example/${id}.jpg` }),
+    )
+    const wrapper = mountResults({ sources: SOURCES, rows: initial })
     await flushPromises()
 
-    const observer = FakeIntersectionObserver.instances.at(-1)!
-    observer.intersectAll()
-    FakeImage.instances[0].succeed()
-    await flushPromises()
+    expect(FakeIntersectionObserver.instances.at(-1)!.observed).toHaveLength(2)
 
     await wrapper.setProps({
-      rows: [first, row({ external_id: 'two', cover_url: 'https://cdn.example/two.jpg' })],
+      rows: [...initial, row({ external_id: 'c', cover_url: 'https://cdn.example/c.jpg' })],
     })
     await flushPromises()
 
-    // Only the new row is left to observe; the loaded one is never re-queued.
-    expect(observer.observed).toHaveLength(1)
-    observer.intersectAll()
-    expect(FakeImage.instances).toHaveLength(2)
+    const observer = FakeIntersectionObserver.instances.at(-1)!
+    expect(observer.observed).toHaveLength(3)
+    observer.intersectElement(observer.observed[2])
+    await flushPromises()
+
+    const calls = vi.mocked(CatalogService.GetCatalogCovers).mock.calls
+    expect(calls).toHaveLength(1)
+    expect((calls[0][0] as CatalogCoverRequestDTO[]).map((item) => item.external_id)).toEqual(['c'])
+    wrapper.unmount()
+  })
+
+  it('a new search resets the requested covers', async () => {
+    const firstPage = ['a', 'b'].map((id) =>
+      row({ external_id: id, cover_url: `https://cdn.example/${id}.jpg` }),
+    )
+    const wrapper = mountResults({ sources: SOURCES, rows: firstPage })
+    await flushPromises()
+    FakeIntersectionObserver.instances.at(-1)!.intersectAll()
+    await flushPromises()
+    expect(CatalogService.GetCatalogCovers).toHaveBeenCalledTimes(1)
+
+    const nextPage = ['c', 'd'].map((id) =>
+      row({ external_id: id, cover_url: `https://cdn.example/${id}.jpg` }),
+    )
+    await wrapper.setProps({ rows: nextPage })
+    await flushPromises()
+    FakeIntersectionObserver.instances.at(-1)!.intersectAll()
+    await flushPromises()
+
+    const calls = vi.mocked(CatalogService.GetCatalogCovers).mock.calls
+    expect(calls).toHaveLength(2)
+    expect((calls[1][0] as CatalogCoverRequestDTO[]).map((item) => item.external_id)).toEqual(['c', 'd'])
     wrapper.unmount()
   })
 

@@ -49,6 +49,9 @@ type CatalogRowDTO struct {
 	Artists    []string `json:"artists"`
 	AlbumName  string   `json:"album_name"`
 	Duration   int      `json:"duration"`
+	// Sources lists every provider that returned this track. A single-source
+	// search has one entry; a cross-source duplicate is one row with several.
+	Sources []string `json:"sources"`
 	// CoverURL is the thumbnail the source reported, or "" when covers are
 	// hidden or the source has none. The page loads it lazily; the host never
 	// fetches it during search.
@@ -94,6 +97,72 @@ type CatalogSearchResultDTO struct {
 	// It travels in the result rather than as a Go error because Go error text is
 	// not translatable, and "no source installed" is a normal state to explain.
 	ErrorKind string `json:"error_kind"`
+}
+
+// CatalogCoverRequestDTO asks for one search row's artwork.
+//
+// URL is the source's remote cover. Empty asks the host to use the URL the last
+// search remembered for this identity.
+type CatalogCoverRequestDTO struct {
+	Provider   string `json:"provider"`
+	ExternalID string `json:"external_id"`
+	URL        string `json:"url"`
+}
+
+// CatalogCoverDTO is one resolved cover, or a per-row failure.
+//
+// URL is a host-local asset path and must be used as the <img> src directly;
+// Error is a machine-free short reason the UI turns into the placeholder.
+type CatalogCoverDTO struct {
+	Provider   string `json:"provider"`
+	ExternalID string `json:"external_id"`
+	URL        string `json:"url"`
+	Error      string `json:"error"`
+}
+
+// GetCatalogSources lists the selectable sources without running a search, so
+// the search page can show its source chips before the user types.
+func (s *CatalogService) GetCatalogSources() ([]CatalogSourceDTO, error) {
+	sources, err := s.svc.Sources(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	result := make([]CatalogSourceDTO, 0, len(sources))
+	for _, source := range sources {
+		result = append(result, CatalogSourceDTO{ID: source.ID, Name: source.Name})
+	}
+	return result, nil
+}
+
+// GetCatalogCovers resolves a batch of search-row covers into local asset URLs.
+//
+// The host downloads and caches the images, so the WebView renders only local
+// files and a repeated search of the same keyword costs no network request.
+// A per-row failure travels in its own `error` field; the call itself only
+// fails when the batch could not be processed at all.
+func (s *CatalogService) GetCatalogCovers(requests []CatalogCoverRequestDTO) ([]CatalogCoverDTO, error) {
+	queries := make([]domain.CatalogCoverRequest, 0, len(requests))
+	for _, request := range requests {
+		queries = append(queries, domain.CatalogCoverRequest{
+			Identity: domain.CatalogIdentity{
+				Provider:   request.Provider,
+				ExternalID: request.ExternalID,
+			},
+			URL: request.URL,
+		})
+	}
+
+	results := s.svc.Covers(context.Background(), queries)
+	answer := make([]CatalogCoverDTO, 0, len(results))
+	for _, result := range results {
+		answer = append(answer, CatalogCoverDTO{
+			Provider:   result.Identity.Provider,
+			ExternalID: result.Identity.ExternalID,
+			URL:        result.URL,
+			Error:      result.Error,
+		})
+	}
+	return answer, nil
 }
 
 // CatalogActionRequest is the user acting on one search row: register the track,
@@ -149,6 +218,7 @@ func (s *CatalogService) SearchCatalog(request CatalogSearchRequest) (CatalogSea
 			Artists:       append([]string{}, row.Artists...),
 			AlbumName:     row.AlbumName,
 			Duration:      row.Duration,
+			Sources:       append([]string{}, row.Sources...),
 			CoverURL:      row.CoverURL,
 			CoverURLLarge: row.CoverURLLarge,
 			Downloadable:  row.Downloadable,

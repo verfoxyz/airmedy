@@ -62,6 +62,7 @@ func TestCatalogSearchResultDTO_JSONShape(t *testing.T) {
 	for _, key := range []string{"rows", "has_more", "sources", "failures", "error_kind"} {
 		assert.Contains(t, decoded, key, "the frontend reads %q", key)
 	}
+	assert.NotContains(t, decoded, "cover_batch", "the batch setting was removed")
 	// Empty slices must serialize as [] rather than null: the UI maps over them.
 	empty := CatalogSearchResultDTO{Rows: []CatalogRowDTO{}, Sources: []CatalogSourceDTO{}, Failures: []CatalogFailureDTO{}}
 	rawEmpty, err := json.Marshal(empty)
@@ -125,6 +126,42 @@ func TestSaveCatalogResult_IncompleteIdentityFails(t *testing.T) {
 
 	_, err := service.SaveCatalogResult(CatalogActionRequest{Provider: "wy", ExternalID: "  "})
 	require.Error(t, err, "an action without an identity must not silently no-op")
+}
+
+func TestCatalogCoverDTO_JSONShape(t *testing.T) {
+	request := CatalogCoverRequestDTO{
+		Provider:   "wy",
+		ExternalID: "1",
+		URL:        "https://cdn.example/a.jpg",
+	}
+	raw, err := json.Marshal(request)
+	require.NoError(t, err)
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(raw, &decoded))
+	for _, key := range []string{"provider", "external_id", "url"} {
+		assert.Contains(t, decoded, key, "the frontend reads %q", key)
+	}
+
+	answer := CatalogCoverDTO{Provider: "wy", ExternalID: "1", URL: "/cover-cache/a.jpg"}
+	rawAnswer, err := json.Marshal(answer)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"provider":"wy","external_id":"1","url":"/cover-cache/a.jpg","error":""}`, string(rawAnswer))
+}
+
+// TestGetCatalogCoversReturnsPerRowFailures: a batch never fails wholesale;
+// each unusable row carries its own error and the rest still answer.
+func TestGetCatalogCoversReturnsPerRowFailures(t *testing.T) {
+	service := NewCatalogService(catalog.NewService(catalog.Deps{}))
+
+	answer, err := service.GetCatalogCovers([]CatalogCoverRequestDTO{
+		{Provider: "wy", ExternalID: "1", URL: "https://cdn.example/a.jpg"},
+		{Provider: "wy", ExternalID: "2"},
+	})
+	require.NoError(t, err)
+	require.Len(t, answer, 2)
+	assert.Equal(t, "cache_unavailable", answer[0].Error)
+	assert.Equal(t, "no_cover_url", answer[1].Error)
+	assert.Empty(t, answer[0].URL)
 }
 
 // TestCatalogErrorKind covers the mapping directly, including the two values the

@@ -100,6 +100,9 @@ function refreshResults() {
 
 onMounted(() => {
   searchInput.value?.focus()
+  // The source chips must exist before the first query; a failure leaves them
+  // to the search response instead of blocking the page.
+  void catalogStore.loadSources()
 })
 
 onActivated(() => {
@@ -107,6 +110,8 @@ onActivated(() => {
   // Restoring a cached tab must not re-query an unchanged keyword. A stale
   // result set is refreshed silently; changed input goes through the normal path.
   if (librarySync.stale.value) librarySync.refresh()
+  // A plugin enabled/disabled in settings changes the source table.
+  void catalogStore.loadSources()
   if (catalogStore.mode === 'cloud') {
     catalogStore.ensureSearch(inputValue.value)
   } else {
@@ -288,7 +293,7 @@ const hasResults = () => hasTracks() || hasAlbums() || hasArtists() || hasPlayli
       <CatalogResults
         v-else
         :sources="catalogStore.sources"
-        :active-source="catalogStore.activeSource"
+        :active-sources="catalogStore.activeSources"
         :rows="catalogStore.rows"
         :failures="catalogStore.failures"
         :has-more="catalogStore.hasMore"
@@ -297,7 +302,7 @@ const hasResults = () => hasTracks() || hasAlbums() || hasArtists() || hasPlayli
         :error-kind="catalogStore.errorKind"
         :action-error="catalogStore.actionError"
         :has-query="catalogStore.hasQuery"
-        @update:source="catalogStore.setSource"
+        @toggle-source="catalogStore.toggleSource"
         @load-more="catalogStore.loadMore"
         @favorite="favoriteResult"
         @add-to-playlist="addResultToPlaylist"

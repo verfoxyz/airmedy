@@ -14,11 +14,14 @@ import (
 // the host assembles one ranked page (see app/catalog).
 const MethodSearch = "catalog.search"
 
-// MaxCatalogSearchPageSize bounds one page of results. The plugin line protocol
-// caps a single message at 8 MiB and a result row is small, but the cap is about
-// the *host's* paging contract too: 50 per page is what the search UI renders, so
-// a plugin must not be able to make one answer enormous.
-const MaxCatalogSearchPageSize = 50
+// MaxCatalogSearchPageSize bounds the merged window one search may request.
+//
+// The host asks each source for offset+limit rows and merges them, then slices
+// out one page. The UI starts at 5 and adds 10 per "load more", so this is the
+// furthest window a page request can reach, not the page size itself. 100 is the
+// compromise for the KuGou source, whose upstream returns at most 30 rows per
+// request (a 100-row window is four upstream calls, merges into one answer).
+const MaxCatalogSearchPageSize = 100
 
 // MaxCatalogSearchSources bounds how many sources one plugin may report. A source
 // is one platform a plugin can search; the UI renders one button per source, and
@@ -33,6 +36,19 @@ const MaxCatalogQueryLength = 200
 // declare through describe. The host stores its value in the plugin's KV and
 // sends it as the `include_cover` search parameter.
 const CatalogSettingIncludeCover = "cover_in_results"
+
+// CatalogSettingCoverCacheMB is the well-known number key a search plugin may
+// declare. It caps the persisted remote-cover cache in megabytes.
+const CatalogSettingCoverCacheMB = "cover_cache_mb"
+
+// DefaultCatalogCoverCacheMB is the cache cap when a plugin does not declare one.
+const DefaultCatalogCoverCacheMB = 1024
+
+// MinCatalogCoverCacheMB / MaxCatalogCoverCacheMB bound the setting.
+const (
+	MinCatalogCoverCacheMB = 128
+	MaxCatalogCoverCacheMB = 8192
+)
 
 // CatalogSearchErrors. A plugin reports a failure kind in the JSON-RPC error's
 // `data` object, never by wording its message, so retry policy is not hostage to
@@ -153,6 +169,10 @@ type CatalogSearchResult struct {
 	Artists    []string
 	AlbumName  string
 	Duration   int
+	// Sources lists the provider ids this row represents. A single-source search
+	// keeps one entry; a multi-source merge appends every source that returned the
+	// same title+artists, so the UI can show one row with several source labels.
+	Sources []string
 	// CoverURL is the thumbnail the source reported, or "" when it was not
 	// requested or unavailable. The save action forwards it so the downloaded
 	// file can embed the artwork.
@@ -229,6 +249,39 @@ type CatalogIdentity struct {
 	ExternalID string
 }
 
+// CatalogCoverRequest asks the host to resolve one search row's artwork.
+//
+// The URL is the source's remote cover (preferring the large rendition). When
+// it is empty the resolver falls back to the last URL the search saw for that
+// identity, so a caller can ask by identity alone.
+type CatalogCoverRequest struct {
+	Identity CatalogIdentity
+	URL      string
+}
+
+// CatalogCoverResult is one resolved cover.
+//
+// URL is a host-local asset path (/cover-cache/...), never the remote URL: the
+// WebView renders only files the host has already downloaded and indexed.
+// Error is one of "no_cover_url", "unavailable" or "cache_unavailable"; it is
+// a machine-free short reason because the UI treats every failure as "show the
+// placeholder".
+type CatalogCoverResult struct {
+	Identity CatalogIdentity
+	URL      string
+	Error    string
+}
+
+// CatalogCoverCache persists remote covers and answers with a local asset URL.
+//
+// The cache lives in infra; app/catalog reaches it through this port so it
+// never imports the storage implementation. `limitBytes` is resolved per call
+// from the plugin's `cover_cache_mb` setting, so a settings change applies to
+// the next request without reconstructing the cache.
+type CatalogCoverCache interface {
+	Get(ctx context.Context, remoteURL string, limitBytes int64) (assetURL string, err error)
+}
+
 // CatalogLocalQuery asks whether an on-disk track already represents a search
 // row. Matching is deliberately strict (same normalised title, same primary
 // artist, duration within ±3s) so a live version or a cover is not mistaken for
@@ -289,6 +342,15 @@ type CatalogSearchSourceRegistry interface {
 	// SearchSources returns the sources every running plugin reports, keyed by
 	// normalised provider id, in a stable order.
 	SearchSources(ctx context.Context) (map[string]CatalogSearchSource, error)
+}
+
+// CatalogSourceSettingReader reads one source plugin's stored setting. The
+// catalog package must apply a plugin-declared number (cover_cache_mb) without
+// importing the plugin registry, so the lookup goes through this narrow port.
+type CatalogSourceSettingReader interface {
+	// SourceInt returns the stored integer for a setting the plugin declared,
+	// falling back when no plugin owns the source or the value is unreadable.
+	SourceInt(ctx context.Context, source, key string, fallback int) int
 }
 
 // CatalogSearcher turns one (source, query, page) request into plugin rows.
