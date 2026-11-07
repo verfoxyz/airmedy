@@ -216,6 +216,12 @@ when `onActivated` runs. This preserves scroll/filter state and avoids fetching
 data for routes the user cannot see. `library:track-updated`, `library:updated`,
 and non-background `library:sync-finished` all use this behavior.
 
+The sync/optimize dialog is **global**: `stores/librarySync.ts` owns the
+`library:sync-started|progress|finished` subscriptions and the 1.5s completion
+dismissal, and `App.vue` renders `SyncProgressDialog` outside `KeepAlive`. Page
+switches therefore cannot strand a teleported modal or lose `syncType`; the
+user-triggered actions settle in `finally` even if a finish event is lost.
+
 `SearchView` uses the same invalidation flow in deferred mode: a library change
 marks its results stale but does not replace them while the user is reading. The
 stale set refreshes silently when the cached view is activated again, or when the
@@ -499,7 +505,7 @@ Common dialogs are consolidated under the **`Modal.vue`** primitive. It provides
 | Dialog                | Purpose                                      |
 | --------------------- | -------------------------------------------- |
 | `FindLyricsDialog`    | Manual lyrics search and selection           |
-| `SyncProgressDialog`  | Library sync status and progress             |
+| `SyncProgressDialog`  | Library sync/optimize status; rendered globally by `App.vue`, state in `stores/librarySync.ts` |
 | `MetadataEditDialog`  | Manual tag and artwork editing               |
 | `ConfirmDialog`       | Generic confirmation for destructive actions |
 

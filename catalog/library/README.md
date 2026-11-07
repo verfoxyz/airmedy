@@ -60,7 +60,10 @@ save (ignored if the save didn't touch that field).
 Each scheduled run calls `SyncLibrary(ctx)` with a `withBackgroundSync(ctx)`-flagged context.
 `isBackgroundSync(ctx)` gates the `library:sync-started` / `library:sync-progress` /
 `library:sync-finished` events across `SyncFolder`, `ResplitLibrary`, and `ReindexAll` — a
-periodic scan runs silently, with no progress dialog. Data-refresh events
+periodic scan runs silently, with no progress dialog. `library:sync-progress` is throttled
+to at most one event per 100ms (the first and the final 100% always pass), so a full
+re-index cannot flood the Wails event mailbox and strand the finished event behind it.
+Data-refresh events
 (`library:updated`, `library:track-updated`, `library:track-deleted`) still fire, so views
 reflect newly discovered changes without a manual reload. User-triggered syncs (Sync Library
 button, Add Folder, Optimize Search) use a plain context and show the dialog as before.
@@ -209,7 +212,7 @@ GetComposerByID(id: string): Composer
 | Event                   | Payload                    | When                     |
 | ----------------------- | -------------------------- | ------------------------ |
 | `library:sync-started`  | `{ total: number }`        | Before scan begins (user-triggered sync only; suppressed for periodic background scans) |
-| `library:sync-progress` | `{ current, total, path }` | Per file imported (user-triggered sync only) |
+| `library:sync-progress` | `{ current, total, path }` | Throttled to at most one per 100ms; first and final 100% always sent (user-triggered sync only) |
 | `library:sync-finished` | `{}`                       | Scan complete (user-triggered sync only) |
 | `library:track-updated` | `TrackDTO`                 | Track import/metadata update (fires for background scans too); excludes favorite toggles |
 | `library:track-deleted` | `string` (track ID)        | After `DeleteTrackFile` committed its DB deletion |
