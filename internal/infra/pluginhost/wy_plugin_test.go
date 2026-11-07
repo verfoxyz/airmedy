@@ -82,12 +82,13 @@ func TestWYPluginIsSearchOnly(t *testing.T) {
 	if err := host.Call(context.Background(), domain.MethodDescribe, nil, &describe); err != nil {
 		t.Fatalf("describe: %v", err)
 	}
-	if len(describe.SearchSources) != 2 {
-		t.Fatalf("search sources = %+v, want wy and kg", describe.SearchSources)
+	if len(describe.SearchSources) != 5 {
+		t.Fatalf("search sources = %+v, want five", describe.SearchSources)
 	}
+	known := map[string]bool{"wy": true, "kg": true, "kw": true, "tx": true, "mg": true}
 	for _, got := range describe.SearchSources {
-		if got.ID != "wy" && got.ID != "kg" {
-			t.Fatalf("search source = %+v, want wy or kg", got)
+		if !known[got.ID] {
+			t.Fatalf("search source = %+v, want one of wy/kg/kw/tx/mg", got)
 		}
 		if got.Name == "" {
 			t.Fatalf("search source = %+v, want a label", got)
@@ -120,7 +121,7 @@ func TestWYPluginAnswersCallerMistakesWithStructuredErrors(t *testing.T) {
 	}
 
 	err = host.Call(context.Background(), domain.MethodSearch, domain.PluginSearchRequest{
-		Source: "tx", Query: "x",
+		Source: "unknown", Query: "x",
 	}, &result)
 	if !errors.As(err, &rpcErr) || rpcErr.Code != domain.RPCErrorInvalidParams {
 		t.Fatalf("error for an unknown source = %v, want invalid params", err)
@@ -140,7 +141,7 @@ func TestWYPluginSurvivesAMalformedRequest(t *testing.T) {
 	if err := host.Call(context.Background(), domain.MethodDescribe, nil, &describe); err != nil {
 		t.Fatalf("describe after a bad request: %v", err)
 	}
-	if len(describe.SearchSources) != 2 {
+	if len(describe.SearchSources) != 5 {
 		t.Fatalf("search sources = %+v, want the plugin still alive", describe.SearchSources)
 	}
 }

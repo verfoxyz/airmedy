@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createTestingPinia } from '@pinia/testing'
 import LibrarySettings from './LibrarySettings.vue'
+import { useLibrarySyncStore } from '@/stores/librarySync'
 
 const { handlers, retry, listFailed, repairDurations, watchedFolders } = vi.hoisted(() => ({
   handlers: new Map<string, (event: { data: unknown }) => void>(),
@@ -51,7 +52,9 @@ describe('LibrarySettings analysis failures', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('settings.library_analysis.analyzed:8/10 (80%)')
     expect(wrapper.text()).toContain('settings.library_analysis.retry_failed')
-    handlers.get('library:sync-started')?.({ data: {} })
+
+    // Sync state now lives in the global store, which App.vue subscribes to.
+    useLibrarySyncStore().isSyncing = true
     await flushPromises()
     expect(wrapper.text()).not.toContain('settings.library_analysis.retry_failed')
   })
