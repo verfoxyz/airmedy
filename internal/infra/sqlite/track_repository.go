@@ -517,7 +517,7 @@ func (r *trackRepository) FindPlayableByDuration(ctx context.Context, minDuratio
 		LEFT JOIN albums a ON t.album_id = a.id
 		LEFT JOIN track_artists ta ON t.id = ta.track_id
 		LEFT JOIN artists art ON ta.artist_id = art.id
-		WHERE COALESCE(t.availability, 'ready') = 'ready'
+		WHERE COALESCE(NULLIF(t.availability, ''), 'ready') = 'ready'
 		  AND t.path NOT LIKE 'remote://%%'
 		  AND t.duration BETWEEN ? AND ?
 		GROUP BY t.id
@@ -735,12 +735,21 @@ type trackDB struct {
 
 // newTrackDB flattens a domain.Track into the sqlx struct, mapping the remote
 // identity columns explicitly so an empty value is stored as ” rather than
-// NULL (the columns are NOT NULL DEFAULT ”).
+// NULL (the columns are NOT NULL DEFAULT ”). Availability is normalised to
+// "ready" on write because an empty string has always meant ready in the domain
+// but string-comparing SQL filters used to miss it.
 func newTrackDB(track *domain.Track) trackDB {
+	// Empty availability has always meant "ready" (domain.Track.IsRemote), but
+	// storing it as a literal empty string made string-comparing SQL filters miss
+	// imported rows. Normalise at the write boundary so no new empty rows appear.
+	availability := track.Availability
+	if availability == "" {
+		availability = domain.AvailabilityReady
+	}
 	return trackDB{
 		Track:        *track,
 		AlbumID:      toNullString(track.AlbumID),
-		Availability: sql.NullString{String: track.Availability, Valid: true},
+		Availability: sql.NullString{String: availability, Valid: true},
 		Provider:     sql.NullString{String: track.Provider, Valid: true},
 		ExternalID:   sql.NullString{String: track.ExternalID, Valid: true},
 	}
