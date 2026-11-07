@@ -141,8 +141,8 @@ Adding a built-in stream provider to the core is an architecture violation.
 | `internal/infra/sqlite/lx_source_repository.go` | the imported lx source list (`lx_sources`, migration 000081) |
 | `frontend/src/components/settings/PluginsSettings.vue` | plugins section (flat list) |
 | `frontend/src/components/settings/LxSourcesSettings.vue` | the lx source sub-page (import, enable, order, remove) |
-| `plugins/lx/` | the lx custom-source plugin (`id: lx`) that runs the imported scripts |
-| `plugins/wy/` | the aggregate-source plugin (`id: wy`): `catalog.search` + `lyric.fetch`, cover URLs in rows |
+| the lx plugin (own repository) | the lx custom-source plugin (`id: lx`) that runs the imported scripts; deployed to `<DataDir>/plugins/lx/` |
+| the wy plugin (own repository) | the aggregate-source plugin (`id: wy`): `catalog.search` + `lyric.fetch`, cover URLs in rows; deployed to `<DataDir>/plugins/wy/` |
 | `examples/plugins/` | minimal runnable plugin |
 
 ## Manifest
@@ -177,7 +177,7 @@ produced without claiming a playback URL. `description` is an optional one-line 
 settings row shows (for example "聚合多个在线音乐源；当前支持 wy").
 
 A plugin whose routes depend on user content declares **no** providers and reports
-them through `describe` instead. `plugins/lx` is the standard case: its manifest
+them through `describe` instead. the lx plugin is the standard case: its manifest
 has `"providers": []`, and the registry adopts whatever the running process
 reports. The two forms are exclusive per plugin — once a plugin has answered
 `describe`, its dynamic list *is* its routing table, including an empty one, so a
@@ -304,7 +304,7 @@ fails the search. The host does not know this endpoint — it only sees the resu
 lx plugin uses for routes. Adding a source is therefore a plugin change with **no new
 protocol method** and no plugin-to-plugin calls (see `docs/plugin-api.md` §6.1).
 
-**One process may serve several sources.** `plugins/wy` (display name 聚合搜索) is the
+**One process may serve several sources.** The wy plugin (display name 聚合搜索) is the
 reference aggregate: one process, five search endpoints, no credentials — NetEase (`wy`),
 KuGou (`kg`), KuWo (`kw`), QQ Music (`tx`) and Migu (`mg`). It declares `catalog.search`
 and no `stream.resolve` — search and resolve are separate capabilities — reports all
@@ -383,7 +383,7 @@ Before the shutdown request, the host sends **`lifecycle.unload`** as a notifica
 It is a **hint, not a synchronisation point**: the process is reclaimed by the same
 grace → EOF → terminate → kill ladder either way. A plugin that ignores it is unaffected;
 one that honours it can dispose sandboxes and cancel in-flight work
-(`plugins/lx/wrapper.js` does exactly that) instead of waiting for SIGTERM.
+(the lx plugin's wrapper.js does exactly that) instead of waiting for SIGTERM.
 
 **API compatibility is a published contract.** A `1.x` host only ever adds methods and
 optional fields — it never removes one and never changes a semantic, so a plugin
@@ -394,7 +394,7 @@ components).
 **Unknown values are recorded, not rejected.** Unrecognised `capabilities`, provider
 keys and quality strings pass through. Third-party lx scripts register platform keys
 outside lx's own whitelist, and strict validation would drop half of them with nothing
-to tell the user why (see `plugins/lx/README.md`).
+to tell the user why (see the lx plugin's README).
 
 ## Permissions: declared and enforced
 
@@ -406,7 +406,7 @@ The manifest's `permissions` block now has two halves, and they behave different
 | `permissions.kv` | **enforced** | every `storage.*` request is refused `-32003` unless it is `true` (`app/pluginkv`) |
 
 `network` is a declaration because plugins are ordinary child processes that fetch
-directly (`plugins/lx/src/request.js`): the host sees no request and can neither allow
+directly (the lx plugin's src/request.js): the host sees no request and can neither allow
 nor deny one. The settings row shows a globe badge and must keep saying "may access",
 never "is allowed to". `kv`, by contrast, is a capability the host itself serves, so
 there is a real gate to apply — and it fails closed.
@@ -590,7 +590,7 @@ There are now two ways to add one, and they are different things:
 | Goal | Do this |
 |---|---|
 | Add a custom source the user has as a `.js` file | Settings → Plugins → Lx 自定义源 → **Add source** (no plugin code) |
-| Add a new *kind* of source (a different protocol, a remote provider) | copy `plugins/lx/`-style structure: own `id`, own `providers` declaration |
+| Add a new *kind* of source (a different protocol, a remote provider) | copy the lx plugin's structure: own `id`, own `providers` declaration |
 
 ## Verification
 
@@ -603,7 +603,7 @@ There are now two ways to add one, and they are different things:
 | describe replaces static routes, empty answer wins, -32601 keeps static | `internal/app/plugin/dynamic_test.go` |
 | restart re-reads routes; launch env injected per start | `internal/app/plugin/dynamic_test.go` |
 | import copies + validates + rejects; order/env format | `internal/app/lx/service_test.go`, `internal/infra/sqlite/lx_source_repository_test.go` |
-| lx plugin end to end: describe, fallback, all-fail, validate | `internal/infra/pluginhost/lx_plugin_test.go`, `plugins/lx/test/wrapper.test.js` |
+| lx plugin end to end: describe, fallback, all-fail, validate | `internal/infra/pluginhost/lx_plugin_test.go`, the lx plugin's `test/wrapper.test.js` |
 | lx source binding join + plugin-off explanation | `internal/infra/wails/lx_sources_service_test.go` |
 | lx source page (import, toggle, confirm delete, reorder) | `frontend/src/components/settings/LxSourcesSettings.spec.ts` |
 | enable persistence, autostart isolation | `lifecycle_test.go`, `sqlite/plugin_settings_repository_test.go` |
@@ -628,6 +628,6 @@ There are now two ways to add one, and they are different things:
 | no handler bound keeps the pre-KV answer | `internal/infra/pluginhost/inbound_test.go` |
 | a handler panic does not kill the session | `internal/infra/pluginhost/inbound_test.go` |
 | `lifecycle.unload` reason reaches the plugin (disabled/reload/shutdown) | `internal/infra/pluginhost/unload_test.go`, `internal/app/plugin/service_test.go` |
-| lx plugin honours `lifecycle.unload` and disposes its sandboxes | `plugins/lx/test/wrapper.test.js` |
+| lx plugin honours `lifecycle.unload` and disposes its sandboxes | the lx plugin's `test/wrapper.test.js` |
 | locale parity | `frontend/src/locales/plugin-keys.spec.ts` |
-| lx plugin protocol, describe and source validation | `plugins/lx/test/wrapper.test.js` |
+| lx plugin protocol, describe and source validation | the lx plugin's `test/wrapper.test.js` |
