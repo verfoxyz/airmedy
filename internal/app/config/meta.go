@@ -3,7 +3,7 @@ package config
 const (
 	AppName    = "Airmedy"
 	AppDesc    = "A lightweight offline music player for macOS, Windows and Linux."
-	Version    = "1.3.3-plugins-alpha.1"
+	Version    = "1.3.3-plugins-alpha.2"
 	RepoOwner  = "misa198"
 	RepoName   = "airmedy"
 	GitHubURL  = "https://github.com/" + RepoOwner + "/" + RepoName
