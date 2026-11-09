@@ -45,6 +45,7 @@ func TestModuleResolvesWithThePortsAppModuleProvides(t *testing.T) {
 			func() LyricsSettingsReader { return nil },
 			func() LibraryImporter { return stubLibrary{} },
 			func() PlaylistAdder { return stubPlaylist{} },
+			func() CachedAudio { return stubCachedAudio{} },
 		),
 		Module,
 		fx.Invoke(func(*Service) {}),
@@ -53,6 +54,19 @@ func TestModuleResolvesWithThePortsAppModuleProvides(t *testing.T) {
 }
 
 // --- stand-ins: just enough of each port for the graph to build --------------
+
+type stubCachedAudio struct{}
+
+func (stubCachedAudio) CachedFileInfo(context.Context, *domain.TrackDTO) (string, string, bool, bool, error) {
+	return "", "", false, false, nil
+}
+func (stubCachedAudio) EnsureComplete(context.Context, *domain.TrackDTO) (<-chan error, error) {
+	done := make(chan error)
+	close(done)
+	return done, nil
+}
+func (stubCachedAudio) MarkPendingPromote(context.Context, *domain.TrackDTO) error { return nil }
+func (stubCachedAudio) DiscardEntry(context.Context, *domain.TrackDTO) error       { return nil }
 
 type stubDownloader struct{}
 

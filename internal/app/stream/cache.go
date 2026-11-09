@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -35,22 +34,37 @@ const (
 	prebufferTimeout = 10 * time.Second
 )
 
+// matchDurationToleranceMs is how far two sources may disagree about a track's
+// duration and still be treated as the same recording. Kept tight on purpose:
+// a wrong cross-source hit plays the wrong audio. Not a setting until false
+// matches are reported.
+const matchDurationToleranceMs int64 = 5000
+
+// progressFlushInterval bounds how much playback progress a crash can lose. It
+// only affects eviction ordering, so a periodic backstop is enough; the value
+// is written on pause, close, completion, failure and shutdown.
+const progressFlushInterval = 30 * time.Second
+
 // Cache is the local HTTP proxy that makes a remote track playable.
 //
-// FFmpeg only ever opens http://127.0.0.1:<port>/stream/<id>; the remote URL,
+// FFmpeg only ever opens http://127.0.0.1:<port>/stream/<key>; the remote URL,
 // its TLS, redirects and retries stay in Go. Each session downloads the
-// upstream body sequentially into <DataDir>/stream-cache/<id>.audio, and the
+// upstream body sequentially into <DataDir>/stream-cache/<key>.audio, and the
 // proxy blocks a reader until the requested bytes have arrived so a growing
 // file never looks like EOF to the decoder.
 //
-// The cache is addressed by remote identity (provider + external id), so a
-// replay of the same track resumes or hits the same entry instead of fetching
-// it again. It is disposable: the size limit evicts the least-complete entry
-// first, then the one with the least playback progress.
+// Metadata lives in SQLite (stream_cache), not in a sidecar file: playback
+// progress updates are a row UPDATE instead of an atomic file replacement.
+// Entries are addressed by remote identity first, then matched across providers
+// by normalized title/artist plus a small duration tolerance. The cache is
+// disposable: the size limit evicts the least-complete entry first, then the
+// one with the least playback progress.
 type Cache struct {
 	dir      string
+	repo     domain.StreamCacheRepository
 	resolver domain.StreamResolver
 	settings SettingsProvider
+	covers   domain.CoverPinner
 	logger   *slog.Logger
 
 	client *http.Client
@@ -76,25 +90,13 @@ type Session struct {
 	URL string
 }
 
-// cacheMeta is the sidecar of one cached stream. It survives restarts so a
-// replay can resume from received_bytes.
-type cacheMeta struct {
-	Provider         string  `json:"provider"`
-	ExternalID       string  `json:"external_id"`
-	Title            string  `json:"title"`
-	TotalBytes       int64   `json:"total_bytes"`
-	ReceivedBytes    int64   `json:"received_bytes"`
-	PlaybackProgress float64 `json:"playback_progress"`
-	Complete         bool    `json:"complete"`
-	PendingPromote   bool    `json:"pending_promote"`
-}
-
 // cacheSession is the in-memory state of one playback window.
 type cacheSession struct {
-	id        string
-	track     *domain.TrackDTO
-	audioPath string
-	metaPath  string
+	id         string
+	provider   string
+	externalID string
+	track      *domain.TrackDTO
+	audioPath  string
 
 	mu          sync.Mutex
 	received    int64
@@ -103,7 +105,9 @@ type cacheSession struct {
 	complete    bool
 	failed      error
 	playing     bool
+	background  bool
 	progress    float64
+	lastFlush   time.Time
 	closed      bool
 
 	fileMu sync.RWMutex
@@ -116,8 +120,10 @@ type cacheSession struct {
 // NewCache constructs the proxy. Start binds its loopback listener.
 func NewCache(
 	cfg *config.Config,
+	repo domain.StreamCacheRepository,
 	resolver domain.StreamResolver,
 	settings SettingsProvider,
+	covers domain.CoverPinner,
 	logger *slog.Logger,
 ) *Cache {
 	if logger == nil {
@@ -125,8 +131,10 @@ func NewCache(
 	}
 	return &Cache{
 		dir:      cfg.StreamCachePath(),
+		repo:     repo,
 		resolver: resolver,
 		settings: settings,
+		covers:   covers,
 		logger:   logger,
 		sessions: make(map[string]*cacheSession),
 		client: &http.Client{
@@ -142,11 +150,13 @@ func NewCache(
 	}
 }
 
-// Start creates the cache directory and binds the proxy to a loopback port.
+// Start creates the cache directory, drops metadata left by the JSON-era cache,
+// and binds the proxy to a loopback port.
 func (c *Cache) Start(ctx context.Context) error {
 	if err := os.MkdirAll(c.dir, 0o755); err != nil {
 		return fmt.Errorf("create stream cache directory: %w", err)
 	}
+	c.cleanupLegacyFiles(ctx)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -206,8 +216,9 @@ func (c *Cache) LocalURL() string {
 }
 
 // Open starts (or reuses) the playback session for track and returns its local
-// URL. The track must carry a provider and an external id; those two identify
-// the cache entry.
+// URL. Identity (provider + external id) is looked up first; when no entry
+// exists, the same normalized title/artist cached under another provider is
+// reused so switching sources never re-downloads the song.
 func (c *Cache) Open(ctx context.Context, track *domain.TrackDTO) (*Session, error) {
 	if track == nil {
 		return nil, fmt.Errorf("open stream: nil track")
@@ -216,56 +227,75 @@ func (c *Cache) Open(ctx context.Context, track *domain.TrackDTO) (*Session, err
 	if provider == "" || strings.TrimSpace(track.ExternalID) == "" {
 		return nil, fmt.Errorf("%w: track %s has no provider/external id", domain.ErrStreamUnavailable, track.ID)
 	}
-	id := cacheID(provider, track.ExternalID)
 
-	c.mu.Lock()
-	if existing, ok := c.sessions[id]; ok {
-		existing.mu.Lock()
-		failed := existing.failed != nil
-		if !failed {
-			existing.playing = true
-		}
-		existing.mu.Unlock()
-		if !failed {
-			base := c.localURLUnlocked()
-			c.mu.Unlock()
-			if waitErr := c.waitForPrebuffer(ctx, existing); waitErr != nil {
-				c.abandonSession(existing)
-				return nil, waitErr
-			}
-			return &Session{ID: id, URL: base + "/stream/" + id}, nil
-		}
-		// A failed download must be retried from scratch rather than reusing the
-		// dead session (its upstream URL is likely expired).
-		delete(c.sessions, id)
-		c.mu.Unlock()
-		c.stopSession(existing)
-	} else {
-		c.mu.Unlock()
+	identityKey := cacheKeyFor(provider, track.ExternalID)
+	if session, err := c.takeSession(ctx, identityKey); err != nil {
+		return nil, err
+	} else if session != nil {
+		return session, nil
 	}
 
-	c.mu.Lock()
-	base := c.localURLUnlocked()
-	c.mu.Unlock()
+	entry, err := c.resolveEntry(ctx, provider, track)
+	if err != nil {
+		return nil, err
+	}
+	id := entry.CacheKey
+	c.pinCover(entry)
+
+	// A cross-source match may already be downloading under another identity.
+	if id != identityKey {
+		if session, err := c.takeSession(ctx, id); err != nil {
+			return nil, err
+		} else if session != nil {
+			return session, nil
+		}
+	}
+
+	s, err := c.startSession(entry, track, false)
+	if err != nil {
+		return nil, err
+	}
+	// Only fetch what is missing. A complete entry is served from disk.
+	if !s.isComplete() {
+		// Do not hand FFmpeg a URL that would block on its first read: wait for
+		// a safe lead, a failure, or the timeout before returning.
+		if waitErr := c.waitForPrebuffer(ctx, s); waitErr != nil {
+			c.abandonSession(s)
+			return nil, waitErr
+		}
+	}
+
+	c.enforceLimit(ctx)
+	return &Session{ID: id, URL: c.localURL() + "/stream/" + id}, nil
+}
+
+// startSession registers a cache session for entry and starts its download when
+// bytes are missing. background marks a session opened only to complete the
+// cache, which is detached when the download ends instead of waiting for Close.
+func (c *Cache) startSession(entry *domain.StreamCacheEntry, track *domain.TrackDTO, background bool) (*cacheSession, error) {
+	base := c.localURL()
 	if base == "" {
 		return nil, fmt.Errorf("open stream: cache proxy is not running")
 	}
 
 	s := &cacheSession{
-		id:        id,
-		track:     track,
-		audioPath: filepath.Join(c.dir, id+".audio"),
-		metaPath:  filepath.Join(c.dir, id+".json"),
-		total:     -1,
-		playing:   true,
-		done:      make(chan struct{}),
+		id:         entry.CacheKey,
+		provider:   entry.Provider,
+		externalID: entry.ExternalID,
+		track:      track,
+		audioPath:  filepath.Join(c.dir, entry.AudioPath),
+		total:      -1,
+		playing:    !background,
+		background: background,
+		lastFlush:  time.Now(),
+		done:       make(chan struct{}),
 	}
-	if meta, ok := readMeta(s.metaPath); ok {
-		s.received = meta.ReceivedBytes
-		s.total = meta.TotalBytes
-		s.complete = meta.Complete
-		s.progress = meta.PlaybackProgress
+	if entry.TotalBytes > 0 {
+		s.total = entry.TotalBytes
 	}
+	s.received = entry.ReceivedBytes
+	s.complete = entry.Complete
+	s.progress = entry.PlaybackProgress
 	if err := c.openAudio(s); err != nil {
 		return nil, err
 	}
@@ -275,28 +305,165 @@ func (c *Cache) Open(ctx context.Context, track *domain.TrackDTO) (*Session, err
 		s.complete = false
 	}
 
-	runCtx, cancel := context.WithCancel(context.Background())
-	s.cancel = cancel
-
 	c.mu.Lock()
-	c.sessions[id] = s
+	c.sessions[s.id] = s
 	c.mu.Unlock()
 
-	// Only fetch what is missing. A complete entry is served from disk.
-	if !s.complete {
-		go c.runSession(runCtx, s)
-		// Do not hand FFmpeg a URL that would block on its first read: wait for
-		// a safe lead, a failure, or the timeout before returning.
-		if waitErr := c.waitForPrebuffer(ctx, s); waitErr != nil {
-			c.abandonSession(s)
+	if s.complete {
+		close(s.done)
+		return s, nil
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	s.cancel = cancel
+	go c.runSession(runCtx, s)
+	return s, nil
+}
+
+// localURL is the proxy base URL, or "" before Start.
+func (c *Cache) localURL() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.localURLUnlocked()
+}
+
+// takeSession reuses an open session for key. (nil, nil) means none exists and
+// the caller should start one; an error means a reused session could not be
+// primed and was abandoned.
+func (c *Cache) takeSession(ctx context.Context, key string) (*Session, error) {
+	c.mu.Lock()
+	existing, ok := c.sessions[key]
+	if !ok {
+		c.mu.Unlock()
+		return nil, nil
+	}
+	existing.mu.Lock()
+	failed := existing.failed != nil
+	if !failed {
+		existing.playing = true
+		// Playback now owns the session: completion waiters must not detach it.
+		existing.background = false
+	}
+	existing.mu.Unlock()
+	if !failed {
+		base := c.localURLUnlocked()
+		c.mu.Unlock()
+		if waitErr := c.waitForPrebuffer(ctx, existing); waitErr != nil {
+			c.abandonSession(existing)
 			return nil, waitErr
 		}
-	} else {
-		close(s.done)
+		return &Session{ID: key, URL: base + "/stream/" + key}, nil
+	}
+	// A failed download must be retried from scratch rather than reusing the
+	// dead session (its upstream URL is likely expired).
+	delete(c.sessions, key)
+	c.mu.Unlock()
+	c.stopSession(existing)
+	return nil, nil
+}
+
+// resolveEntry finds the cache row for a track. An identity hit wins; otherwise
+// the same normalized title/artist cached under another provider is reused. A
+// matched row keeps its original identity: playback context comes from track,
+// and a later promotion downloads under track's identity.
+func (c *Cache) resolveEntry(ctx context.Context, provider string, track *domain.TrackDTO) (*domain.StreamCacheEntry, error) {
+	now := time.Now().Unix()
+	entry, err := c.lookupEntry(ctx, provider, track)
+	if err != nil {
+		return nil, err
+	}
+	if entry != nil {
+		entry.LastUsed = now
+		if upsertErr := c.repo.Upsert(ctx, entry); upsertErr != nil {
+			c.logger.Warn("Failed to touch stream cache entry", "cache_key", entry.CacheKey, "error", upsertErr)
+		}
+		return entry, nil
 	}
 
-	c.enforceLimit(ctx)
-	return &Session{ID: id, URL: base + "/stream/" + id}, nil
+	title := strings.TrimSpace(track.Title)
+	artist := primaryArtist(track)
+	titleKey := domain.NormalizationKey(title)
+	artistKey := domain.NormalizationKey(artist)
+
+	key := cacheKeyFor(provider, track.ExternalID)
+	entry = &domain.StreamCacheEntry{
+		CacheKey:   key,
+		Provider:   provider,
+		ExternalID: track.ExternalID,
+		Title:      title,
+		TitleKey:   titleKey,
+		Artist:     artist,
+		ArtistKey:  artistKey,
+		Artists:    artistList(track),
+		Album:      albumTitle(track),
+		DurationMs: int64(track.Duration) * 1000,
+		Quality:    c.streamQuality(ctx),
+		AudioPath:  key + ".audio",
+		CreatedAt:  now,
+		LastUsed:   now,
+	}
+	if err := c.repo.Upsert(ctx, entry); err != nil {
+		return nil, fmt.Errorf("register stream cache entry: %w", err)
+	}
+	return entry, nil
+}
+
+// lookupEntry finds an existing entry by identity first, then by the same
+// normalized title/artist under another provider. It never creates a row.
+func (c *Cache) lookupEntry(ctx context.Context, provider string, track *domain.TrackDTO) (*domain.StreamCacheEntry, error) {
+	entry, err := c.repo.GetByIdentity(ctx, provider, track.ExternalID)
+	if err != nil {
+		return nil, fmt.Errorf("look up stream cache: %w", err)
+	}
+	if entry != nil {
+		return entry, nil
+	}
+	titleKey := domain.NormalizationKey(strings.TrimSpace(track.Title))
+	artistKey := domain.NormalizationKey(primaryArtist(track))
+	if titleKey == "" || artistKey == "" {
+		return nil, nil
+	}
+	match, err := c.repo.MatchByTitleArtist(ctx, titleKey, artistKey,
+		int64(track.Duration)*1000, matchDurationToleranceMs)
+	if err != nil {
+		return nil, fmt.Errorf("match stream cache: %w", err)
+	}
+	return match, nil
+}
+
+// primaryArtist is the matching key's artist: the first credited artist, or the
+// first raw name when relations were not loaded.
+func primaryArtist(track *domain.TrackDTO) string {
+	for _, artist := range track.Artists {
+		if artist != nil && strings.TrimSpace(artist.Name) != "" {
+			return strings.TrimSpace(artist.Name)
+		}
+	}
+	raw := strings.TrimSpace(track.RawArtistNames)
+	if raw == "" {
+		return ""
+	}
+	return strings.TrimSpace(strings.SplitN(raw, ";", 2)[0])
+}
+
+// artistList is the display-only, all-artists string stored on the entry.
+func artistList(track *domain.TrackDTO) string {
+	names := make([]string, 0, len(track.Artists))
+	for _, artist := range track.Artists {
+		if artist != nil && strings.TrimSpace(artist.Name) != "" {
+			names = append(names, strings.TrimSpace(artist.Name))
+		}
+	}
+	if len(names) == 0 {
+		return strings.TrimSpace(track.RawArtistNames)
+	}
+	return strings.Join(names, "; ")
+}
+
+func albumTitle(track *domain.TrackDTO) string {
+	if track.Album != nil && strings.TrimSpace(track.Album.Title) != "" {
+		return strings.TrimSpace(track.Album.Title)
+	}
+	return strings.TrimSpace(track.RawAlbumName)
 }
 
 // Close ends a playback window and cancels its download. The cached bytes stay
@@ -317,8 +484,10 @@ func (c *Cache) Close(session *Session) {
 	c.stopSession(s)
 }
 
-// ReportProgress records how far the player has advanced, in seconds. The
-// eviction rule uses it to decide between equally incomplete entries.
+// ReportProgress records how far the player has advanced, in seconds. It only
+// touches memory unless thirty seconds have passed since the last flush: the
+// player reports every tick, while readers of this value (eviction, a replay)
+// run at pause/close time. FlushProgress supplies those explicit checkpoints.
 func (c *Cache) ReportProgress(session *Session, seconds float64) {
 	if session == nil || seconds < 0 {
 		return
@@ -330,14 +499,211 @@ func (c *Cache) ReportProgress(session *Session, seconds float64) {
 		return
 	}
 	s.mu.Lock()
-	changed := int64(seconds) != int64(s.progress)
 	s.progress = seconds
-	s.mu.Unlock()
-	// The player reports every tick. Persist once per whole second: the eviction
-	// rule only needs a position, not 2 JSON writes per second.
-	if changed {
-		c.persistMeta(s)
+	flush := time.Since(s.lastFlush) >= progressFlushInterval
+	if flush {
+		s.lastFlush = time.Now()
 	}
+	s.mu.Unlock()
+	if flush {
+		c.saveProgress(s)
+		c.saveStats(s)
+	}
+}
+
+// FlushProgress writes the current position and byte counters. The player calls
+// it on pause; Close and Stop cover the remaining lifecycle boundaries.
+func (c *Cache) FlushProgress(session *Session) {
+	if session == nil {
+		return
+	}
+	c.mu.Lock()
+	s := c.sessions[session.ID]
+	c.mu.Unlock()
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.lastFlush = time.Now()
+	s.mu.Unlock()
+	c.saveProgress(s)
+	c.saveStats(s)
+}
+
+// CachedFileInfo reports the entry for track without creating a row or touching
+// the network. found is false when no entry (identity or cross-source) exists.
+func (c *Cache) CachedFileInfo(ctx context.Context, track *domain.TrackDTO) (path, quality string, complete, found bool, err error) {
+	if track == nil {
+		return "", "", false, false, nil
+	}
+	provider := domain.NormalizeProvider(track.Provider)
+	if provider == "" || strings.TrimSpace(track.ExternalID) == "" {
+		return "", "", false, false, nil
+	}
+	entry, err := c.lookupEntry(ctx, provider, track)
+	if err != nil {
+		return "", "", false, false, err
+	}
+	if entry == nil {
+		return "", "", false, false, nil
+	}
+	return filepath.Join(c.dir, entry.AudioPath), entry.Quality, c.entryCompleteOnDisk(entry), true, nil
+}
+
+// EnsureComplete completes the cache entry in the background and closes the
+// returned channel once the bytes are on disk and no playback session owns the
+// file. The error reports a failed download; a nil error means complete.
+func (c *Cache) EnsureComplete(ctx context.Context, track *domain.TrackDTO) (<-chan error, error) {
+	if track == nil {
+		return nil, fmt.Errorf("ensure stream cache: nil track")
+	}
+	provider := domain.NormalizeProvider(track.Provider)
+	if provider == "" || strings.TrimSpace(track.ExternalID) == "" {
+		return nil, fmt.Errorf("%w: track %s has no provider/external id", domain.ErrStreamUnavailable, track.ID)
+	}
+	entry, err := c.resolveEntry(ctx, provider, track)
+	if err != nil {
+		return nil, err
+	}
+	c.pinCover(entry)
+
+	c.mu.Lock()
+	existing := c.sessions[entry.CacheKey]
+	c.mu.Unlock()
+
+	if existing != nil {
+		existing.mu.Lock()
+		failed := existing.failed != nil
+		existing.mu.Unlock()
+		if failed {
+			// Retry from scratch: the upstream URL of a dead attempt is expired.
+			c.mu.Lock()
+			if c.sessions[entry.CacheKey] == existing {
+				delete(c.sessions, entry.CacheKey)
+			}
+			c.mu.Unlock()
+			c.stopSession(existing)
+			existing = nil
+		}
+	}
+
+	if existing == nil {
+		if c.entryCompleteOnDisk(entry) {
+			done := make(chan error, 1)
+			close(done)
+			return done, nil
+		}
+		existing, err = c.startSession(entry, track, true)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return c.watchCompletion(existing), nil
+}
+
+// MarkPendingPromote flags the track's cache entry so eviction keeps it. It
+// creates the entry when the track was never streamed; EnsureComplete then
+// fills it.
+func (c *Cache) MarkPendingPromote(ctx context.Context, track *domain.TrackDTO) error {
+	if track == nil {
+		return nil
+	}
+	provider := domain.NormalizeProvider(track.Provider)
+	if provider == "" || strings.TrimSpace(track.ExternalID) == "" {
+		return fmt.Errorf("%w: track %s has no provider/external id", domain.ErrStreamUnavailable, track.ID)
+	}
+	entry, err := c.resolveEntry(ctx, provider, track)
+	if err != nil {
+		return err
+	}
+	c.pinCover(entry)
+	return c.repo.SetPendingPromote(ctx, entry.CacheKey, true)
+}
+
+// DiscardEntry deletes a cache entry and its audio. A session that is still
+// playing is left alone: deleting the file under the decoder breaks playback,
+// and the entry will be evicted when it closes.
+func (c *Cache) DiscardEntry(ctx context.Context, track *domain.TrackDTO) error {
+	if track == nil {
+		return nil
+	}
+	provider := domain.NormalizeProvider(track.Provider)
+	if provider == "" || strings.TrimSpace(track.ExternalID) == "" {
+		return nil
+	}
+	entry, err := c.lookupEntry(ctx, provider, track)
+	if err != nil || entry == nil {
+		return err
+	}
+
+	c.mu.Lock()
+	_, active := c.sessions[entry.CacheKey]
+	c.mu.Unlock()
+	if active {
+		return nil
+	}
+
+	if err := os.Remove(filepath.Join(c.dir, entry.AudioPath)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("discard stream cache audio %s: %w", entry.CacheKey, err)
+	}
+	if err := c.repo.Delete(ctx, entry.CacheKey); err != nil {
+		return err
+	}
+	c.unpinCover(entry.Provider, entry.ExternalID)
+	return nil
+}
+
+// entryCompleteOnDisk trusts the bytes actually present, not just the row: a
+// truncated file after an unclean shutdown must look incomplete.
+func (c *Cache) entryCompleteOnDisk(entry *domain.StreamCacheEntry) bool {
+	if !entry.Complete {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(c.dir, entry.AudioPath))
+	if err != nil || info.Size() <= 0 {
+		return false
+	}
+	if entry.ReceivedBytes > info.Size() {
+		return false
+	}
+	return entry.TotalBytes <= 0 || info.Size() >= entry.TotalBytes
+}
+
+// watchCompletion closes its channel when the session's download ended and a
+// playback owner (if any) released the file. A background session is detached
+// immediately so the promoted file is not held open.
+func (c *Cache) watchCompletion(s *cacheSession) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		<-s.done
+		s.mu.Lock()
+		err := s.failed
+		background := s.background
+		s.mu.Unlock()
+
+		if background {
+			c.mu.Lock()
+			if c.sessions[s.id] == s {
+				delete(c.sessions, s.id)
+			}
+			c.mu.Unlock()
+			c.stopSession(s)
+		} else {
+			for {
+				c.mu.Lock()
+				_, active := c.sessions[s.id]
+				c.mu.Unlock()
+				if !active {
+					break
+				}
+				time.Sleep(250 * time.Millisecond)
+			}
+		}
+
+		done <- err
+		close(done)
+	}()
+	return done
 }
 
 func (c *Cache) localURLUnlocked() string {
@@ -485,7 +851,10 @@ func (c *Cache) runSession(ctx context.Context, s *cacheSession) {
 			s.complete = true
 			s.failed = nil
 			s.mu.Unlock()
-			c.persistMeta(s)
+			c.saveStats(s)
+			// The cover may have been cached while the audio was downloading;
+			// pin it now that the entry is complete.
+			c.pinCoverIdentity(s.provider, s.externalID)
 			c.enforceLimit(context.Background())
 			return
 		}
@@ -577,7 +946,7 @@ func (c *Cache) fetch(ctx context.Context, s *cacheSession, ref domain.StreamRef
 			return fmt.Errorf("read upstream body: %w", readErr)
 		}
 	}
-	c.persistMeta(s)
+	c.saveStats(s)
 	return nil
 }
 
@@ -590,7 +959,7 @@ func (c *Cache) fail(s *cacheSession, err error) {
 	s.mu.Unlock()
 	c.logger.Warn("Stream cache download failed",
 		"provider", s.track.Provider, "external_id", s.track.ExternalID, "error", err)
-	c.persistMeta(s)
+	c.saveStats(s)
 }
 
 // handleStream serves one cached entry, honouring a single "bytes=N-" range.
@@ -786,7 +1155,8 @@ func (c *Cache) stopSession(s *cacheSession) {
 	case <-s.done:
 	case <-time.After(5 * time.Second):
 	}
-	c.persistMeta(s)
+	c.saveStats(s)
+	c.saveProgress(s)
 
 	s.fileMu.Lock()
 	if s.file != nil {
@@ -808,34 +1178,89 @@ func (c *Cache) closeAllSessions() {
 	}
 }
 
-// persistMeta writes the sidecar atomically (temp file + rename) so a crash
-// mid-write cannot leave a half-written JSON that would strand the entry.
-func (c *Cache) persistMeta(s *cacheSession) {
-	if s.metaPath == "" {
+// saveStats persists the byte counters and completeness. A missing row is not
+// fatal: the cache is disposable and Open re-registers it next time.
+func (c *Cache) saveStats(s *cacheSession) {
+	s.mu.Lock()
+	total := s.total
+	received := s.received
+	complete := s.complete
+	s.mu.Unlock()
+	if total < 0 {
+		total = 0
+	}
+	if err := c.repo.UpdateComplete(context.Background(), s.id, total, received, complete); err != nil {
+		c.logger.Warn("Failed to persist stream cache bytes", "cache_key", s.id, "error", err)
+	}
+}
+
+// saveProgress persists the playback position used by eviction ordering.
+func (c *Cache) saveProgress(s *cacheSession) {
+	s.mu.Lock()
+	progress := s.progress
+	s.mu.Unlock()
+	if err := c.repo.UpdateProgress(context.Background(), s.id, progress); err != nil {
+		c.logger.Warn("Failed to persist stream cache progress", "cache_key", s.id, "error", err)
+	}
+}
+
+// pinCover marks a stream entry's identity so its cover is evicted last.
+func (c *Cache) pinCover(entry *domain.StreamCacheEntry) {
+	if entry == nil {
 		return
 	}
-	s.mu.Lock()
-	meta := cacheMeta{
-		Provider:         domain.NormalizeProvider(s.track.Provider),
-		ExternalID:       s.track.ExternalID,
-		Title:            s.track.Title,
-		TotalBytes:       s.total,
-		ReceivedBytes:    s.received,
-		PlaybackProgress: s.progress,
-		Complete:         s.complete,
-	}
-	s.mu.Unlock()
+	c.pinCoverIdentity(entry.Provider, entry.ExternalID)
+}
 
-	data, err := json.Marshal(meta)
+func (c *Cache) pinCoverIdentity(provider, externalID string) {
+	if c.covers == nil || provider == "" || externalID == "" {
+		return
+	}
+	if err := c.covers.Pin(context.Background(), provider, externalID); err != nil {
+		c.logger.Warn("Failed to pin stream cover", "provider", provider, "external_id", externalID, "error", err)
+	}
+}
+
+func (c *Cache) unpinCover(provider, externalID string) {
+	if c.covers == nil || provider == "" || externalID == "" {
+		return
+	}
+	if err := c.covers.Unpin(context.Background(), provider, externalID); err != nil {
+		c.logger.Warn("Failed to unpin stream cover", "provider", provider, "external_id", externalID, "error", err)
+	}
+}
+
+// cleanupLegacyFiles removes the JSON sidecars of the pre-database cache and
+// any audio file no row references. Metadata is rebuilt on demand, so dropping
+// it is safe; the audio files that remain are still addressable.
+func (c *Cache) cleanupLegacyFiles(ctx context.Context) {
+	entries, err := c.repo.ListForEviction(ctx)
+	if err != nil {
+		c.logger.Warn("Failed to list stream cache entries for startup cleanup", "error", err)
+		return
+	}
+	referenced := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		referenced[entry.CacheKey] = struct{}{}
+	}
+	dirEntries, err := os.ReadDir(c.dir)
 	if err != nil {
 		return
 	}
-	temp := s.metaPath + ".tmp"
-	if err := os.WriteFile(temp, data, 0o644); err != nil {
-		return
-	}
-	if err := os.Rename(temp, s.metaPath); err != nil {
-		_ = os.Remove(temp)
+	for _, dirEntry := range dirEntries {
+		if dirEntry.IsDir() {
+			continue
+		}
+		name := dirEntry.Name()
+		switch {
+		case strings.HasSuffix(name, ".json"), strings.HasSuffix(name, ".json.tmp"):
+			_ = os.Remove(filepath.Join(c.dir, name))
+		case strings.HasSuffix(name, ".audio"):
+			key := strings.TrimSuffix(name, ".audio")
+			if _, ok := referenced[key]; !ok {
+				_ = os.Remove(filepath.Join(c.dir, name))
+			}
+		}
 	}
 }
 
@@ -850,15 +1275,15 @@ func (c *Cache) enforceLimitBytes(limit int64) {
 	if limit <= 0 {
 		return
 	}
-	entries, err := os.ReadDir(c.dir)
+	ctx := context.Background()
+	entries, err := c.repo.ListForEviction(ctx)
 	if err != nil {
+		c.logger.Warn("Failed to list stream cache entries for eviction", "error", err)
 		return
 	}
 
 	type candidate struct {
-		id           string
-		audioPath    string
-		metaPath     string
+		entry        *domain.StreamCacheEntry
 		size         int64
 		completeness float64
 		progress     float64
@@ -872,34 +1297,28 @@ func (c *Cache) enforceLimitBytes(limit int64) {
 	c.mu.Unlock()
 
 	var total int64
-	candidates := make([]candidate, 0, len(entries)/2)
+	candidates := make([]candidate, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".audio") {
-			continue
-		}
-		id := strings.TrimSuffix(entry.Name(), ".audio")
-		info, statErr := entry.Info()
+		info, statErr := os.Stat(filepath.Join(c.dir, entry.AudioPath))
 		if statErr != nil {
+			// The row outlived its file (manual delete, failed write): drop it so
+			// it cannot reserve a slot or confuse matching.
+			if err := c.repo.Delete(ctx, entry.CacheKey); err != nil {
+				c.logger.Warn("Failed to drop stream cache row without audio", "cache_key", entry.CacheKey, "error", err)
+			}
+			c.unpinCover(entry.Provider, entry.ExternalID)
 			continue
 		}
 		total += info.Size()
 		candidates = append(candidates, candidate{
-			id:        id,
-			audioPath: entry.Name(),
-			metaPath:  filepath.Join(c.dir, id+".json"),
-			size:      info.Size(),
+			entry:        entry,
+			size:         info.Size(),
+			completeness: completenessOf(entry),
+			progress:     entry.PlaybackProgress,
 		})
 	}
 	if total <= limit {
 		return
-	}
-
-	for i := range candidates {
-		meta, ok := readMeta(candidates[i].metaPath)
-		if ok {
-			candidates[i].completeness = completenessOf(meta)
-			candidates[i].progress = meta.PlaybackProgress
-		}
 	}
 
 	sort.SliceStable(candidates, func(i, j int) bool {
@@ -913,27 +1332,30 @@ func (c *Cache) enforceLimitBytes(limit int64) {
 		if total <= limit {
 			return
 		}
-		if _, inUse := active[cand.id]; inUse {
+		if _, inUse := active[cand.entry.CacheKey]; inUse {
 			continue
 		}
-		if meta, ok := readMeta(cand.metaPath); ok && meta.PendingPromote {
+		if cand.entry.PendingPromote {
 			continue
 		}
-		if err := os.Remove(filepath.Join(c.dir, cand.audioPath)); err == nil {
+		if err := os.Remove(filepath.Join(c.dir, cand.entry.AudioPath)); err == nil {
 			total -= cand.size
 		}
-		_ = os.Remove(cand.metaPath)
+		if err := c.repo.Delete(ctx, cand.entry.CacheKey); err != nil {
+			c.logger.Warn("Failed to delete stream cache row", "cache_key", cand.entry.CacheKey, "error", err)
+		}
+		c.unpinCover(cand.entry.Provider, cand.entry.ExternalID)
 	}
 }
 
-func completenessOf(meta cacheMeta) float64 {
-	if meta.Complete {
+func completenessOf(entry *domain.StreamCacheEntry) float64 {
+	if entry.Complete {
 		return 1
 	}
-	if meta.TotalBytes <= 0 {
+	if entry.TotalBytes <= 0 {
 		return 0
 	}
-	ratio := float64(meta.ReceivedBytes) / float64(meta.TotalBytes)
+	ratio := float64(entry.ReceivedBytes) / float64(entry.TotalBytes)
 	if ratio < 0 {
 		return 0
 	}
@@ -943,21 +1365,12 @@ func completenessOf(meta cacheMeta) float64 {
 	return ratio
 }
 
-func readMeta(path string) (cacheMeta, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return cacheMeta{}, false
-	}
-	var meta cacheMeta
-	if err := json.Unmarshal(data, &meta); err != nil {
-		return cacheMeta{}, false
-	}
-	return meta, true
-}
-
-func cacheID(provider, externalID string) string {
-	sum := sha256.Sum256([]byte(provider + "\x00" + externalID))
-	return hex.EncodeToString(sum[:16])
+// cacheKeyFor is sha256(provider + "/" + external_id) in hex. The slash keeps
+// the two inputs unambiguous; the whole digest is used because it is also the
+// audio file name.
+func cacheKeyFor(provider, externalID string) string {
+	sum := sha256.Sum256([]byte(provider + "/" + externalID))
+	return hex.EncodeToString(sum[:])
 }
 
 func sleepContext(ctx context.Context, d time.Duration) bool {

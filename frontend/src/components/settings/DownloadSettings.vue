@@ -1,10 +1,18 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Download, FolderOpen, RotateCcw } from '@lucide/vue'
+import { Download, FolderOpen, RotateCcw, AlertTriangle } from '@lucide/vue'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem, Switch, Input } from '@airmedy/ui'
 import * as LibraryService from '../../../bindings/airmedy/internal/infra/wails/libraryservice'
-import { useAppStore, DOWNLOAD_QUALITIES, DOWNLOAD_NAMING_ORDERS, type DownloadQuality, type DownloadNamingOrder } from '@/stores/app'
+import {
+  useAppStore,
+  DOWNLOAD_QUALITIES,
+  DOWNLOAD_NAMING_ORDERS,
+  MIN_STREAM_CACHE_MB,
+  MAX_STREAM_CACHE_MB,
+  type DownloadQuality,
+  type DownloadNamingOrder,
+} from '@/stores/app'
 import SettingSection from './SettingSection.vue'
 import SettingRow from './SettingRow.vue'
 
@@ -41,6 +49,29 @@ const translationDescription = computed(() =>
     ? t('settings.download.with_lyric_translation_desc')
     : t('settings.download.with_lyric_translation_needs_lyrics'),
 )
+
+/** The stream tier and the download tier should match; a lower stream tier is
+ * flagged because every save would otherwise re-download the better copy. */
+const qualityMismatch = computed(() => appStore.streamQuality !== appStore.downloadQuality)
+const streamQualityNeedsMatch = computed(
+  () => qualityRank(appStore.streamQuality) < qualityRank(appStore.downloadQuality),
+)
+const streamQualityDescription = computed(() =>
+  streamQualityNeedsMatch.value
+    ? t('settings.download.stream_quality_mismatch')
+    : t('settings.download.stream_quality_desc'),
+)
+
+function qualityRank(quality: DownloadQuality): number {
+  if (quality === 'flac') return 3
+  if (quality === '320k') return 2
+  return 1
+}
+
+function onCacheSizeChange(event: Event) {
+  const value = Number((event.target as HTMLInputElement).value)
+  void appStore.updateStreamCacheMB(value)
+}
 </script>
 
 <template>
@@ -96,6 +127,43 @@ const translationDescription = computed(() =>
       <SettingRow :title="t('settings.download.auto_on_add')" :description="t('settings.download.auto_on_add_desc')">
         <Switch :model-value="appStore.autoDownloadOnPlaylistAdd" data-test="download-auto"
           @update:model-value="appStore.updateAutoDownloadOnPlaylistAdd" />
+      </SettingRow>
+
+      <SettingRow :title="t('settings.download.stream_cache')" :description="t('settings.download.stream_cache_desc')">
+        <div class="flex items-center gap-2">
+          <Input
+            type="number"
+            :min="MIN_STREAM_CACHE_MB"
+            :max="MAX_STREAM_CACHE_MB"
+            :model-value="String(appStore.streamCacheMB)"
+            class="w-[120px] bg-foreground/[0.04] border-0 h-9 text-sm"
+            data-test="stream-cache-mb"
+            @change="onCacheSizeChange"
+          />
+          <span class="text-xs text-subdued">MB</span>
+        </div>
+      </SettingRow>
+
+      <SettingRow :title="t('settings.download.stream_quality')" :description="streamQualityDescription">
+        <div class="flex items-center gap-2">
+          <Select :model-value="appStore.streamQuality"
+            @update:model-value="q => appStore.updateStreamQuality(q as DownloadQuality)">
+            <SelectTrigger class="w-[140px] bg-foreground/[0.04] border-0 h-9 text-sm" data-test="stream-quality">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem v-for="q in DOWNLOAD_QUALITIES" :key="q" :value="q">
+                {{ qualityLabel(q) }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+          <AlertTriangle
+            v-if="qualityMismatch"
+            class="w-4 h-4 text-primary"
+            data-test="stream-quality-warning"
+            :title="t('settings.download.stream_quality_mismatch')"
+          />
+        </div>
       </SettingRow>
     </SettingSection>
 

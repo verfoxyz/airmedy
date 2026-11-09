@@ -20,6 +20,7 @@ import (
 	"airmedy/internal/app/playlist"
 	"airmedy/internal/app/remoteserver"
 	"airmedy/internal/app/romanization"
+	"airmedy/internal/app/stream"
 	"airmedy/internal/app/updater"
 	"airmedy/internal/domain"
 	"airmedy/internal/infra/artwork"
@@ -74,13 +75,16 @@ var Module = fx.Module("app",
 		func(c *config.Config) (domain.ArtworkCache, error) {
 			return artwork.NewDiskArtworkCache(c.ArtworkCachePath())
 		},
-		func(db *sqlite.DB, c *config.Config, logger *slog.Logger) (domain.CatalogCoverCache, error) {
+		func(db *sqlite.DB, c *config.Config, logger *slog.Logger) (*covercache.Cache, error) {
 			return covercache.New(covercache.Config{
 				Dir:    c.CoverCachePath(),
 				DB:     db.DB.DB,
 				Logger: logger,
 			})
 		},
+		func(cache *covercache.Cache) domain.CatalogCoverCache { return cache },
+		func(cache *covercache.Cache) domain.CoverPinner { return cache },
+		func(cache *covercache.Cache) player.StreamCoverProvider { return cache },
 		func() domain.MetadataExtractor { return metadata.NewTagLibExtractor() },
 		func() domain.MetadataWriter { return metadata.NewTagLibWriter() },
 		audio.NewPlayer,
@@ -134,6 +138,7 @@ var Module = fx.Module("app",
 		// narrow port so app/catalog imports none of them.
 		func(svc *download.Service) catalog.RemoteTracks { return svc },
 		func(svc *download.Service) catalog.LocalTracks { return svc },
+		func(cache *stream.Cache) download.CachedAudio { return cache },
 		func(lib *library.LibraryService) download.LocalFileRemover { return lib },
 		func(st *appsettings.SettingsService) catalog.SettingsReader { return st },
 		func(lib *library.LibraryService) catalog.FavoritesWriter { return lib },
@@ -193,6 +198,11 @@ var Module = fx.Module("app",
 				lib.AddFavoriteChangeListener(func(track *domain.TrackDTO) {
 					playerSvc.SyncFavorite(track)
 					lastfmSvc.SetLoveStatus(track, track.IsFavorite)
+					// A saved remote track becomes permanent: complete the stream
+					// cache and promote it (or re-download at a higher quality).
+					if track.IsFavorite {
+						downloadSvc.PromoteOnSave(context.Background(), track, "")
+					}
 				})
 
 				// Wire import -> analysis enqueue (low priority) and playback state ->
@@ -245,10 +255,13 @@ var Module = fx.Module("app",
 					playerSvc.SetAutoAdvanceNotificationsEnabled(settings.AutoAdvanceNotificationsEnabled)
 				})
 
-				// Adding an online track to a playlist can queue its download,
-				// if the user asked for that. Wired here so the playlist
-				// package never imports the download package.
-				playlistSvc.SetAutoDownload(downloadSvc.AutoDownloadHook)
+				// Adding an online track to a playlist queues its download when
+				// auto-download is on and always offers stream-cache promotion.
+				// Wired here so the playlist package never imports download.
+				playlistSvc.SetAutoDownload(func(ctx context.Context, track *domain.TrackDTO, playlistID string) {
+					downloadSvc.AutoDownloadHook(ctx, track, playlistID)
+					downloadSvc.PromoteOnSave(ctx, track, playlistID)
+				})
 
 				if err := playlistSvc.EnsureFavoritesPlaylist(ctx); err != nil {
 					slog.Error("Failed to ensure favorites playlist", "error", err)

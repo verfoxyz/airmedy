@@ -86,6 +86,10 @@ export const useAppStore = defineStore('app', () => {
   const downloadQuality = ref<DownloadQuality>('320k')
   const downloadNamingOrder = ref<DownloadNamingOrder>('title-artist')
   const autoDownloadOnPlaylistAdd = ref(true)
+  // Temporary stream playback cache. The backend clamps the size and empties
+  // least-played entries first; the UI only offers the documented range.
+  const streamCacheMB = ref(DEFAULT_STREAM_CACHE_MB)
+  const streamQuality = ref<DownloadQuality>('320k')
   // What to fetch and write beside the audio file. Each is an independent
   // network request, so the defaults match the backend: cover on, lyrics off.
   // Asking for a translation without lyrics is meaningless, so the page keeps
@@ -189,6 +193,8 @@ export const useAppStore = defineStore('app', () => {
         livingArtworkBackground.value = settings.living_artwork_background !== false
         downloadDir.value = settings.download_dir ?? ''
         downloadQuality.value = resolveDownloadQuality(settings.download_quality)
+        streamCacheMB.value = resolveStreamCacheMB(settings.stream_cache_mb)
+        streamQuality.value = resolveDownloadQuality(settings.stream_quality)
         downloadNamingOrder.value = resolveDownloadNamingOrder(settings.download_naming_order)
         autoDownloadOnPlaylistAdd.value = settings.auto_download_on_playlist_add === true
         downloadWithLyrics.value = settings.download_with_lyrics === true
@@ -310,6 +316,8 @@ export const useAppStore = defineStore('app', () => {
         living_artwork_background: livingArtworkBackground.value,
         download_dir: downloadDir.value,
         download_quality: downloadQuality.value,
+        stream_cache_mb: streamCacheMB.value,
+        stream_quality: streamQuality.value,
         download_naming_order: downloadNamingOrder.value,
         auto_download_on_playlist_add: autoDownloadOnPlaylistAdd.value,
         download_with_lyrics: downloadWithLyrics.value,
@@ -516,6 +524,16 @@ export const useAppStore = defineStore('app', () => {
     await saveSettings()
   }
 
+  const updateStreamCacheMB = async (megabytes: number) => {
+    streamCacheMB.value = resolveStreamCacheMB(megabytes)
+    await saveSettings()
+  }
+
+  const updateStreamQuality = async (quality: DownloadQuality) => {
+    streamQuality.value = resolveDownloadQuality(quality)
+    await saveSettings()
+  }
+
   const updateDownloadNamingOrder = async (order: DownloadNamingOrder) => {
     downloadNamingOrder.value = resolveDownloadNamingOrder(order)
     await saveSettings()
@@ -675,6 +693,8 @@ export const useAppStore = defineStore('app', () => {
   return {
     downloadDir,
     downloadQuality,
+    streamCacheMB,
+    streamQuality,
     downloadNamingOrder,
     autoDownloadOnPlaylistAdd,
     downloadWithLyrics,
@@ -682,8 +702,10 @@ export const useAppStore = defineStore('app', () => {
     downloadWithCover,
     updateDownloadDir,
     updateDownloadQuality,
-    updateDownloadNamingOrder,
+    updateStreamCacheMB,
+    updateStreamQuality,
     updateAutoDownloadOnPlaylistAdd,
+    updateDownloadNamingOrder,
     updateDownloadWithLyrics,
     updateDownloadWithLyricTranslation,
     updateDownloadWithCover,
@@ -791,6 +813,17 @@ export const useAppStore = defineStore('app', () => {
 /** Selectable download tiers; mirrors domain.ValidDownloadQualities. */
 export const DOWNLOAD_QUALITIES = ['128k', '320k', 'flac'] as const
 export type DownloadQuality = typeof DOWNLOAD_QUALITIES[number]
+
+/** Stream-cache bounds; mirrors domain.MinStreamCacheMB / MaxStreamCacheMB. */
+export const DEFAULT_STREAM_CACHE_MB = 2048
+export const MIN_STREAM_CACHE_MB = 256
+export const MAX_STREAM_CACHE_MB = 20480
+
+/** An unset, zero or out-of-range size becomes the backend's clamped value. */
+export function resolveStreamCacheMB(value: number | null | undefined): number {
+  if (!value || !Number.isFinite(value) || value <= 0) return DEFAULT_STREAM_CACHE_MB
+  return Math.min(MAX_STREAM_CACHE_MB, Math.max(MIN_STREAM_CACHE_MB, Math.round(value)))
+}
 
 /** An unknown or empty stored quality falls back to 320k, matching the backend. */
 export function resolveDownloadQuality(value: string | null | undefined): DownloadQuality {

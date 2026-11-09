@@ -72,7 +72,7 @@ func TestGetDownloadsOnceAndUpdatesLastUsed(t *testing.T) {
 	now := func() time.Time { clock++; return time.Unix(clock, 0) }
 	cache, db := newTestCache(t, t.TempDir(), server.Client(), now)
 
-	first, err := cache.Get(context.Background(), server.URL+"/a.jpg", 10<<20)
+	first, err := cache.Get(context.Background(), server.URL+"/a.jpg", "wy", "42", 10<<20)
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), requests.Load())
 	assert.Equal(t, "/cover-cache/"+hashURL(server.URL+"/a.jpg")+".jpg", first)
@@ -81,7 +81,7 @@ func TestGetDownloadsOnceAndUpdatesLastUsed(t *testing.T) {
 	require.NoError(t, db.QueryRow(`SELECT last_used FROM cover_cache`).Scan(&lastUsed))
 	assert.Greater(t, lastUsed, int64(1000))
 
-	second, err := cache.Get(context.Background(), server.URL+"/a.jpg", 10<<20)
+	second, err := cache.Get(context.Background(), server.URL+"/a.jpg", "wy", "42", 10<<20)
 	require.NoError(t, err)
 	assert.Equal(t, first, second)
 	assert.Equal(t, int32(1), requests.Load(), "a hit must not touch the network")
@@ -104,7 +104,7 @@ func TestEvictionRemovesLeastRecentlyUsedDownTo95Percent(t *testing.T) {
 	// 300 bytes limit, four 100-byte images: the fourth write must evict two
 	// because the target is 95% (285 bytes), not the hard limit.
 	for index := 0; index < 4; index++ {
-		_, err := cache.Get(context.Background(), fmt.Sprintf("%s/%d.jpg", server.URL, index), 300)
+		_, err := cache.Get(context.Background(), fmt.Sprintf("%s/%d.jpg", server.URL, index), "wy", "42", 300)
 		require.NoError(t, err)
 	}
 
@@ -121,6 +121,83 @@ func TestEvictionRemovesLeastRecentlyUsedDownTo95Percent(t *testing.T) {
 	assert.True(t, filepath.Base(oldest) != "", "the newest rows keep their files")
 }
 
+func TestPinnedCoverOutlivesUnpinnedOnes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(jpegBody(r.URL.Path, 100))
+	}))
+	defer server.Close()
+
+	clock := int64(0)
+	now := func() time.Time { clock++; return time.Unix(clock, 0) }
+	cache, db := newTestCache(t, t.TempDir(), server.Client(), now)
+	ctx := context.Background()
+
+	_, err := cache.Get(ctx, server.URL+"/a.jpg", "wy", "1", 10<<20)
+	require.NoError(t, err)
+	_, err = cache.Get(ctx, server.URL+"/b.jpg", "wy", "2", 10<<20)
+	require.NoError(t, err)
+
+	require.NoError(t, cache.Pin(ctx, "wy", "2"))
+
+	var provider, externalID string
+	require.NoError(t, db.QueryRow(
+		`SELECT provider, external_id FROM cover_cache WHERE url_hash = ?`,
+		hashURL(server.URL+"/b.jpg"),
+	).Scan(&provider, &externalID))
+	assert.Equal(t, "wy", provider)
+	assert.Equal(t, "2", externalID)
+
+	// 200 bytes on disk, target 142: the unpinned row must go first and alone.
+	cache.evict(ctx, 150)
+
+	var remaining int
+	require.NoError(t, db.QueryRow(
+		`SELECT COUNT(*) FROM cover_cache WHERE provider = 'wy' AND external_id = '2'`,
+	).Scan(&remaining))
+	assert.Equal(t, 1, remaining, "the pinned cover must survive")
+
+	require.NoError(t, db.QueryRow(
+		`SELECT COUNT(*) FROM cover_cache WHERE provider = 'wy' AND external_id = '1'`,
+	).Scan(&remaining))
+	assert.Equal(t, 0, remaining, "the unpinned cover must be evicted first")
+
+	// Unpinning releases it for the next eviction pass.
+	require.NoError(t, cache.Unpin(ctx, "wy", "2"))
+	cache.evict(ctx, 1)
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM cover_cache`).Scan(&remaining))
+	assert.Equal(t, 0, remaining)
+}
+
+func TestAssetForIdentityFindsTheCachedCover(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(jpegBody("cover", 64))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cache, _ := newTestCache(t, dir, server.Client(), func() time.Time { return time.Unix(1, 0) })
+	ctx := context.Background()
+
+	assetURL, err := cache.Get(ctx, server.URL+"/a.jpg", "wy", "42", 10<<20)
+	require.NoError(t, err)
+
+	found, err := cache.AssetForIdentity(ctx, "wy", "42")
+	require.NoError(t, err)
+	assert.Equal(t, assetURL, found)
+
+	missing, err := cache.AssetForIdentity(ctx, "kg", "1")
+	require.NoError(t, err)
+	assert.Empty(t, missing)
+
+	// A row whose file vanished must not point the WebView at a 404.
+	require.NoError(t, os.Remove(filepath.Join(dir, filepath.Base(assetURL))))
+	missing, err = cache.AssetForIdentity(ctx, "wy", "42")
+	require.NoError(t, err)
+	assert.Empty(t, missing)
+}
+
 func TestMissingFileDropsTheIndexRowAndRedownloads(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -133,12 +210,12 @@ func TestMissingFileDropsTheIndexRowAndRedownloads(t *testing.T) {
 	dir := t.TempDir()
 	cache, db := newTestCache(t, dir, server.Client(), func() time.Time { return time.Unix(5, 0) })
 
-	assetURL, err := cache.Get(context.Background(), server.URL+"/a.jpg", 10<<20)
+	assetURL, err := cache.Get(context.Background(), server.URL+"/a.jpg", "wy", "42", 10<<20)
 	require.NoError(t, err)
 	name := filepath.Base(assetURL)
 	require.NoError(t, os.Remove(filepath.Join(dir, name)))
 
-	again, err := cache.Get(context.Background(), server.URL+"/a.jpg", 10<<20)
+	again, err := cache.Get(context.Background(), server.URL+"/a.jpg", "wy", "42", 10<<20)
 	require.NoError(t, err)
 	assert.Equal(t, assetURL, again)
 	assert.Equal(t, int32(2), requests.Load(), "a missing file must be fetched again")
@@ -159,7 +236,7 @@ func TestOversizedImageIsRejected(t *testing.T) {
 	dir := t.TempDir()
 	cache, db := newTestCache(t, dir, server.Client(), func() time.Time { return time.Unix(1, 0) })
 
-	_, err := cache.Get(context.Background(), server.URL+"/big.jpg", 10<<20)
+	_, err := cache.Get(context.Background(), server.URL+"/big.jpg", "wy", "42", 10<<20)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds")
 
@@ -179,7 +256,7 @@ func TestNonImageResponseIsRejected(t *testing.T) {
 	defer server.Close()
 
 	cache, db := newTestCache(t, t.TempDir(), server.Client(), func() time.Time { return time.Unix(1, 0) })
-	_, err := cache.Get(context.Background(), server.URL+"/busy", 10<<20)
+	_, err := cache.Get(context.Background(), server.URL+"/busy", "wy", "42", 10<<20)
 	require.Error(t, err)
 
 	var count int
@@ -206,7 +283,7 @@ func TestConcurrentGetsShareOneDownload(t *testing.T) {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			_, errs[index] = cache.Get(context.Background(), server.URL+"/a.jpg", 10<<20)
+			_, errs[index] = cache.Get(context.Background(), server.URL+"/a.jpg", "wy", "42", 10<<20)
 		}(index)
 	}
 
@@ -224,6 +301,6 @@ func TestConcurrentGetsShareOneDownload(t *testing.T) {
 
 func TestUnsupportedURLIsRejected(t *testing.T) {
 	cache, _ := newTestCache(t, t.TempDir(), http.DefaultClient, func() time.Time { return time.Unix(1, 0) })
-	_, err := cache.Get(context.Background(), "file:///etc/passwd", 10<<20)
+	_, err := cache.Get(context.Background(), "file:///etc/passwd", "wy", "42", 10<<20)
 	require.Error(t, err)
 }

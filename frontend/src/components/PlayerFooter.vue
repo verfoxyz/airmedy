@@ -16,6 +16,7 @@ import {
   Mic2,
   PictureInPicture2,
   Download,
+  AlertCircle,
 } from '@lucide/vue'
 import LazyImg from '@/components/LazyImg.vue'
 import { usePlayerStore } from '../stores/player'
@@ -155,8 +156,27 @@ async function onSeekEnd() {
         </PlayerControlButton>
       </div>
 
-      <!-- Seek bar -->
-      <div class="w-full flex items-center gap-2">
+      <!-- Seek bar, or the last playback failure with a retry action. A stream
+           failure is retried by resolving the row again, never by switching
+           source or downloading it. -->
+      <div
+        v-if="store.playError"
+        class="w-full flex items-center justify-center gap-2 text-[11px] text-destructive"
+        data-test="playback-error"
+        role="alert"
+      >
+        <AlertCircle class="w-3.5 h-3.5 shrink-0" />
+        <span class="truncate">{{ t('player.play_failed') }}</span>
+        <button
+          type="button"
+          class="underline underline-offset-2 transition-opacity hover:opacity-80"
+          data-test="playback-retry"
+          @click="store.retryPlayback()"
+        >
+          {{ t('player.retry_playback') }}
+        </button>
+      </div>
+      <div v-else class="w-full flex items-center gap-2">
         <span class="text-[10px] text-subdued tabular-nums w-8 text-right">
           {{ formatTime(displayPosition) }}
         </span>

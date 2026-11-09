@@ -55,6 +55,10 @@ type PlayerStatus struct {
 	RepeatMode      RepeatMode    `json:"repeat_mode"`
 	Shuffle         bool          `json:"shuffle"`
 	Theme           *ThemeColors  `json:"theme"`
+	// StreamArtworkURL is the host-local cover path for a streamed track
+	// (/cover-cache/...), empty for local files (their artwork_key wins) and for
+	// a remote track whose cover was never cached.
+	StreamArtworkURL string `json:"stream_artwork_url"`
 }
 
 // LyricsEvent is the lifecycle update for the current track's lyric request.

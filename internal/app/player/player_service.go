@@ -30,6 +30,14 @@ type StreamCache interface {
 	Open(ctx context.Context, track *domain.TrackDTO) (*stream.Session, error)
 	Close(session *stream.Session)
 	ReportProgress(session *stream.Session, seconds float64)
+	FlushProgress(session *stream.Session)
+}
+
+// StreamCoverProvider resolves the host-local cover cached for a remote
+// identity. *covercache.Cache implements it; the player only needs the path,
+// not the cache itself.
+type StreamCoverProvider interface {
+	AssetForIdentity(ctx context.Context, provider, externalID string) (string, error)
 }
 
 // PlayerService coordinates playback and queue management.
@@ -52,6 +60,8 @@ type PlayerService struct {
 	streamCache                     StreamCache
 	streamSession                   *stream.Session
 	streamMu                        sync.Mutex
+	streamCovers                    StreamCoverProvider
+	streamArtworkURL                string
 	normSvc                         *normalization.NormalizationService
 	notifier                        domain.TrackTransitionNotifier
 	listeningRepo                   domain.ListeningRepository
@@ -129,6 +139,7 @@ func NewPlayerService(
 	stateRepo domain.PlayerStateRepository,
 	settingsRepo domain.SettingsRepository,
 	streamCache StreamCache,
+	streamCovers StreamCoverProvider,
 	sleepInhibitor domain.SleepInhibitor,
 	normSvc *normalization.NormalizationService,
 	notifier domain.TrackTransitionNotifier,
@@ -145,6 +156,7 @@ func NewPlayerService(
 		stateRepo:                       stateRepo,
 		settingsRepo:                    settingsRepo,
 		streamCache:                     streamCache,
+		streamCovers:                    streamCovers,
 		sleepInhibitor:                  sleepInhibitor,
 		normSvc:                         normSvc,
 		notifier:                        notifier,
@@ -212,6 +224,8 @@ func (s *PlayerService) shutdown(ctx context.Context) error {
 	s.flushListening(ctx)
 	s.finishPlaybackAttempt(context.Background(), domain.PlaybackEndStopped)
 	s.stopListeningWriter(ctx)
+	s.reportStreamProgress(s.player.GetStatus().Position)
+	s.flushStreamProgress()
 	s.dropStreamSession()
 	if closer, ok := s.player.(interface{ Close() }); ok {
 		closer.Close()
@@ -392,6 +406,10 @@ func (s *PlayerService) Pause() error {
 		s.pauseListening()
 		s.pausePlaybackAttempt()
 		s.flushListening(context.Background())
+		// A pause is a natural checkpoint: the cache does not write progress on
+		// every ticker report.
+		s.reportStreamProgress(s.player.GetStatus().Position)
+		s.flushStreamProgress()
 		s.stopPositionTicker()
 		s.setNowPlayingPlaybackState(false)
 		s.emitStatus()
@@ -430,6 +448,7 @@ func (s *PlayerService) Stop() error {
 	s.flushListening(context.Background())
 	// Record the last known position before Stop resets the engine to zero.
 	s.reportStreamProgress(s.player.GetStatus().Position)
+	s.flushStreamProgress()
 	err := s.player.Stop()
 	if err == nil {
 		s.finishPlaybackAttempt(context.Background(), domain.PlaybackEndStopped)
@@ -816,6 +835,7 @@ func (s *PlayerService) GetStatus() domain.PlayerStatus {
 	status.Shuffle = s.queue.GetShuffle()
 	status.Theme = s.currentTheme
 	status.LyricsRequestID = s.lyricsRequestID
+	status.StreamArtworkURL = s.streamArtworkURL
 	return status
 }
 
@@ -849,12 +869,16 @@ func (s *PlayerService) PeekPreviousTrack() *domain.TrackDTO {
 // SyncTrack updates the metadata of a track in the current player state if it matches.
 func (s *PlayerService) SyncTrack(track *domain.TrackDTO) {
 	s.mu.Lock()
-	if s.currentTrack != nil && s.currentTrack.ID == track.ID {
+	matches := s.currentTrack != nil && s.currentTrack.ID == track.ID
+	if matches {
 		s.currentTrack = track
-		s.mu.Unlock()
+	}
+	s.mu.Unlock()
+	if matches {
+		// A promotion turns the row local; the stream cover gives way to the
+		// file's artwork_key at that point.
+		s.refreshStreamArtwork(track)
 		s.emitStatus()
-	} else {
-		s.mu.Unlock()
 	}
 
 	// Also update in queue if present
@@ -1034,6 +1058,40 @@ func (s *PlayerService) reportStreamProgress(position float64) {
 	s.streamCache.ReportProgress(session, position)
 }
 
+// refreshStreamArtwork resolves the host-local cover for a streamed track. The
+// same URL is served for every variant, so the footer, track info and mini
+// player render one file; local rows clear it and keep their artwork_key path.
+func (s *PlayerService) refreshStreamArtwork(track *domain.TrackDTO) {
+	url := ""
+	if track != nil && track.IsRemote() && s.streamCovers != nil {
+		provider := domain.NormalizeProvider(track.Provider)
+		if provider != "" && track.ExternalID != "" {
+			resolved, err := s.streamCovers.AssetForIdentity(context.Background(), provider, track.ExternalID)
+			if err != nil {
+				s.logger.Debug("stream artwork unavailable", "track_id", track.ID, "error", err)
+			} else {
+				url = resolved
+			}
+		}
+	}
+	s.mu.Lock()
+	s.streamArtworkURL = url
+	s.mu.Unlock()
+}
+
+// flushStreamProgress persists the last reported position. Progress is otherwise
+// only written on the cache's own thirty-second backstop, so pause and the end
+// of a track must checkpoint it explicitly.
+func (s *PlayerService) flushStreamProgress() {
+	s.streamMu.Lock()
+	session := s.streamSession
+	s.streamMu.Unlock()
+	if session == nil || s.streamCache == nil {
+		return
+	}
+	s.streamCache.FlushProgress(session)
+}
+
 func (s *PlayerService) loadInactiveAtPosition(track *domain.TrackDTO, position float64, paused bool) error {
 	if err := s.ensurePlayable(track); err != nil {
 		return err
@@ -1068,6 +1126,7 @@ func (s *PlayerService) loadInactiveAtPosition(track *domain.TrackDTO, position 
 		}
 	}
 
+	s.refreshStreamArtwork(track)
 	s.mu.Lock()
 	s.currentTrack = track
 	s.currentTheme = nil
@@ -1143,6 +1202,7 @@ func (s *PlayerService) loadAndPlayAtPosition(track *domain.TrackDTO, position f
 	s.startListening(track)
 	s.startPlaybackAttempt(track, position)
 
+	s.refreshStreamArtwork(track)
 	s.mu.Lock()
 	s.currentTrack = track
 	s.currentTheme = nil
@@ -1201,10 +1261,12 @@ func fallbackTitle(path string) string {
 // to track (gapless path). Does NOT call player.Load/Play.
 func (s *PlayerService) transitionToTrack(track *domain.TrackDTO) {
 	// The engine already moved to a pre-loaded local track; the outgoing
-	// stream's download window is over. The last ticker report holds its position.
+	// stream's download window is over. Checkpoint the final position first.
+	s.flushStreamProgress()
 	s.dropStreamSession()
 	s.flushListening(context.Background())
 	s.finishPlaybackAttempt(context.Background(), domain.PlaybackEndCompleted)
+	s.refreshStreamArtwork(track)
 	s.mu.Lock()
 	s.currentTrack = track
 	s.currentTheme = nil
@@ -2554,6 +2616,7 @@ func (s *PlayerService) restoreState(ctx context.Context) {
 				}
 			}
 			if loaded || currentTrack.IsRemote() {
+				s.refreshStreamArtwork(currentTrack)
 				s.mu.Lock()
 				s.currentTrack = currentTrack
 				s.mu.Unlock()

@@ -28,6 +28,8 @@ func TestModuleProvidesTheDownloadResolver(t *testing.T) {
 		fx.Provide(func() SettingsProvider {
 			return &fakeSettings{settings: &domain.AppSettings{}}
 		}),
+		fx.Provide(func() domain.StreamCacheRepository { return newFakeStreamCacheRepo() }),
+		fx.Provide(func() domain.CoverPinner { return newFakeCoverPinner() }),
 		fx.Provide(func() ProviderRegistry { return registry }),
 		fx.Populate(&resolver),
 	)

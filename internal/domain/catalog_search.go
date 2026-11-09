@@ -278,8 +278,19 @@ type CatalogCoverResult struct {
 // never imports the storage implementation. `limitBytes` is resolved per call
 // from the plugin's `cover_cache_mb` setting, so a settings change applies to
 // the next request without reconstructing the cache.
+//
+// provider/externalID are the row's remote identity. They are stored so a cover
+// can be pinned while its audio is in the stream cache and evicted last.
 type CatalogCoverCache interface {
-	Get(ctx context.Context, remoteURL string, limitBytes int64) (assetURL string, err error)
+	Get(ctx context.Context, remoteURL, provider, externalID string, limitBytes int64) (assetURL string, err error)
+}
+
+// CoverPinner keeps a cover alive while its track's audio is in the stream
+// cache. Pinning by identity means the cover cache never needs to know which
+// track is playing; it only orders pinned rows after unpinned ones.
+type CoverPinner interface {
+	Pin(ctx context.Context, provider, externalID string) error
+	Unpin(ctx context.Context, provider, externalID string) error
 }
 
 // CatalogLocalQuery asks whether an on-disk track already represents a search

@@ -1822,6 +1822,7 @@ type fakeStreamCache struct {
 	opened   []*domain.TrackDTO
 	closed   []*stream.Session
 	progress []float64
+	flushes  int
 	session  *stream.Session
 	openErr  error
 }
@@ -1852,6 +1853,12 @@ func (f *fakeStreamCache) Close(session *stream.Session) {
 func (f *fakeStreamCache) ReportProgress(_ *stream.Session, seconds float64) {
 	f.mu.Lock()
 	f.progress = append(f.progress, seconds)
+	f.mu.Unlock()
+}
+
+func (f *fakeStreamCache) FlushProgress(_ *stream.Session) {
+	f.mu.Lock()
+	f.flushes++
 	f.mu.Unlock()
 }
 
@@ -1896,6 +1903,72 @@ func TestPlayTracks_StreamsARemoteRowThroughTheCache(t *testing.T) {
 	}
 	if len(cache.closed) != 1 {
 		t.Fatalf("cache closed %d sessions, want 1", len(cache.closed))
+	}
+}
+
+type fakeStreamCovers struct {
+	url string
+}
+
+func (f fakeStreamCovers) AssetForIdentity(context.Context, string, string) (string, error) {
+	return f.url, nil
+}
+
+func TestPlayTracks_RemoteRowPublishesTheCachedCover(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1.0}}
+	s, _ := newTestService(t, fp)
+	s.streamCache = newFakeStreamCache()
+	s.streamCovers = fakeStreamCovers{url: "/cover-cache/cover.jpg"}
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID:           "remote-cover",
+		Path:         domain.RemotePath("wy", "77"),
+		Title:        "封面",
+		Availability: domain.AvailabilityRemote,
+		Provider:     "wy",
+		ExternalID:   "77",
+	}}
+	if err := s.PlayTracks([]*domain.TrackDTO{remote}, 0); err != nil {
+		t.Fatalf("PlayTracks: %v", err)
+	}
+	if got := s.GetStatus().StreamArtworkURL; got != "/cover-cache/cover.jpg" {
+		t.Fatalf("stream artwork = %q, want the cached cover", got)
+	}
+
+	// A local row keeps its artwork_key pipeline and clears the override.
+	local := &domain.TrackDTO{Track: domain.Track{
+		ID: "local-1", Path: `C:\Music\a.flac`, Title: "本地",
+	}}
+	if err := s.PlayTracks([]*domain.TrackDTO{local}, 0); err != nil {
+		t.Fatalf("PlayTracks local: %v", err)
+	}
+	if got := s.GetStatus().StreamArtworkURL; got != "" {
+		t.Fatalf("stream artwork = %q after a local track, want empty", got)
+	}
+}
+
+func TestPause_FlushesStreamProgress(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1.0}}
+	s, _ := newTestService(t, fp)
+	cache := newFakeStreamCache()
+	s.streamCache = cache
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID:           "remote-pause",
+		Path:         domain.RemotePath("wy", "11"),
+		Title:        "暂停",
+		Availability: domain.AvailabilityRemote,
+		Provider:     "wy",
+		ExternalID:   "11",
+	}}
+	if err := s.PlayTracks([]*domain.TrackDTO{remote}, 0); err != nil {
+		t.Fatalf("PlayTracks: %v", err)
+	}
+	if err := s.Pause(); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if cache.flushes == 0 {
+		t.Fatal("Pause did not checkpoint stream progress")
 	}
 }
 

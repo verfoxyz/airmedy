@@ -328,7 +328,8 @@ func (s *Service) Covers(ctx context.Context, requests []domain.CatalogCoverRequ
 			continue
 		}
 
-		assetURL, err := s.covers.Get(ctx, remote, s.coverCacheLimitBytes(ctx, identity.Provider))
+		assetURL, err := s.covers.Get(ctx, remote, identity.Provider, identity.ExternalID,
+			s.coverCacheLimitBytes(ctx, identity.Provider))
 		if err != nil {
 			s.logger.Warn("catalog: cover cache failed",
 				"provider", identity.Provider, "external_id", identity.ExternalID, "error", err)

@@ -88,16 +88,24 @@ type stubFinalizer struct {
 	mu    sync.Mutex
 	calls int
 	err   error
+	last  download.FinalizeInput
 	// onFinalize, when set, replaces the canned result so a test can hand back a
 	// different imported row (the merge regression where the remote row is
 	// replaced by the download).
 	onFinalize func(in download.FinalizeInput) (download.FinalizeResult, error)
 }
 
+func (f *stubFinalizer) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
 func (f *stubFinalizer) Finalize(_ context.Context, in download.FinalizeInput) (download.FinalizeResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	f.last = in
 	if f.err != nil {
 		return download.FinalizeResult{}, f.err
 	}
@@ -114,9 +122,66 @@ func (f *stubFinalizer) Finalize(_ context.Context, in download.FinalizeInput) (
 
 type stubSettings struct {
 	dir        string
+	quality    string
 	autoAdd    bool
 	withLyrics bool
 	withCover  bool
+}
+
+// stubCachedAudio stands in for the stream cache's promotion surface.
+type stubCachedAudio struct {
+	mu         sync.Mutex
+	path       string
+	quality    string
+	complete   bool
+	found      bool
+	infoErr    error
+	ensureErr  error
+	ensureWait <-chan error
+	marked     int
+	discarded  int
+}
+
+func (c *stubCachedAudio) CachedFileInfo(context.Context, *domain.TrackDTO) (string, string, bool, bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.path, c.quality, c.complete, c.found, c.infoErr
+}
+
+func (c *stubCachedAudio) EnsureComplete(context.Context, *domain.TrackDTO) (<-chan error, error) {
+	c.mu.Lock()
+	wait := c.ensureWait
+	err := c.ensureErr
+	c.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	if wait != nil {
+		return wait, nil
+	}
+	done := make(chan error, 1)
+	close(done)
+	return done, nil
+}
+
+func (c *stubCachedAudio) MarkPendingPromote(context.Context, *domain.TrackDTO) error {
+	c.mu.Lock()
+	c.marked++
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *stubCachedAudio) DiscardEntry(context.Context, *domain.TrackDTO) error {
+	c.mu.Lock()
+	c.discarded++
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *stubCachedAudio) counts() (marked, discarded int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.marked, c.discarded
 }
 
 // stubDurationProbe stands in for the ffmpeg container probe. Its default is an
@@ -139,9 +204,13 @@ func (p *stubDurationProbe) Probe(context.Context, string) (time.Duration, error
 }
 
 func (s stubSettings) GetSettings(context.Context) (*domain.AppSettings, error) {
+	quality := s.quality
+	if quality == "" {
+		quality = domain.Quality320k
+	}
 	return &domain.AppSettings{
 		DownloadDir:               s.dir,
-		DownloadQuality:           domain.Quality320k,
+		DownloadQuality:           quality,
 		AutoDownloadOnPlaylistAdd: s.autoAdd,
 		DownloadWithLyrics:        s.withLyrics,
 		DownloadWithCover:         s.withCover,
@@ -207,6 +276,7 @@ type harness struct {
 	resolver   *stubResolver
 	downloader *stubDownloader
 	finalizer  *stubFinalizer
+	cached     *stubCachedAudio
 	probe      *stubDurationProbe
 	sink       *recordingSink
 	dir        string
@@ -239,6 +309,7 @@ func newHarness(t *testing.T) *harness {
 		resolver:   &stubResolver{ref: domain.StreamRef{URL: "http://cdn.example/1.mp3"}},
 		downloader: &stubDownloader{bytes: 1024},
 		finalizer:  &stubFinalizer{},
+		cached:     &stubCachedAudio{},
 		probe:      &stubDurationProbe{err: errors.New("probe unavailable in this fixture")},
 		sink:       &recordingSink{},
 		dir:        dir,
@@ -273,7 +344,7 @@ func (h *harness) rebuild() {
 		h.jobs, h.tracks, resolver, mover, h.finalizer,
 		h.probe,
 		download.NewMerger(h.tracks, sqlite.NewDownloadMergeRepository(h.db, h.tracks), sqlite.NewTxManager(h.db), logger),
-		h.settings, logger,
+		h.settings, h.cached, logger,
 	)
 	h.svc.SetEventSink(h.sink)
 }
@@ -880,7 +951,7 @@ func TestService_StartRecoversInterruptedJobs(t *testing.T) {
 		h.jobs, h.tracks, h.resolver, h.downloader, h.finalizer,
 		h.probe,
 		download.NewMerger(h.tracks, sqlite.NewDownloadMergeRepository(h.db, h.tracks), sqlite.NewTxManager(h.db), logger),
-		stubSettings{dir: h.dir}, logger,
+		stubSettings{dir: h.dir}, h.cached, logger,
 	)
 	require.NoError(t, restarted.Start(ctx))
 	t.Cleanup(func() { _ = restarted.Stop(context.Background()) })

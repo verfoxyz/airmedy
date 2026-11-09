@@ -84,9 +84,18 @@ export const usePlayerStore = defineStore('player', () => {
   )
   // Set of track ids in the queue — recomputed only when the queue changes, O(1) membership checks
   const queueIds = computed(() => new Set(queue.value.map(t => t.id)))
-  const artworkUrl = computed(() => buildArtworkUrl(currentTrack.value?.artwork_key, 'lg') ?? null)
-  const artworkUrlMd = computed(() => buildArtworkUrl(currentTrack.value?.artwork_key, 'md') ?? null)
-  const artworkUrlSm = computed(() => buildArtworkUrl(currentTrack.value?.artwork_key, 'sm') ?? null)
+  // A streamed remote track has no artwork_key; the backend resolves its cached
+  // cover to one host-local path served for every size variant. Local files keep
+  // the artwork cache pipeline.
+  const artworkUrl = computed(() =>
+    status.value?.stream_artwork_url || buildArtworkUrl(currentTrack.value?.artwork_key, 'lg') || null,
+  )
+  const artworkUrlMd = computed(() =>
+    status.value?.stream_artwork_url || buildArtworkUrl(currentTrack.value?.artwork_key, 'md') || null,
+  )
+  const artworkUrlSm = computed(() =>
+    status.value?.stream_artwork_url || buildArtworkUrl(currentTrack.value?.artwork_key, 'sm') || null,
+  )
 
   function preloadArtwork(url: string | null) {
     if (!url) return
@@ -542,6 +551,29 @@ export const usePlayerStore = defineStore('player', () => {
     await PlayerService.PlayQueueIndex(index)
   }
 
+  /**
+   * retryPlayback re-issues the current queue at the current track. A remote
+   * row is resolved again by the backend; the source is never switched and no
+   * download starts on failure.
+   */
+  async function retryPlayback() {
+    const track = currentTrack.value
+    if (!track) return
+    let ids = queue.value.map(t => t.id)
+    let index = queue.value.findIndex(t => t.id === track.id)
+    if (index < 0) {
+      ids = [track.id]
+      index = 0
+    }
+    playError.value = ''
+    try {
+      await PlayerService.PlayTrackIDs(ids, index)
+    } catch (e) {
+      console.error('Failed to retry playback', e)
+      playError.value = String(e)
+    }
+  }
+
   async function shuffleTracks(tracks: TrackDTO[]) {
     if (!tracks.length) return
     stopMoodRadio()
@@ -658,6 +690,7 @@ export const usePlayerStore = defineStore('player', () => {
     playTracks,
     playTrackIds,
     playError,
+    retryPlayback,
     playQueueIndex,
     shuffleTracks,
     reorderQueue,

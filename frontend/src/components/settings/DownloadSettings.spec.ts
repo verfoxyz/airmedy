@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import DownloadSettings from './DownloadSettings.vue'
+import { useAppStore } from '@/stores/app'
 
 const api = vi.hoisted(() => ({ SelectFolder: vi.fn().mockResolvedValue('') }))
 vi.mock('vue-i18n', () => ({
@@ -59,9 +60,42 @@ describe('DownloadSettings', () => {
     expect(wrapper.find('[data-test="download-quality"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="download-naming-order"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="download-auto"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="stream-cache-mb"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="stream-quality"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="download-with-lyrics"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="download-with-translation"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="download-with-cover"]').exists()).toBe(true)
+  })
+
+  it('clamps the stream cache size to the documented range', async () => {
+    const wrapper = mountSettings()
+    const store = useAppStore()
+    const input = wrapper.find('[data-test="stream-cache-mb"]')
+
+    await input.setValue('999999')
+    await input.trigger('change')
+    await flushPromises()
+    expect(store.streamCacheMB).toBe(20480)
+
+    await input.setValue('1')
+    await input.trigger('change')
+    await flushPromises()
+    expect(store.streamCacheMB).toBe(256)
+  })
+
+  it('warns when streaming and download qualities differ', async () => {
+    const wrapper = mountSettings()
+    const store = useAppStore()
+
+    store.streamQuality = '320k'
+    store.downloadQuality = 'flac'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="stream-quality-warning"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('settings.download.stream_quality_mismatch')
+
+    store.streamQuality = 'flac'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="stream-quality-warning"]').exists()).toBe(false)
   })
 
   // A translation of lyrics that are never fetched cannot exist. The switch

@@ -18,12 +18,14 @@ type fakeCoverCache struct {
 }
 
 type coverCall struct {
-	url   string
-	limit int64
+	url        string
+	provider   string
+	externalID string
+	limit      int64
 }
 
-func (f *fakeCoverCache) Get(_ context.Context, remoteURL string, limitBytes int64) (string, error) {
-	f.calls = append(f.calls, coverCall{url: remoteURL, limit: limitBytes})
+func (f *fakeCoverCache) Get(_ context.Context, remoteURL, provider, externalID string, limitBytes int64) (string, error) {
+	f.calls = append(f.calls, coverCall{url: remoteURL, provider: provider, externalID: externalID, limit: limitBytes})
 	if f.err != nil {
 		return "", f.err
 	}

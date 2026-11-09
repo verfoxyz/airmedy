@@ -440,10 +440,19 @@ flowchart TB
   resolves the track through the enabled plugin and serves it from a loopback
   proxy; the decoder loads a shallow copy whose `Path` is the proxy URL, while
   `currentTrack` keeps the `remote://` identity. The session closes on a hard
-  load, `Stop`, natural advance and shutdown; the 500 ms ticker reports playback
-  progress for eviction. A remote row restored at startup stays unloaded until
+  load, `Stop`, natural advance and shutdown; the 500 ms ticker updates progress
+  in memory, and the value reaches `stream_cache` on pause, close, completion or
+  a thirty-second backstop rather than on every tick. A remote row restored at
+  startup stays unloaded until
   `Play`. Gapless pre-queue and crossfade skip remote rows — there is no local
-  second source to pre-open.
+  second source to pre-open. Entry metadata lives in `stream_cache`; an identity
+  miss reuses the same normalized title/artist cached under another provider
+  when their durations agree within 5 s, without changing the entry's identity.
+  Opening or completing a streamed entry pins the cover cached for that
+  identity; deleting the entry unpins it. `PlayerStatus.stream_artwork_url`
+  carries the host-local `/cover-cache/...` path for the playing identity; the
+  frontend prefers it over the `artwork_key` variants, and an empty value falls
+  back to the placeholder.
 - Manages playback state transitions.
 - Runs a **500ms ticker** for internal logic:
   - Increments play counts and scrobbling thresholds via `checkThreshold()`.

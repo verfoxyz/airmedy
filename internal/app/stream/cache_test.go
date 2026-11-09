@@ -3,7 +3,6 @@ package stream
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -39,12 +39,180 @@ func (f *fakeSettings) GetSettings(context.Context) (*domain.AppSettings, error)
 	return f.settings, nil
 }
 
+// fakeStreamCacheRepo is an in-memory StreamCacheRepository. The real SQL
+// behaviour is covered in internal/infra/sqlite; here it lets the cache's
+// matching and eviction ordering be tested without cgo.
+type fakeStreamCacheRepo struct {
+	mu      sync.Mutex
+	entries map[string]*domain.StreamCacheEntry
+}
+
+func newFakeStreamCacheRepo() *fakeStreamCacheRepo {
+	return &fakeStreamCacheRepo{entries: make(map[string]*domain.StreamCacheEntry)}
+}
+
+func cloneEntry(entry *domain.StreamCacheEntry) *domain.StreamCacheEntry {
+	copied := *entry
+	return &copied
+}
+
+func (f *fakeStreamCacheRepo) Upsert(_ context.Context, entry *domain.StreamCacheEntry) error {
+	if entry == nil {
+		return fmt.Errorf("nil entry")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.entries[entry.CacheKey] = cloneEntry(entry)
+	return nil
+}
+
+func (f *fakeStreamCacheRepo) GetByIdentity(_ context.Context, provider, externalID string) (*domain.StreamCacheEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, entry := range f.entries {
+		if entry.Provider == provider && entry.ExternalID == externalID {
+			return cloneEntry(entry), nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *fakeStreamCacheRepo) MatchByTitleArtist(_ context.Context, titleKey, artistKey string, durationMs, toleranceMs int64) (*domain.StreamCacheEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var best *domain.StreamCacheEntry
+	for _, entry := range f.entries {
+		if entry.TitleKey != titleKey || entry.ArtistKey != artistKey {
+			continue
+		}
+		if durationMs != 0 && entry.DurationMs != 0 {
+			diff := entry.DurationMs - durationMs
+			if diff < 0 {
+				diff = -diff
+			}
+			if diff > toleranceMs {
+				continue
+			}
+		}
+		if best == nil || entry.LastUsed > best.LastUsed {
+			best = entry
+		}
+	}
+	if best == nil {
+		return nil, nil
+	}
+	return cloneEntry(best), nil
+}
+
+func (f *fakeStreamCacheRepo) ListForEviction(_ context.Context) ([]*domain.StreamCacheEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	entries := make([]*domain.StreamCacheEntry, 0, len(f.entries))
+	for _, entry := range f.entries {
+		entries = append(entries, cloneEntry(entry))
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].LastUsed < entries[j].LastUsed })
+	return entries, nil
+}
+
+func (f *fakeStreamCacheRepo) update(key string, mutate func(*domain.StreamCacheEntry)) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if entry, ok := f.entries[key]; ok {
+		mutate(entry)
+	}
+	return nil
+}
+
+func (f *fakeStreamCacheRepo) UpdateProgress(_ context.Context, key string, seconds float64) error {
+	return f.update(key, func(entry *domain.StreamCacheEntry) { entry.PlaybackProgress = seconds })
+}
+
+func (f *fakeStreamCacheRepo) UpdateComplete(_ context.Context, key string, totalBytes, receivedBytes int64, complete bool) error {
+	return f.update(key, func(entry *domain.StreamCacheEntry) {
+		entry.TotalBytes = totalBytes
+		entry.ReceivedBytes = receivedBytes
+		entry.Complete = complete
+	})
+}
+
+func (f *fakeStreamCacheRepo) SetPendingPromote(_ context.Context, key string, pending bool) error {
+	return f.update(key, func(entry *domain.StreamCacheEntry) { entry.PendingPromote = pending })
+}
+
+func (f *fakeStreamCacheRepo) Delete(_ context.Context, key string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.entries, key)
+	return nil
+}
+
+func (f *fakeStreamCacheRepo) get(t *testing.T, key string) *domain.StreamCacheEntry {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	entry, ok := f.entries[key]
+	if !ok {
+		t.Fatalf("stream cache entry %s missing", key)
+	}
+	return cloneEntry(entry)
+}
+
+// fakeCoverPinner records pin/unpin calls by remote identity.
+type fakeCoverPinner struct {
+	mu     sync.Mutex
+	pins   map[string]int
+	unpins map[string]int
+}
+
+func newFakeCoverPinner() *fakeCoverPinner {
+	return &fakeCoverPinner{pins: make(map[string]int), unpins: make(map[string]int)}
+}
+
+func (f *fakeCoverPinner) Pin(_ context.Context, provider, externalID string) error {
+	f.mu.Lock()
+	f.pins[provider+"/"+externalID]++
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeCoverPinner) Unpin(_ context.Context, provider, externalID string) error {
+	f.mu.Lock()
+	f.unpins[provider+"/"+externalID]++
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeCoverPinner) pinCount(key string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pins[key]
+}
+
+func (f *fakeCoverPinner) unpinCount(key string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.unpins[key]
+}
+
 func newTestCache(t *testing.T, resolver domain.StreamResolver) *Cache {
+	t.Helper()
+	return newTestCacheWithRepo(t, resolver, newFakeStreamCacheRepo())
+}
+
+func newTestCacheWithRepo(t *testing.T, resolver domain.StreamResolver, repo domain.StreamCacheRepository) *Cache {
+	t.Helper()
+	return newTestCacheWithParts(t, resolver, repo, nil)
+}
+
+func newTestCacheWithParts(t *testing.T, resolver domain.StreamResolver, repo domain.StreamCacheRepository, covers domain.CoverPinner) *Cache {
 	t.Helper()
 	cache := NewCache(
 		&config.Config{DataDir: t.TempDir()},
+		repo,
 		resolver,
 		&fakeSettings{settings: &domain.AppSettings{StreamCacheMB: domain.DefaultStreamCacheMB}},
+		covers,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
 	if err := cache.Start(context.Background()); err != nil {
@@ -184,18 +352,18 @@ func TestCacheBlocksUntilBytesArrive(t *testing.T) {
 
 func TestEnforceLimitEvictsLeastCompleteFirst(t *testing.T) {
 	dir := t.TempDir()
-	cache := &Cache{dir: dir, sessions: map[string]*cacheSession{}, logger: slog.Default()}
+	repo := newFakeStreamCacheRepo()
+	cache := &Cache{dir: dir, repo: repo, sessions: map[string]*cacheSession{}, logger: slog.Default()}
 
 	writeEntry := func(id string, size int64, received, total int64, progress float64) {
 		t.Helper()
 		if err := os.WriteFile(filepath.Join(dir, id+".audio"), make([]byte, size), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		meta, _ := json.Marshal(cacheMeta{
-			Provider: "wy", ExternalID: id,
+		if err := repo.Upsert(context.Background(), &domain.StreamCacheEntry{
+			CacheKey: id, Provider: "wy", ExternalID: id, AudioPath: id + ".audio",
 			ReceivedBytes: received, TotalBytes: total, PlaybackProgress: progress,
-		})
-		if err := os.WriteFile(filepath.Join(dir, id+".json"), meta, 0o644); err != nil {
+		}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -212,16 +380,25 @@ func TestEnforceLimitEvictsLeastCompleteFirst(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "nearly-done.audio")); err != nil {
 		t.Fatalf("more complete entry was evicted: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "barely-started.json")); !os.IsNotExist(err) {
-		t.Fatalf("metadata of the evicted entry was left behind")
+	repo.mu.Lock()
+	_, stillIndexed := repo.entries["barely-started"]
+	repo.mu.Unlock()
+	if stillIndexed {
+		t.Fatal("metadata of the evicted entry was left behind")
 	}
 }
 
 func TestEnforceLimitSkipsActiveSession(t *testing.T) {
 	dir := t.TempDir()
-	cache := &Cache{dir: dir, sessions: map[string]*cacheSession{}, logger: slog.Default()}
+	repo := newFakeStreamCacheRepo()
+	cache := &Cache{dir: dir, repo: repo, sessions: map[string]*cacheSession{}, logger: slog.Default()}
 
 	if err := os.WriteFile(filepath.Join(dir, "playing.audio"), make([]byte, 2048), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Upsert(context.Background(), &domain.StreamCacheEntry{
+		CacheKey: "playing", AudioPath: "playing.audio", TotalBytes: 2048, ReceivedBytes: 1024,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	cache.sessions["playing"] = &cacheSession{id: "playing", playing: true}
@@ -230,6 +407,9 @@ func TestEnforceLimitSkipsActiveSession(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(dir, "playing.audio")); err != nil {
 		t.Fatalf("active session was evicted: %v", err)
+	}
+	if entry := repo.get(t, "playing"); entry == nil {
+		t.Fatal("active session's metadata was evicted")
 	}
 }
 
@@ -382,15 +562,16 @@ func TestOpenReturnsImmediatelyForCompleteCache(t *testing.T) {
 
 	cache := newTestCache(t, &fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}})
 	data := bytes.Repeat([]byte{7}, 2<<20)
-	id := cacheID("wy", "42")
+	id := cacheKeyFor("wy", "42")
 	if err := os.WriteFile(filepath.Join(cache.dir, id+".audio"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	meta, _ := json.Marshal(cacheMeta{
-		Provider: "wy", ExternalID: "42",
+	if err := cache.repo.Upsert(context.Background(), &domain.StreamCacheEntry{
+		CacheKey: id, Provider: "wy", ExternalID: "42", AudioPath: id + ".audio",
+		Title: "Song", TitleKey: domain.NormalizationKey("Song"), Artist: "Singer",
+		ArtistKey: domain.NormalizationKey("Singer"), DurationMs: 200000,
 		TotalBytes: int64(len(data)), ReceivedBytes: int64(len(data)), Complete: true,
-	})
-	if err := os.WriteFile(filepath.Join(cache.dir, id+".json"), meta, 0o644); err != nil {
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -516,6 +697,243 @@ func TestReopenResumesFromCachedBytes(t *testing.T) {
 	resp.Body.Close()
 	if !bytes.Equal(body, data) {
 		t.Fatalf("resumed body = %d bytes, want %d", len(body), len(data))
+	}
+}
+
+// seedCompleteEntry writes a fully cached entry and its audio file.
+func seedCompleteEntry(t *testing.T, cache *Cache, repo *fakeStreamCacheRepo, provider, externalID, title, artist string, durationMs int64, data []byte) string {
+	t.Helper()
+	key := cacheKeyFor(provider, externalID)
+	if err := os.WriteFile(filepath.Join(cache.dir, key+".audio"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Upsert(context.Background(), &domain.StreamCacheEntry{
+		CacheKey:      key,
+		Provider:      provider,
+		ExternalID:    externalID,
+		Title:         title,
+		TitleKey:      domain.NormalizationKey(title),
+		Artist:        artist,
+		ArtistKey:     domain.NormalizationKey(artist),
+		DurationMs:    durationMs,
+		AudioPath:     key + ".audio",
+		TotalBytes:    int64(len(data)),
+		ReceivedBytes: int64(len(data)),
+		Complete:      true,
+		CreatedAt:     1,
+		LastUsed:      1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+func TestOpenReusesAnotherProvidersCacheByTitleArtist(t *testing.T) {
+	upstream := &chunkedUpstream{body: bytes.Repeat([]byte{9}, 2<<20), chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	repo := newFakeStreamCacheRepo()
+	cache := newTestCacheWithRepo(t, &fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}}, repo)
+	wyKey := seedCompleteEntry(t, cache, repo, "wy", "42", "屋顶", "周杰伦", 200000, bytes.Repeat([]byte{9}, 2<<20))
+
+	kgTrack := &domain.TrackDTO{Track: domain.Track{
+		ID: "t2", Title: "屋顶", Provider: "kg", ExternalID: "999", Duration: 200,
+	}, Artists: []*domain.Artist{{Name: "周杰伦"}}}
+
+	session, err := cache.Open(context.Background(), kgTrack)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+
+	if session.ID != wyKey {
+		t.Fatalf("session id = %s, want the wy entry %s", session.ID, wyKey)
+	}
+	if hits := upstream.hits.Load(); hits != 0 {
+		t.Fatalf("cross-source hit fetched upstream %d times, want 0", hits)
+	}
+	if entry, err := repo.GetByIdentity(context.Background(), "kg", "999"); err != nil {
+		t.Fatalf("GetByIdentity: %v", err)
+	} else if entry != nil {
+		t.Fatalf("cross-source playback must not create a kg row: %+v", entry)
+	}
+}
+
+func TestOpenMatchesWhenEitherDurationIsUnknown(t *testing.T) {
+	repo := newFakeStreamCacheRepo()
+	cache := newTestCacheWithRepo(t, &fakeResolver{err: fmt.Errorf("must not resolve")}, repo)
+	wyKey := seedCompleteEntry(t, cache, repo, "wy", "42", "屋顶", "周杰伦", 0, bytes.Repeat([]byte{4}, 2<<20))
+
+	kgTrack := &domain.TrackDTO{Track: domain.Track{
+		ID: "t2", Title: "屋顶", Provider: "kg", ExternalID: "999", Duration: 200,
+	}, Artists: []*domain.Artist{{Name: "周杰伦"}}}
+
+	session, err := cache.Open(context.Background(), kgTrack)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+	if session.ID != wyKey {
+		t.Fatalf("session id = %s, want %s when one side has no duration", session.ID, wyKey)
+	}
+}
+
+func TestOpenDoesNotMatchOutsideDurationTolerance(t *testing.T) {
+	upstream := &chunkedUpstream{body: bytes.Repeat([]byte{3}, 2<<20), chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	repo := newFakeStreamCacheRepo()
+	cache := newTestCacheWithRepo(t, &fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}}, repo)
+	seedCompleteEntry(t, cache, repo, "wy", "42", "屋顶", "周杰伦", 200000, bytes.Repeat([]byte{3}, 2<<20))
+
+	// Same title and artist, but 60 s apart: a different recording.
+	kgTrack := &domain.TrackDTO{Track: domain.Track{
+		ID: "t2", Title: "屋顶", Provider: "kg", ExternalID: "999", Duration: 260,
+	}, Artists: []*domain.Artist{{Name: "周杰伦"}}}
+
+	session, err := cache.Open(context.Background(), kgTrack)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+
+	if want := cacheKeyFor("kg", "999"); session.ID != want {
+		t.Fatalf("session id = %s, want a new kg entry %s", session.ID, want)
+	}
+	if hits := upstream.hits.Load(); hits == 0 {
+		t.Fatal("a non-match must fetch the new provider instead of reusing the other source")
+	}
+}
+
+func TestStartRemovesLegacyJSONAndOrphanAudio(t *testing.T) {
+	dir := t.TempDir()
+	streamDir := filepath.Join(dir, "stream-cache")
+	if err := os.MkdirAll(streamDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo := newFakeStreamCacheRepo()
+	key := cacheKeyFor("wy", "42")
+	if err := repo.Upsert(context.Background(), &domain.StreamCacheEntry{
+		CacheKey: key, Provider: "wy", ExternalID: "42", AudioPath: key + ".audio",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{key + ".audio", key + ".json", "orphan.audio", "orphan.json"} {
+		if err := os.WriteFile(filepath.Join(streamDir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cache := NewCache(
+		&config.Config{DataDir: dir},
+		repo,
+		&fakeResolver{},
+		&fakeSettings{settings: &domain.AppSettings{StreamCacheMB: domain.DefaultStreamCacheMB}},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	if err := cache.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = cache.Stop(context.Background()) }()
+
+	for _, gone := range []string{key + ".json", "orphan.audio", "orphan.json"} {
+		if _, err := os.Stat(filepath.Join(streamDir, gone)); !os.IsNotExist(err) {
+			t.Fatalf("%s should have been removed (stat err = %v)", gone, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(streamDir, key+".audio")); err != nil {
+		t.Fatalf("referenced audio was removed: %v", err)
+	}
+}
+
+func TestReportProgressOnlyWritesAtCheckpointsOrBackstop(t *testing.T) {
+	upstream := &chunkedUpstream{body: bytes.Repeat([]byte{8}, 2<<20), chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	repo := newFakeStreamCacheRepo()
+	cache := newTestCacheWithRepo(t, &fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}}, repo)
+	session, err := cache.Open(context.Background(), remoteTrack())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	// A ticker report updates memory only: the row keeps its old position.
+	cache.ReportProgress(session, 12.4)
+	if entry := repo.get(t, session.ID); entry.PlaybackProgress != 0 {
+		t.Fatalf("progress was persisted on a ticker report: %v", entry.PlaybackProgress)
+	}
+
+	// Pause (or another explicit checkpoint) flushes it.
+	cache.FlushProgress(session)
+	if entry := repo.get(t, session.ID); entry.PlaybackProgress != 12.4 {
+		t.Fatalf("FlushProgress persisted %v, want 12.4", entry.PlaybackProgress)
+	}
+
+	// Thirty seconds later the periodic backstop writes without an explicit call.
+	cache.mu.Lock()
+	s := cache.sessions[session.ID]
+	cache.mu.Unlock()
+	s.mu.Lock()
+	s.lastFlush = time.Now().Add(-progressFlushInterval - time.Second)
+	s.mu.Unlock()
+	cache.ReportProgress(session, 42)
+	if entry := repo.get(t, session.ID); entry.PlaybackProgress != 42 {
+		t.Fatalf("backstop persisted %v, want 42", entry.PlaybackProgress)
+	}
+
+	// Close writes the final position.
+	cache.ReportProgress(session, 55)
+	cache.Close(session)
+	if entry := repo.get(t, session.ID); entry.PlaybackProgress != 55 {
+		t.Fatalf("Close persisted %v, want 55", entry.PlaybackProgress)
+	}
+}
+
+func TestOpenPinsTheStreamCover(t *testing.T) {
+	upstream := &chunkedUpstream{body: bytes.Repeat([]byte{6}, 2<<20), chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	pinner := newFakeCoverPinner()
+	cache := newTestCacheWithParts(t,
+		&fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}},
+		newFakeStreamCacheRepo(), pinner)
+
+	session, err := cache.Open(context.Background(), remoteTrack())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+
+	if pinner.pinCount("wy/42") == 0 {
+		t.Fatal("Open did not pin the cover for the streamed identity")
+	}
+}
+
+func TestEvictionUnpinsTheCover(t *testing.T) {
+	dir := t.TempDir()
+	repo := newFakeStreamCacheRepo()
+	pinner := newFakeCoverPinner()
+	cache := &Cache{dir: dir, repo: repo, covers: pinner, sessions: map[string]*cacheSession{}, logger: slog.Default()}
+
+	if err := os.WriteFile(filepath.Join(dir, "old.audio"), make([]byte, 2048), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Upsert(context.Background(), &domain.StreamCacheEntry{
+		CacheKey: "old", Provider: "wy", ExternalID: "42", AudioPath: "old.audio",
+		TotalBytes: 2048, ReceivedBytes: 512,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cache.enforceLimitBytes(1)
+
+	if pinner.unpinCount("wy/42") == 0 {
+		t.Fatal("eviction did not unpin the evicted entry's cover")
 	}
 }
 

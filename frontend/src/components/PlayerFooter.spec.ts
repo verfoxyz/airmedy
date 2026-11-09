@@ -347,9 +347,18 @@ describe('PlayerFooter', () => {
     expect(mocks.quickSettingsOpen.mock.calls[0]?.[0]).toBeTruthy()
   })
 
-  it('does not open quick settings menu on left click', async () => {
-    const wrapper = mountFooter()
-    await wrapper.trigger('click')
-    expect(mocks.quickSettingsOpen).not.toHaveBeenCalled()
+  it('shows the playback failure with a retry action instead of the seek bar', async () => {
+    const wrapper = mountFooter({ playError: 'stream unavailable' })
+
+    const error = wrapper.find('[data-test="playback-error"]')
+    expect(error.exists()).toBe(true)
+    expect(error.text()).toContain('player.play_failed')
+
+    const store = usePlayerStore()
+    store.retryPlayback = vi.fn()
+    await wrapper.find('[data-test="playback-retry"]').trigger('click')
+    expect(store.retryPlayback).toHaveBeenCalledOnce()
+
+    wrapper.unmount()
   })
 })

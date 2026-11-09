@@ -31,6 +31,18 @@ const (
 	minimumStoredDurationSeconds  = 5
 )
 
+// CachedAudio is the stream-cache slice the promotion path drives. The cache
+// implementation satisfies it without this package importing app/stream.
+type CachedAudio interface {
+	// CachedFileInfo reports an entry without creating one or going online.
+	CachedFileInfo(ctx context.Context, track *domain.TrackDTO) (path, quality string, complete, found bool, err error)
+	// EnsureComplete completes the entry and closes the channel when no playback
+	// session holds the file any more.
+	EnsureComplete(ctx context.Context, track *domain.TrackDTO) (<-chan error, error)
+	MarkPendingPromote(ctx context.Context, track *domain.TrackDTO) error
+	DiscardEntry(ctx context.Context, track *domain.TrackDTO) error
+}
+
 // SettingsReader is the slice of the settings service the download service
 // needs. Declared here so the service does not depend on the settings package
 // (and so a test can hand it a literal).
@@ -72,6 +84,7 @@ type Service struct {
 	durationProbe domain.MediaDurationProbe
 	merger        *Merger
 	settings      SettingsReader
+	cached        CachedAudio
 	lyrics        LyricsWriter
 	remover       LocalFileRemover
 	logger        *slog.Logger
@@ -110,6 +123,7 @@ func NewService(
 	durationProbe domain.MediaDurationProbe,
 	merger *Merger,
 	settings SettingsReader,
+	cached CachedAudio,
 	logger *slog.Logger,
 ) *Service {
 	return &Service{
@@ -121,6 +135,7 @@ func NewService(
 		durationProbe: durationProbe,
 		merger:        merger,
 		settings:      settings,
+		cached:        cached,
 		logger:        logger,
 		pollInterval:  defaultPollInterval,
 		now:           time.Now,
@@ -729,6 +744,14 @@ func (s *Service) execute(ctx context.Context, job *domain.DownloadJob) error {
 
 	if err := s.applyDecodedDuration(ctx, finalized.TrackID, finalized); err != nil {
 		s.logger.Warn("download: failed to store the decoded duration", "track_id", finalized.TrackID, "error", err)
+	}
+
+	// The library now owns the audio. Drop the temporary stream copy unless a
+	// playback session still holds it (DiscardEntry checks).
+	if s.cached != nil {
+		if err := s.cached.DiscardEntry(ctx, track); err != nil {
+			s.logger.Debug("download: cannot discard the stream cache", "track_id", track.ID, "error", err)
+		}
 	}
 
 	return nil
