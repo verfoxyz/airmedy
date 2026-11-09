@@ -179,6 +179,18 @@ static AVAudioUnitEffect *MakeStereoWidenerNode(void) {
     return self;
 }
 
+// The player opens remote tracks through the local stream proxy, whose Path is
+// an http:// URL rather than a file path. Everything else stays a file URL.
+static NSURL *playerURLForPath(NSString *path) {
+    if ([path hasPrefix:@"http://"] || [path hasPrefix:@"https://"]) {
+        NSURL *url = [NSURL URLWithString:path];
+        if (url) {
+            return url;
+        }
+    }
+    return [NSURL fileURLWithPath:path];
+}
+
 // Build a PCM decoder for a file. SFBAudioPlayer's processing graph only
 // accepts SFBPCMDecoding decoders, so DSD files (.dsf/.dff) — whose native
 // decoder conforms to SFBDSDDecoding — must be wrapped in SFBDSDPCMDecoder
@@ -189,7 +201,7 @@ static AVAudioUnitEffect *MakeStereoWidenerNode(void) {
     if (![[SFBDSDDecoder supportedPathExtensions] containsObject:ext]) {
         return nil;
     }
-    return [[SFBDSDPCMDecoder alloc] initWithURL:[NSURL fileURLWithPath:path] error:error];
+    return [[SFBDSDPCMDecoder alloc] initWithURL:playerURLForPath(path) error:error];
 }
 
 - (BOOL)enqueuePath:(NSString *)path forImmediatePlayback:(BOOL)immediate {
@@ -198,7 +210,7 @@ static AVAudioUnitEffect *MakeStereoWidenerNode(void) {
     if (dsd) {
         [self.sfbPlayer enqueueDecoder:dsd forImmediatePlayback:immediate error:&err];
     } else if (!err) {
-        [self.sfbPlayer enqueueURL:[NSURL fileURLWithPath:path] forImmediatePlayback:immediate error:&err];
+        [self.sfbPlayer enqueueURL:playerURLForPath(path) forImmediatePlayback:immediate error:&err];
     }
     if (err) {
         NSLog(@"[AirmedyDeck] Failed to enqueue %@: %@", path, err);

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AlertTriangle, Check, Heart, ListPlus, Loader2, Music, Download } from '@lucide/vue'
+import { AlertTriangle, Check, Heart, ListPlus, Loader2, Music, Download, Play } from '@lucide/vue'
 import ContextMenu from '@/components/ContextMenu.vue'
 import { usePlaylistsStore } from '@/stores/playlists'
 import { useContextMenu } from '@/composables/useContextMenu'
@@ -38,6 +38,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'toggle-source', id: string): void
   (e: 'load-more'): void
+  (e: 'play', row: CatalogRowDTO): void
   (e: 'favorite', row: CatalogRowDTO): void
   (e: 'add-to-playlist', row: CatalogRowDTO, playlistId: string): void
   (e: 'force-download', row: CatalogRowDTO): void
@@ -358,6 +359,11 @@ function canAct(row: CatalogRowDTO): boolean {
   return row.downloadable && (row.state !== 'in_library' || !!row.local_track_id)
 }
 
+/** Playable rows stream through the cache; imported files play from disk. */
+function canPlay(row: CatalogRowDTO): boolean {
+  return row.downloadable || !!row.local_track_id
+}
+
 function openPlaylistMenu(event: MouseEvent, row: CatalogRowDTO) {
   event.preventDefault()
   event.stopPropagation()
@@ -545,10 +551,23 @@ defineExpose({
 
         <!-- Actions appear on hover, like the rest of the app's list rows. -->
         <div
-          v-if="canAct(row)"
+          v-if="canAct(row) || canPlay(row)"
           class="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100"
         >
+          <!-- Play streams the row without downloading it. -->
           <button
+            v-if="canPlay(row)"
+            type="button"
+            class="flex h-8 w-8 items-center justify-center rounded-full text-foreground/60 transition-colors hover:bg-foreground/[0.06] hover:text-foreground/80"
+            data-test="catalog-play"
+            :aria-label="$t('cloud_search.play')"
+            :title="$t('cloud_search.play')"
+            @click.stop="emit('play', row)"
+          >
+            <Play class="h-4 w-4" />
+          </button>
+          <button
+            v-if="canAct(row)"
             type="button"
             class="flex h-8 w-8 items-center justify-center rounded-full text-foreground/60 transition-colors hover:bg-foreground/[0.06] hover:text-foreground/80"
             data-test="catalog-favorite"
@@ -559,6 +578,7 @@ defineExpose({
             <Heart class="h-4 w-4" />
           </button>
           <button
+            v-if="canAct(row)"
             type="button"
             class="flex h-8 w-8 items-center justify-center rounded-full text-foreground/60 transition-colors hover:bg-foreground/[0.06] hover:text-foreground/80"
             data-test="catalog-playlist"
@@ -571,7 +591,7 @@ defineExpose({
           <!-- Explicit "download it anyway": the row is already in the library
                through an imported file, but the user may want the provider copy. -->
           <button
-            v-if="row.local_track_id"
+            v-if="row.local_track_id && canAct(row)"
             type="button"
             class="flex h-8 w-8 items-center justify-center rounded-full text-foreground/60 transition-colors hover:bg-foreground/[0.06] hover:text-foreground/80"
             data-test="catalog-download-anyway"

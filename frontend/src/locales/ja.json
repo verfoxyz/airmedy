@@ -841,6 +841,7 @@
     "saved": "保存済み",
     "downloading": "ダウンロード中",
     "failed": "ダウンロード失敗",
+    "play": "再生",
     "favorite": "お気に入り",
     "add_to_playlist": "プレイリストに追加",
     "download_anyway": "それでもダウンロード",

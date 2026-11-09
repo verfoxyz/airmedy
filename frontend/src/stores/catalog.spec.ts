@@ -12,6 +12,7 @@ const api = vi.hoisted(() => ({
   SearchCatalog: vi.fn(),
   GetCatalogSources: vi.fn(),
   SaveCatalogResult: vi.fn(),
+  PrepareCatalogPlayback: vi.fn(),
   GetCatalogRowStates: vi.fn(),
   GetTracksByIDs: vi.fn(),
   handlers: new Map<string, (event: { data: unknown }) => void>(),
@@ -30,6 +31,7 @@ vi.mock('../../bindings/airmedy/internal/infra/wails/catalogservice', () => ({
   SearchCatalog: api.SearchCatalog,
   GetCatalogSources: api.GetCatalogSources,
   SaveCatalogResult: api.SaveCatalogResult,
+  PrepareCatalogPlayback: api.PrepareCatalogPlayback,
   GetCatalogRowStates: api.GetCatalogRowStates,
 }))
 
@@ -316,6 +318,26 @@ describe('catalog store', () => {
     await store.save(store.rows[0], { playlistId: 'pl-1' })
 
     expect(api.SaveCatalogResult).toHaveBeenLastCalledWith(expect.objectContaining({ playlist_id: 'pl-1' }))
+  })
+
+  it('prepares a playable row without saving it', async () => {
+    api.SearchCatalog.mockResolvedValue(page([row('1')]))
+    api.PrepareCatalogPlayback.mockResolvedValue('t1')
+    const store = useCatalogStore()
+
+    store.search('周杰伦')
+    await vi.advanceTimersByTimeAsync(300)
+    const trackId = await store.preparePlayback(store.rows[0])
+
+    expect(trackId).toBe('t1')
+    expect(api.PrepareCatalogPlayback).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'wy',
+      external_id: '1',
+      local_track_id: '',
+    }))
+    // Playback is not a save: no row state change, no download.
+    expect(store.rows[0].state).toBe('')
+    expect(api.SaveCatalogResult).not.toHaveBeenCalled()
   })
 
   it('marks a failed save as an action error without dropping the row', async () => {

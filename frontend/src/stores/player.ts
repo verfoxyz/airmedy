@@ -513,9 +513,25 @@ export const usePlayerStore = defineStore('player', () => {
     try {
       await PlayerService.PlayTrackIDs(tracks.map(t => t.id), startIndex)
     } catch (e) {
-      // A track whose audio is not downloaded yet has a virtual remote:// path.
-      // The backend refuses it (domain.ErrTrackNotAvailable) instead of handing a
-      // non-file to the decoder, so the row is reported rather than played.
+      // A remote row is resolved by the stream cache; this reports the resolve
+      // or prebuffer failure instead of surfacing a decoder code.
+      console.error('Failed to start playback', e)
+      playError.value = String(e)
+    }
+  }
+
+  /**
+   * playTrackIds starts playback for rows the caller already resolved (a
+   * streamed search result). Queue and current track arrive through the
+   * backend events, so nothing is guessed here.
+   */
+  async function playTrackIds(ids: string[], startIndex = 0) {
+    if (!ids.length) return
+    stopMoodRadio()
+    playError.value = ''
+    try {
+      await PlayerService.PlayTrackIDs(ids, startIndex)
+    } catch (e) {
       console.error('Failed to start playback', e)
       playError.value = String(e)
     }
@@ -640,6 +656,7 @@ export const usePlayerStore = defineStore('player', () => {
     setShuffle,
     setRepeatMode,
     playTracks,
+    playTrackIds,
     playError,
     playQueueIndex,
     shuffleTracks,

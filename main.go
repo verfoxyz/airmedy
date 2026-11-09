@@ -174,6 +174,9 @@ func fxOptions(deps fxDeps) fx.Option {
 		// app/download import either package.
 		fx.Provide(func(svc *lyrics.LyricsService) download.LyricsFetcher { return svc }),
 		fx.Provide(func(svc *appsettings.SettingsService) download.LyricsSettingsReader { return svc }),
+		// The stream cache reads the cache size and stream quality settings
+		// through this narrow port; app/stream must not import app/appsettings.
+		fx.Provide(func(svc *appsettings.SettingsService) appstream.SettingsProvider { return svc }),
 		// Download pipeline adapters: the ports live in domain, the concrete
 		// values belong to infra, and only main.go may join the two (app must
 		// not import infra). download.Module builds the service from them.
@@ -298,6 +301,12 @@ func main() {
 	wailsApp = application.New(application.Options{
 		Name:        "airmedy",
 		Description: "A modern music player",
+		// Off unless AIRMEDY_REMOTE_DEBUG names a port; the benchmark harness
+		// drives the window over the DevTools protocol and production launches
+		// do not expose it.
+		Windows: application.WindowsOptions{
+			AdditionalBrowserArgs: remoteDebugArgs(),
+		},
 		// Wails invokes OnShutdown synchronously from macOS'
 		// applicationShouldTerminate callback. Unlike ApplicationWillTerminate
 		// event listeners, this blocks Cmd+Q until the FX lifecycle has persisted
@@ -613,5 +622,19 @@ func winCustomTheme(appTheme string) application.ThemeSettings {
 		DarkModeInactive:  darkTheme,
 		LightModeActive:   lightTheme,
 		LightModeInactive: lightTheme,
+	}
+}
+
+// remoteDebugArgs opens the WebView2 DevTools protocol when the environment
+// names a port. It exists for measuring window load time from the outside; a
+// normal launch returns nil and keeps remote debugging closed.
+func remoteDebugArgs() []string {
+	port := strings.TrimSpace(os.Getenv("AIRMEDY_REMOTE_DEBUG"))
+	if port == "" {
+		return nil
+	}
+	return []string{
+		"--remote-debugging-port=" + port,
+		"--remote-allow-origins=*",
 	}
 }

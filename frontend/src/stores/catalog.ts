@@ -281,6 +281,28 @@ export const useCatalogStore = defineStore('catalog', () => {
     }
   }
 
+  /**
+   * preparePlayback registers a row so the player can stream it without a
+   * download, and returns the library track id to play. Failures propagate so
+   * the caller can surface them.
+   */
+  async function preparePlayback(row: CatalogRowDTO): Promise<string> {
+    const trackId = await CatalogService.PrepareCatalogPlayback({
+      provider: row.provider,
+      external_id: row.external_id,
+      title: row.title,
+      artists: row.artists,
+      album_name: row.album_name,
+      duration: row.duration,
+      cover_url: row.cover_url_large || row.cover_url || '',
+      local_track_id: row.local_track_id ?? '',
+    })
+    if (trackId) {
+      trackIds.value = { ...trackIds.value, [identityKey(row.provider, row.external_id)]: trackId }
+    }
+    return trackId
+  }
+
   function identityForTrack(trackId: string): string | null {
     for (const [identity, id] of Object.entries(trackIds.value)) {
       if (id === trackId) return identity
@@ -391,6 +413,7 @@ export const useCatalogStore = defineStore('catalog', () => {
     ensureSearch,
     loadMore,
     save,
+    preparePlayback,
     clear,
     dispose,
   }

@@ -498,12 +498,14 @@ describe('CatalogResults', () => {
     wrapper.unmount()
   })
 
-  it('shows the library state and hides the actions for a track already owned', () => {
+  it('shows the library state and hides the save actions for a track already owned', () => {
     const wrapper = mountResults({ sources: SOURCES, rows: [row({ state: 'in_library' })] })
 
     expect(wrapper.find('[data-test="catalog-state"]').text()).toBe('cloud_search.in_library')
     // Acting on a row already in the library must not be offered.
     expect(wrapper.find('[data-test="catalog-favorite"]').exists()).toBe(false)
+    // It is on disk, so it stays playable.
+    expect(wrapper.find('[data-test="catalog-play"]').exists()).toBe(true)
     wrapper.unmount()
   })
 
@@ -548,6 +550,8 @@ describe('CatalogResults', () => {
 
     expect(wrapper.text()).toContain('cloud_search.blocked_no_resolver')
     expect(wrapper.find('[data-test="catalog-favorite"]').exists()).toBe(false)
+    // Nothing to stream and no local file: no play entry either.
+    expect(wrapper.find('[data-test="catalog-play"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -557,6 +561,26 @@ describe('CatalogResults', () => {
     await wrapper.find('[data-test="catalog-favorite"]').trigger('click')
     expect(wrapper.emitted('favorite')?.[0]?.[0]).toMatchObject({ provider: 'wy', external_id: '509781655' })
     wrapper.unmount()
+  })
+
+  it('emits play for a downloadable row without requiring a download', async () => {
+    const wrapper = mountResults({ sources: SOURCES, rows: [row({ state: 'saved' })] })
+
+    const play = wrapper.find('[data-test="catalog-play"]')
+    expect(play.exists()).toBe(true)
+    await play.trigger('click')
+    expect(wrapper.emitted('play')?.[0]?.[0]).toMatchObject({ provider: 'wy', external_id: '509781655' })
+    wrapper.unmount()
+  })
+
+  it('offers play for an imported local file even when the provider cannot download', () => {
+    const imported = mountResults({
+      sources: SOURCES,
+      rows: [row({ downloadable: false, state: 'in_library', local_track_id: 'local-1' })],
+    })
+
+    expect(imported.find('[data-test="catalog-play"]').exists()).toBe(true)
+    imported.unmount()
   })
 
   it('opens the playlist menu and emits the destination playlist', async () => {

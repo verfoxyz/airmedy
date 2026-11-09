@@ -495,3 +495,68 @@ func TestAct_FavoriteWithoutWriterFails(t *testing.T) {
 		t.Fatal("Act with Favorite and no favorites writer = nil error")
 	}
 }
+
+func TestEnsureStreamableTrack_RegistersWithoutQueueingOrSaving(t *testing.T) {
+	tracks := &fakeRemoteTracks{track: remoteTrack("remote-1")}
+	favorites := &fakeFavorites{}
+	playlists := &fakePlaylists{}
+	service := newActionService(tracks, favorites, playlists, nil)
+
+	track, err := service.EnsureStreamableTrack(context.Background(), ActionRequest{
+		Provider: "wy", ExternalID: "42", Title: "晴天", Artists: []string{"周杰伦"},
+	})
+	if err != nil {
+		t.Fatalf("EnsureStreamableTrack: %v", err)
+	}
+	if track.ID != "remote-1" {
+		t.Fatalf("track = %+v, want the registered row", track)
+	}
+
+	specs, enqueues := tracks.recorded()
+	if len(specs) != 1 || specs[0].Provider != "wy" || specs[0].ExternalID != "42" {
+		t.Fatalf("registered specs = %+v, want wy/42", specs)
+	}
+	// Playing is not a save: no download, favorite or playlist membership.
+	if len(enqueues) != 0 {
+		t.Fatalf("enqueue calls = %+v, want none", enqueues)
+	}
+	if len(favorites.sets) != 0 || len(playlists.args) != 0 {
+		t.Fatalf("favorite=%v playlist=%v, want no writes", favorites.sets, playlists.args)
+	}
+}
+
+func TestEnsureStreamableTrack_ReusesALocalFile(t *testing.T) {
+	tracks := &fakeRemoteTracks{track: remoteTrack("remote-1")}
+	service := newActionService(tracks, &fakeFavorites{}, &fakePlaylists{}, nil)
+	service.localTracks = fakeLocalTracks{track: &domain.TrackDTO{Track: domain.Track{
+		ID: "local-1", Path: `C:\Music\晴天.flac`, Title: "晴天",
+	}}}
+
+	track, err := service.EnsureStreamableTrack(context.Background(), ActionRequest{
+		Provider: "wy", ExternalID: "42", LocalTrackID: "local-1",
+	})
+	if err != nil {
+		t.Fatalf("EnsureStreamableTrack: %v", err)
+	}
+	if track.ID != "local-1" {
+		t.Fatalf("track = %+v, want the local file row", track)
+	}
+	if specs, _ := tracks.recorded(); len(specs) != 0 {
+		t.Fatalf("registered %+v, want the on-disk row without a new remote row", specs)
+	}
+}
+
+func TestEnsureStreamableTrack_RequiresAnEnabledSource(t *testing.T) {
+	service := NewService(Deps{
+		Library:  &fakeRemoteTracks{track: remoteTrack("remote-1")},
+		Resolver: fakeResolver{"wy": false},
+		Logger:   quietLogger(),
+	})
+
+	_, err := service.EnsureStreamableTrack(context.Background(), ActionRequest{
+		Provider: "wy", ExternalID: "42",
+	})
+	if !errors.Is(err, domain.ErrCatalogActionInvalid) {
+		t.Fatalf("error = %v, want ErrCatalogActionInvalid", err)
+	}
+}

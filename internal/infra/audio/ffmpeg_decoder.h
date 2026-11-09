@@ -46,6 +46,11 @@ typedef struct {
     /* Reusable buffer for swr output */
     float*           swr_tmp_buf;
     int              swr_tmp_cap;
+
+    /* Network interruption: ffmpeg_cancel() sets the flag from another thread
+     * (stop/unload) and the AVIO interrupt callback aborts a blocked read. */
+    volatile int     cancel;
+    ffmpeg_io_guard  io;
 } FFmpegHandle;
 
 static void ffmpeg_close(FFmpegHandle* h) {
@@ -60,10 +65,22 @@ static void ffmpeg_close(FFmpegHandle* h) {
     free(h);
 }
 
+/* Aborts an in-flight network read. Safe from any thread; the handle stays
+ * valid until ffmpeg_close, which callers do after the read has returned. */
+static void ffmpeg_cancel(FFmpegHandle* h) {
+    if (h) h->cancel = 1;
+}
+
 static FFmpegHandle* ffmpeg_open(const char* path, ma_uint32 target_rate) {
     FFmpegHandle* h = (FFmpegHandle*)calloc(1, sizeof(FFmpegHandle));
     if (!h) return NULL;
     h->target_rate = target_rate;
+    h->io.cancel = &h->cancel;
+
+    /* Enables http/tcp for URLs handed in by the stream cache proxy. A no-op
+     * for local files, but the registry is process-global and must exist before
+     * the first network open. */
+    ffmpeg_network_init();
 
     /*
      * avformat_open_input .. avcodec_open2 shares ffmpeg_probe_mu with
@@ -77,6 +94,9 @@ static FFmpegHandle* ffmpeg_open(const char* path, ma_uint32 target_rate) {
     AVDictionary* format_opts = NULL;
     av_dict_set(&format_opts, "probesize", "32000000", 0);      /* 32MB */
     av_dict_set(&format_opts, "analyzeduration", "10000000", 0); /* 10s */
+    /* Bounds a stalled network read (connect + no bytes) at the protocol
+     * layer; the interrupt callback below handles the immediate abort. */
+    av_dict_set(&format_opts, "rw_timeout", "15000000", 0);      /* 15s */
 
     if (avformat_open_input(&h->fmt_ctx, path, NULL, &format_opts) < 0) {
         av_dict_free(&format_opts);
@@ -85,6 +105,11 @@ static FFmpegHandle* ffmpeg_open(const char* path, ma_uint32 target_rate) {
         return NULL;
     }
     av_dict_free(&format_opts);
+
+    /* Set once the context exists: aborts find_stream_info and every later
+     * av_read_frame when ffmpeg_cancel() is called (stop/track change). */
+    h->fmt_ctx->interrupt_callback.callback = ffmpeg_io_interrupt;
+    h->fmt_ctx->interrupt_callback.opaque   = &h->io;
 
     /*
      * avformat_find_stream_info can return errors for files with "broken" metadata streams

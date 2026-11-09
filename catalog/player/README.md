@@ -435,6 +435,15 @@ flowchart TB
 ### Responsibilities
 
 - Loads tracks into the audio adapter.
+- **Stream playback:** a remote row (`IsRemote()`) is never handed to the
+  decoder. `loadAndPlay`/`loadInactiveAtPosition` call `StreamCache.Open`, which
+  resolves the track through the enabled plugin and serves it from a loopback
+  proxy; the decoder loads a shallow copy whose `Path` is the proxy URL, while
+  `currentTrack` keeps the `remote://` identity. The session closes on a hard
+  load, `Stop`, natural advance and shutdown; the 500 ms ticker reports playback
+  progress for eviction. A remote row restored at startup stays unloaded until
+  `Play`. Gapless pre-queue and crossfade skip remote rows — there is no local
+  second source to pre-open.
 - Manages playback state transitions.
 - Runs a **500ms ticker** for internal logic:
   - Increments play counts and scrobbling thresholds via `checkThreshold()`.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"airmedy/internal/app/config"
 	"airmedy/internal/domain"
 
 	"go.uber.org/fx"
@@ -23,6 +24,10 @@ func TestModuleProvidesTheDownloadResolver(t *testing.T) {
 		Module,
 		fx.NopLogger,
 		fx.Supply(testLogger()),
+		fx.Supply(&config.Config{DataDir: t.TempDir()}),
+		fx.Provide(func() SettingsProvider {
+			return &fakeSettings{settings: &domain.AppSettings{}}
+		}),
 		fx.Provide(func() ProviderRegistry { return registry }),
 		fx.Populate(&resolver),
 	)

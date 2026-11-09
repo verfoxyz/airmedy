@@ -620,6 +620,12 @@ type AppSettings struct {
 	DownloadWithLyricTranslation bool `json:"download_with_lyric_translation"`
 	DownloadWithCover            bool `json:"download_with_cover"`
 
+	// Stream playback cache. StreamCacheMB caps the temporary, evictable cache
+	// written while a remote track plays; StreamQuality is passed through to
+	// stream.resolve (empty falls back to DefaultDownloadQuality).
+	StreamCacheMB int    `json:"stream_cache_mb"`
+	StreamQuality string `json:"stream_quality"`
+
 	// MoodDerivationVersion is bumped whenever feature_percentiles is
 	// recomputed, which makes every track's tracks.mood_derived_version
 	// stale (< this value) and therefore re-picked-up for re-derivation.

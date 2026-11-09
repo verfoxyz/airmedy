@@ -14,6 +14,7 @@ import (
 
 	"airmedy/internal/app/lyrics"
 	"airmedy/internal/app/normalization"
+	"airmedy/internal/app/stream"
 	"airmedy/internal/domain"
 	"airmedy/internal/infra/artwork"
 
@@ -21,6 +22,15 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"go.uber.org/fx"
 )
+
+// StreamCache makes a remote track playable by resolving it and serving the
+// audio from a local HTTP proxy. *stream.Cache implements it; the narrow
+// interface keeps the player testable without a running proxy.
+type StreamCache interface {
+	Open(ctx context.Context, track *domain.TrackDTO) (*stream.Session, error)
+	Close(session *stream.Session)
+	ReportProgress(session *stream.Session, seconds float64)
+}
 
 // PlayerService coordinates playback and queue management.
 type PlayerService struct {
@@ -39,6 +49,9 @@ type PlayerService struct {
 	trackRepo                       domain.TrackRepository
 	stateRepo                       domain.PlayerStateRepository
 	settingsRepo                    domain.SettingsRepository
+	streamCache                     StreamCache
+	streamSession                   *stream.Session
+	streamMu                        sync.Mutex
 	normSvc                         *normalization.NormalizationService
 	notifier                        domain.TrackTransitionNotifier
 	listeningRepo                   domain.ListeningRepository
@@ -115,6 +128,7 @@ func NewPlayerService(
 	trackRepo domain.TrackRepository,
 	stateRepo domain.PlayerStateRepository,
 	settingsRepo domain.SettingsRepository,
+	streamCache StreamCache,
 	sleepInhibitor domain.SleepInhibitor,
 	normSvc *normalization.NormalizationService,
 	notifier domain.TrackTransitionNotifier,
@@ -130,6 +144,7 @@ func NewPlayerService(
 		trackRepo:                       trackRepo,
 		stateRepo:                       stateRepo,
 		settingsRepo:                    settingsRepo,
+		streamCache:                     streamCache,
 		sleepInhibitor:                  sleepInhibitor,
 		normSvc:                         normSvc,
 		notifier:                        notifier,
@@ -197,6 +212,7 @@ func (s *PlayerService) shutdown(ctx context.Context) error {
 	s.flushListening(ctx)
 	s.finishPlaybackAttempt(context.Background(), domain.PlaybackEndStopped)
 	s.stopListeningWriter(ctx)
+	s.dropStreamSession()
 	if closer, ok := s.player.(interface{ Close() }); ok {
 		closer.Close()
 	}
@@ -323,6 +339,20 @@ func (s *PlayerService) Play() error {
 		return s.loadAndPlay(ct)
 	}
 
+	// A remote row restored at startup is the current track but has no audio
+	// loaded: streaming is opened on demand. Play must load it rather than
+	// toggling an engine that holds nothing. A local row is always loaded by the
+	// time it becomes current, so this only applies to the deferred case.
+	if ct.IsRemote() && s.player.GetStatus().TrackID != ct.ID {
+		for i, track := range s.queue.GetQueue() {
+			if track.ID == ct.ID {
+				s.queue.SetCurrentIndex(i)
+				break
+			}
+		}
+		return s.loadAndPlay(ct)
+	}
+
 	err := s.player.Play()
 	if err == nil {
 		s.resumeListening()
@@ -398,10 +428,14 @@ func (s *PlayerService) Stop() error {
 	s.snapActiveCrossfade()
 	s.pauseListening()
 	s.flushListening(context.Background())
+	// Record the last known position before Stop resets the engine to zero.
+	s.reportStreamProgress(s.player.GetStatus().Position)
 	err := s.player.Stop()
 	if err == nil {
 		s.finishPlaybackAttempt(context.Background(), domain.PlaybackEndStopped)
 		s.stopPositionTicker()
+		// The playback window ends with the track; the cached bytes stay on disk.
+		s.dropStreamSession()
 		if s.nowPlaying != nil {
 			s.nowPlaying.ClearNowPlaying()
 		}
@@ -918,28 +952,94 @@ func (s *PlayerService) loadWithPlaybackState(track *domain.TrackDTO, state doma
 	return s.loadInactiveAtPosition(track, 0, state == domain.PlaybackStatePaused)
 }
 
-// ensurePlayable rejects a track whose audio is not on disk yet.
+// ensurePlayable rejects a track that has no way to produce audio.
 //
-// A remote row's path is the virtual remote:// reference, not a file: handing it
-// to the decoder produces a backend load error (-10 on miniaudio) that the user
-// reads as "the player is broken". The check lives here, at the one place every
-// load path goes through, so a row the library still reports as undownloaded can
-// never reach the decoder — whether it came from a stale UI list, a restored
-// queue, or a search result.
+// A downloaded row opens its file directly. A remote row is streamed through
+// the local cache proxy, which needs both a configured cache and the track's
+// provider identity; without them the decoder would receive the virtual
+// remote:// reference and fail with a backend code the user cannot act on.
 func (s *PlayerService) ensurePlayable(track *domain.TrackDTO) error {
 	if track == nil {
 		return fmt.Errorf("playback: no track selected")
 	}
-	if track.IsRemote() {
-		s.logger.Info("playback refused: the track is not downloaded yet",
-			"track_id", track.ID, "availability", track.Availability, "path", track.Path)
+	if !track.IsRemote() {
+		return nil
+	}
+	if s.streamCache == nil {
+		s.logger.Info("playback refused: streaming is not available",
+			"track_id", track.ID, "availability", track.Availability)
+		return fmt.Errorf("%w: %s", domain.ErrTrackNotAvailable, track.Title)
+	}
+	if domain.NormalizeProvider(track.Provider) == "" || strings.TrimSpace(track.ExternalID) == "" {
+		s.logger.Info("playback refused: the remote track has no provider identity",
+			"track_id", track.ID, "path", track.Path)
 		return fmt.Errorf("%w: %s", domain.ErrTrackNotAvailable, track.Title)
 	}
 	return nil
 }
 
+// preparePlayable resolves a remote track to the local proxy URL the decoder
+// can open. The returned DTO is a shallow copy: currentTrack and everything
+// persisted keep the original remote:// row, so a replay resolves again.
+func (s *PlayerService) preparePlayable(track *domain.TrackDTO) (*domain.TrackDTO, *stream.Session, error) {
+	if !track.IsRemote() {
+		return track, nil, nil
+	}
+	session, err := s.streamCache.Open(context.Background(), track)
+	if err != nil {
+		return nil, nil, err
+	}
+	playable := *track
+	playable.Path = session.URL
+	return &playable, session, nil
+}
+
+// swapStreamSession makes next the active playback window and closes the
+// previous one. The cache keeps the downloaded bytes for a replay.
+func (s *PlayerService) swapStreamSession(next *stream.Session) {
+	s.streamMu.Lock()
+	previous := s.streamSession
+	s.streamSession = next
+	s.streamMu.Unlock()
+
+	if previous == nil || previous == next || s.streamCache == nil {
+		return
+	}
+	s.streamCache.ReportProgress(previous, s.player.GetStatus().Position)
+	s.streamCache.Close(previous)
+}
+
+// dropStreamSession closes the current session without recording progress, for
+// the paths where the last ticker report already holds the position (Stop,
+// natural advance, shutdown) or where the load failed before the decoder owned
+// the stream.
+func (s *PlayerService) dropStreamSession() {
+	s.streamMu.Lock()
+	session := s.streamSession
+	s.streamSession = nil
+	s.streamMu.Unlock()
+	if session != nil && s.streamCache != nil {
+		s.streamCache.Close(session)
+	}
+}
+
+// reportStreamProgress feeds the eviction rule with how far playback advanced.
+func (s *PlayerService) reportStreamProgress(position float64) {
+	s.streamMu.Lock()
+	session := s.streamSession
+	s.streamMu.Unlock()
+	if session == nil || s.streamCache == nil {
+		return
+	}
+	s.streamCache.ReportProgress(session, position)
+}
+
 func (s *PlayerService) loadInactiveAtPosition(track *domain.TrackDTO, position float64, paused bool) error {
 	if err := s.ensurePlayable(track); err != nil {
+		return err
+	}
+	playable, streamSession, err := s.preparePlayable(track)
+	if err != nil {
 		return err
 	}
 
@@ -948,7 +1048,9 @@ func (s *PlayerService) loadInactiveAtPosition(track *domain.TrackDTO, position 
 	s.nextPreQueued = nil
 	s.mu.Unlock()
 
-	if err := s.player.Load(track); err != nil {
+	s.swapStreamSession(streamSession)
+	if err := s.player.Load(playable); err != nil {
+		s.dropStreamSession()
 		s.logger.Error("failed to reload inactive track", "track", track.Path, "error", err)
 		return err
 	}
@@ -991,6 +1093,12 @@ func (s *PlayerService) loadAndPlayAtPosition(track *domain.TrackDTO, position f
 	if err := s.ensurePlayable(track); err != nil {
 		return err
 	}
+	// Open the stream while the outgoing track still plays: the cache resolves
+	// and prebuffers before the decoder is asked to switch.
+	playable, streamSession, err := s.preparePlayable(track)
+	if err != nil {
+		return err
+	}
 
 	// A hard load supersedes any in-flight crossfade.
 	s.snapActiveCrossfade()
@@ -1004,7 +1112,9 @@ func (s *PlayerService) loadAndPlayAtPosition(track *domain.TrackDTO, position f
 	s.mu.Unlock()
 	const gapless = true
 
-	if err := s.player.Load(track); err != nil {
+	s.swapStreamSession(streamSession)
+	if err := s.player.Load(playable); err != nil {
+		s.dropStreamSession()
 		s.logger.Error("failed to load track", "track", track.Path, "error", err)
 		return err
 	}
@@ -1090,6 +1200,9 @@ func fallbackTitle(path string) string {
 // transitionToTrack updates app state when the audio engine has already transitioned
 // to track (gapless path). Does NOT call player.Load/Play.
 func (s *PlayerService) transitionToTrack(track *domain.TrackDTO) {
+	// The engine already moved to a pre-loaded local track; the outgoing
+	// stream's download window is over. The last ticker report holds its position.
+	s.dropStreamSession()
 	s.flushListening(context.Background())
 	s.finishPlaybackAttempt(context.Background(), domain.PlaybackEndCompleted)
 	s.mu.Lock()
@@ -1925,6 +2038,7 @@ func (s *PlayerService) startPositionTicker() {
 				}
 
 				status := s.player.GetStatus()
+				s.reportStreamProgress(status.Position)
 				s.checkThreshold(track, status)
 				s.checkpointListening()
 				s.maybeStartCrossfade(status)
@@ -1953,6 +2067,11 @@ func (s *PlayerService) stopPositionTicker() {
 func (s *PlayerService) preEnqueueNext() {
 	next := s.queue.PeekNext()
 	if next == nil {
+		return
+	}
+	// A remote track has no local file to pre-open. Its stream is resolved when
+	// it actually starts, so the transition is a normal load rather than gapless.
+	if next.IsRemote() {
 		return
 	}
 	gp, ok := s.player.(domain.GaplessPlayer)
@@ -2002,9 +2121,15 @@ func (s *PlayerService) maybeStartCrossfade(status domain.PlayerStatus) {
 	sec := s.crossfadeSec
 	fading := s.fading
 	hasNext := s.nextPreQueued != nil
+	current := s.currentTrack
 	s.mu.RUnlock()
 
 	if sec <= 0 || fading || !hasNext {
+		return
+	}
+	// A streamed track is served through the proxy and has no local second
+	// source to overlap; let it end normally and switch to the next track.
+	if current != nil && current.IsRemote() {
 		return
 	}
 	if status.PlaybackState != domain.PlaybackStatePlaying || status.Duration < 2 {
@@ -2415,12 +2540,20 @@ func (s *PlayerService) restoreState(ctx context.Context) {
 		s.queue.Restore(originalTracks, activeTracks, currentIndex, state.Shuffle, state.RepeatMode)
 
 		if currentTrack != nil {
-			if err := s.player.Load(currentTrack); err != nil {
-				s.logger.Error("failed to load track on restore", "track", currentTrack.Path, "error", err)
-			} else {
-				if err := s.player.Seek(state.Position); err != nil {
+			// A remote row is restored as the current track, but its audio is
+			// fetched only when the user presses play: opening a stream here
+			// would download before anyone asked. Play() reloads because the
+			// engine holds no track for it yet.
+			loaded := !currentTrack.IsRemote()
+			if loaded {
+				if err := s.player.Load(currentTrack); err != nil {
+					s.logger.Error("failed to load track on restore", "track", currentTrack.Path, "error", err)
+					loaded = false
+				} else if err := s.player.Seek(state.Position); err != nil {
 					s.logger.Warn("failed to seek to saved position on restore", "error", err)
 				}
+			}
+			if loaded || currentTrack.IsRemote() {
 				s.mu.Lock()
 				s.currentTrack = currentTrack
 				s.mu.Unlock()

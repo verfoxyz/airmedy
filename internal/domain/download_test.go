@@ -84,6 +84,15 @@ func TestResolveDownloadQuality(t *testing.T) {
 	assert.Equal(t, DefaultDownloadQuality, ResolveDownloadQuality("lossless"))
 }
 
+func TestClampStreamCacheMB(t *testing.T) {
+	// An unset column (0 after an old row or a zero value) must land on the
+	// default, not the minimum, so adding the setting never shrinks the cache.
+	assert.Equal(t, DefaultStreamCacheMB, ClampStreamCacheMB(0))
+	assert.Equal(t, MinStreamCacheMB, ClampStreamCacheMB(1))
+	assert.Equal(t, 4096, ClampStreamCacheMB(4096))
+	assert.Equal(t, MaxStreamCacheMB, ClampStreamCacheMB(MaxStreamCacheMB+1))
+}
+
 func TestResolveNamingOrder(t *testing.T) {
 	assert.Equal(t, NamingOrderArtistTitle, ResolveNamingOrder(NamingOrderArtistTitle))
 	assert.Equal(t, NamingOrderTitleArtist, ResolveNamingOrder(NamingOrderTitleArtist))

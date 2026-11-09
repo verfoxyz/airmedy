@@ -184,6 +184,30 @@ func ResolveDownloadQuality(quality string) string {
 	return DefaultDownloadQuality
 }
 
+// Stream playback cache limits. The cache holds tracks the user streamed but
+// did not download; it is evicted by size and never grows past the setting.
+const (
+	DefaultStreamCacheMB = 2048
+	MinStreamCacheMB     = 256
+	MaxStreamCacheMB     = 20480
+)
+
+// ClampStreamCacheMB coerces a stored cache size into the supported range.
+// Zero (column not set / old row) becomes the default rather than the minimum,
+// so an unset value never silently shrinks the cache to 256 MB.
+func ClampStreamCacheMB(mb int) int {
+	if mb == 0 {
+		return DefaultStreamCacheMB
+	}
+	if mb < MinStreamCacheMB {
+		return MinStreamCacheMB
+	}
+	if mb > MaxStreamCacheMB {
+		return MaxStreamCacheMB
+	}
+	return mb
+}
+
 // StreamRef is a resolved, directly playable/downloadable audio URL.
 //
 // Expires is advisory only: URLs are short-lived and the downloader re-resolves

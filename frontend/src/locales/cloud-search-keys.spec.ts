@@ -29,7 +29,7 @@ describe('cloud search locale coverage', () => {
       'failure_source_disabled', 'failure_timeout', 'failure_upstream',
       'favorite', 'hint', 'in_library', 'load_more', 'loading_more',
       'mode_cloud', 'mode_local', 'no_playlists', 'no_sources_description',
-      'no_sources_title', 'not_downloadable', 'results', 'save_failed', 'saved',
+      'no_sources_title', 'not_downloadable', 'play', 'results', 'save_failed', 'saved',
       'source_unavailable_description', 'source_unavailable_title',
     ].sort())
   })

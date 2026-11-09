@@ -3,13 +3,16 @@ package player
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"airmedy/internal/app/normalization"
+	"airmedy/internal/app/stream"
 	"airmedy/internal/domain"
 )
 
@@ -20,6 +23,7 @@ type fakePlayer struct {
 	onEnd          func()
 	lastPreampGain float64
 	loadCalls      int
+	loadedPath     string
 }
 
 func TestShouldApplyPalette(t *testing.T) {
@@ -76,6 +80,7 @@ func (p *fakePlayer) SetMuted(m bool) error {
 func (p *fakePlayer) Load(track *domain.TrackDTO) error {
 	p.mu.Lock()
 	p.loadCalls++
+	p.loadedPath = track.Path
 	p.status.TrackID = track.ID
 	p.status.Duration = float64(track.Duration)
 	p.status.Position = 0
@@ -1738,11 +1743,11 @@ func TestSyncFavoriteDoesNotEmitPlaybackUpdates(t *testing.T) {
 	}
 }
 
-// TestPlayTracks_RefusesARemoteRow is the regression for a playback attempt on a
-// track that has not been downloaded: its Path is the virtual
-// remote://<provider>/<id> reference, so the decoder cannot open it (-10 on
-// miniaudio). The player must refuse before touching the engine, with a typed
-// error the UI can word, instead of surfacing a backend code.
+// TestPlayTracks_RefusesARemoteRow covers the deployment without a stream
+// cache: a remote row's Path is the virtual remote://<provider>/<id> reference,
+// so the decoder cannot open it (-10 on miniaudio). The player must refuse
+// before touching the engine, with a typed error the UI can word, instead of
+// surfacing a backend code.
 func TestPlayTracks_RefusesARemoteRow(t *testing.T) {
 	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1.0}}
 	s, _ := newTestService(t, fp)
@@ -1767,7 +1772,8 @@ func TestPlayTracks_RefusesARemoteRow(t *testing.T) {
 
 // TestLoadAndPlay_RefusesARemoteRowThatIsReadyByFlag covers the state the merge
 // bug produced: availability='ready' while the path is still remote://. IsRemote
-// checks both, so the row is refused rather than handed to the decoder.
+// checks both, so without a stream cache the row is refused rather than handed
+// to the decoder.
 func TestLoadAndPlay_RefusesARemoteRowThatIsReadyByFlag(t *testing.T) {
 	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1.0}}
 	s, _ := newTestService(t, fp)
@@ -1807,5 +1813,142 @@ func TestPlayTracks_PlaysALocalRow(t *testing.T) {
 	}
 	if fp.loadCalls != 1 {
 		t.Fatalf("Load called %d times, want 1", fp.loadCalls)
+	}
+}
+
+// fakeStreamCache records what the player asked the stream cache to do.
+type fakeStreamCache struct {
+	mu       sync.Mutex
+	opened   []*domain.TrackDTO
+	closed   []*stream.Session
+	progress []float64
+	session  *stream.Session
+	openErr  error
+}
+
+func newFakeStreamCache() *fakeStreamCache {
+	return &fakeStreamCache{session: &stream.Session{
+		ID:  "stream-1",
+		URL: "http://127.0.0.1:4567/stream/stream-1",
+	}}
+}
+
+func (f *fakeStreamCache) Open(_ context.Context, track *domain.TrackDTO) (*stream.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.opened = append(f.opened, track)
+	if f.openErr != nil {
+		return nil, f.openErr
+	}
+	return f.session, nil
+}
+
+func (f *fakeStreamCache) Close(session *stream.Session) {
+	f.mu.Lock()
+	f.closed = append(f.closed, session)
+	f.mu.Unlock()
+}
+
+func (f *fakeStreamCache) ReportProgress(_ *stream.Session, seconds float64) {
+	f.mu.Lock()
+	f.progress = append(f.progress, seconds)
+	f.mu.Unlock()
+}
+
+func TestPlayTracks_StreamsARemoteRowThroughTheCache(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1.0}}
+	s, _ := newTestService(t, fp)
+	cache := newFakeStreamCache()
+	s.streamCache = cache
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID:           "remote-1",
+		Path:         domain.RemotePath("wy", "5257138"),
+		Title:        "屋顶",
+		Availability: domain.AvailabilityRemote,
+		Provider:     "wy",
+		ExternalID:   "5257138",
+	}}
+
+	if err := s.PlayTracks([]*domain.TrackDTO{remote}, 0); err != nil {
+		t.Fatalf("PlayTracks on a remote row: %v", err)
+	}
+	if fp.loadCalls != 1 {
+		t.Fatalf("Load called %d times, want 1", fp.loadCalls)
+	}
+	if fp.loadedPath != cache.session.URL {
+		t.Fatalf("decoder opened %q, want the proxy URL %q", fp.loadedPath, cache.session.URL)
+	}
+	if len(cache.opened) != 1 || cache.opened[0].ID != remote.ID {
+		t.Fatalf("cache opened %+v, want the remote row", cache.opened)
+	}
+	if s.currentTrack == nil || !s.currentTrack.IsRemote() {
+		t.Fatalf("current track lost its remote identity: %+v", s.currentTrack)
+	}
+
+	s.reportStreamProgress(37)
+	if len(cache.progress) != 1 || cache.progress[0] != 37 {
+		t.Fatalf("progress reported %+v, want [37]", cache.progress)
+	}
+
+	if err := s.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(cache.closed) != 1 {
+		t.Fatalf("cache closed %d sessions, want 1", len(cache.closed))
+	}
+}
+
+func TestPlayTracks_FailedStreamDoesNotTouchTheDecoder(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1.0}}
+	s, _ := newTestService(t, fp)
+	s.streamCache = &fakeStreamCache{openErr: fmt.Errorf("resolve: upstream is down")}
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID:           "remote-2",
+		Path:         domain.RemotePath("wy", "42"),
+		Title:        "失败",
+		Availability: domain.AvailabilityRemote,
+		Provider:     "wy",
+		ExternalID:   "42",
+	}}
+
+	err := s.PlayTracks([]*domain.TrackDTO{remote}, 0)
+	if err == nil || !strings.Contains(err.Error(), "upstream is down") {
+		t.Fatalf("PlayTracks error = %v, want the resolver failure", err)
+	}
+	if fp.loadCalls != 0 {
+		t.Fatalf("the decoder was asked to load %d times, want 0", fp.loadCalls)
+	}
+}
+
+// TestPlay_LoadsADeferredRemoteRow covers a queue restored at startup: the row
+// is current but nothing is loaded, so Play must open the stream instead of
+// toggling an empty engine.
+func TestPlay_LoadsADeferredRemoteRow(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1.0}}
+	s, _ := newTestService(t, fp)
+	cache := newFakeStreamCache()
+	s.streamCache = cache
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID:           "remote-3",
+		Path:         domain.RemotePath("wy", "7"),
+		Title:        "恢复",
+		Duration:     120,
+		Availability: domain.AvailabilityRemote,
+		Provider:     "wy",
+		ExternalID:   "7",
+	}}
+	s.queue.SetQueue([]*domain.TrackDTO{remote}, 0)
+	s.mu.Lock()
+	s.currentTrack = remote
+	s.mu.Unlock()
+
+	if err := s.Play(); err != nil {
+		t.Fatalf("Play: %v", err)
+	}
+	if fp.loadCalls != 1 || fp.loadedPath != cache.session.URL {
+		t.Fatalf("Load calls=%d path=%q, want one load of %q", fp.loadCalls, fp.loadedPath, cache.session.URL)
 	}
 }

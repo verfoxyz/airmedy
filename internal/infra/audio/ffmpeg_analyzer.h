@@ -215,8 +215,12 @@ static int ffmpeg_analyze(const char *path, FFAnalysisResult *out, volatile int 
     double peak_db = 0;    /* astats sample peak (dBFS), running max, fallback   */
     int    have_peak_db = 0;
 
+    ffmpeg_io_guard io = { cancel }; /* must outlive fmt_ctx */
+
     pthread_mutex_lock(&ffmpeg_probe_mu);
     probe_locked = 1;
+
+    ffmpeg_network_init();
 
     AVDictionary *format_opts = NULL;
     /* Modest probe budget: large enough to find the audio stream past an
@@ -225,12 +229,18 @@ static int ffmpeg_analyze(const char *path, FFAnalysisResult *out, volatile int 
      * the mp3/common formats this analyzes.) */
     av_dict_set(&format_opts, "probesize", "5000000", 0);
     av_dict_set(&format_opts, "analyzeduration", "5000000", 0);
+    /* http URLs (search results played through the stream cache) need a
+     * bounded read; local files ignore the option. */
+    av_dict_set(&format_opts, "rw_timeout", "15000000", 0);
     if (avformat_open_input(&fmt_ctx, path, NULL, &format_opts) < 0) {
         av_dict_free(&format_opts);
         rc = FFA_ERR_OPEN;
         goto done;
     }
     av_dict_free(&format_opts);
+
+    fmt_ctx->interrupt_callback.callback = ffmpeg_io_interrupt;
+    fmt_ctx->interrupt_callback.opaque   = &io;
 
     avformat_find_stream_info(fmt_ctx, NULL);
     for (unsigned int i = 0; i < fmt_ctx->nb_streams; i++) {
@@ -549,17 +559,24 @@ static int ffmpeg_probe_duration(const char *path, double *out_seconds, volatile
     int stream_idx = -1;
     double seconds = 0;
     int rc = FFA_PROBE_ERR_OPEN;
+    ffmpeg_io_guard io = { cancel }; /* must outlive fmt_ctx */
 
     pthread_mutex_lock(&ffmpeg_probe_mu);
+
+    ffmpeg_network_init();
 
     /* Same modest budget as ffmpeg_analyze: enough to find the audio stream past
      * cover art, cheap enough for a large library scan. */
     av_dict_set(&format_opts, "probesize", "5000000", 0);
     av_dict_set(&format_opts, "analyzeduration", "5000000", 0);
+    av_dict_set(&format_opts, "rw_timeout", "15000000", 0);
     if (avformat_open_input(&fmt_ctx, path, NULL, &format_opts) < 0) {
         goto done;
     }
     av_dict_free(&format_opts);
+
+    fmt_ctx->interrupt_callback.callback = ffmpeg_io_interrupt;
+    fmt_ctx->interrupt_callback.opaque   = &io;
 
     if (avformat_find_stream_info(fmt_ctx, NULL) < 0) {
         goto done;

@@ -27,7 +27,9 @@ CONFIGURE_FLAGS=(
     --disable-doc
     --disable-programs
     --disable-debug
-    --disable-network
+    # Network stack: needed for stream playback over the local StreamCache proxy.
+    # TLS stays in Go, so http/tcp only — no schannel/openssl.
+    --enable-network
     --disable-autodetect
     --enable-static
     --disable-shared
@@ -69,7 +71,7 @@ CONFIGURE_FLAGS=(
     --enable-parser=vorbis
     --enable-parser=opus
     # Protocol
-    --enable-protocol=file
+    --enable-protocol=file,http,tcp
     # Disable optional system libs to avoid link-time deps on Windows
     --disable-bzlib
     --disable-lzma

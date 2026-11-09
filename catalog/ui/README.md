@@ -152,13 +152,17 @@ reported by the next search response.
 
 Per-row actions (`收藏`, `加入歌单`) both register the track and start its download
 through `CatalogService.SaveCatalogResult`; the download setting does not gate
-them. A row that is not downloadable is disabled with a reason
-(`blocked_reason`, worded by the frontend), and an `in_library` row hides the
-actions instead of offering a second download — unless it carries
-`local_track_id` (the song is in the library through an imported file), where
-favorite/playlist reuse that row and a separate `download_anyway` button asks for
-the provider's copy. A `failed` row offers nothing extra: requesting it again
-reuses the failed job via the download queue.
+them. `播放` is separate from saving: `CatalogService.PrepareCatalogPlayback`
+registers the row without enqueuing a download and returns its track id, which
+the player then streams through the cache (an imported file plays from disk). A
+downloadable row is playable before it is saved, and an `in_library` row keeps
+the play entry while its save actions are hidden. A row that is not downloadable
+is disabled with a reason (`blocked_reason`, worded by the frontend), and an
+`in_library` row hides the save actions instead of offering a second download —
+unless it carries `local_track_id` (the song is in the library through an
+imported file), where favorite/playlist reuse that row and a separate
+`download_anyway` button asks for the provider's copy. A `failed` row offers
+nothing extra: requesting it again reuses the failed job via the download queue.
 
 Rows render covers from a **host-local asset URL** and load them lazily per row.
 `CatalogResults` observes each row with a 200px preload margin; only a row that enters

@@ -39,7 +39,9 @@ CONFIGURE_FLAGS=(
     --disable-doc
     --disable-programs
     --disable-debug
-    --disable-network
+    # Network stack: needed for stream playback over the local StreamCache proxy.
+    # TLS stays in Go, so http/tcp only — no securetransport/openssl.
+    --enable-network
     --disable-autodetect
     --enable-static
     --disable-shared
@@ -86,7 +88,7 @@ CONFIGURE_FLAGS=(
     --enable-parser=opus
 
     # --- Protocol ---
-    --enable-protocol=file
+    --enable-protocol=file,http,tcp
 )
 
 LIBS=(libavcodec libavformat libavutil libswresample libavfilter)

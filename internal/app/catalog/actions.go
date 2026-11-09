@@ -89,6 +89,61 @@ type ActionOutcome struct {
 	State string
 }
 
+// EnsureStreamableTrack registers a search row so the player can stream it
+// without downloading the audio. It returns the row to load: the existing local
+// file when the search matched one, otherwise the remote identity the stream
+// cache resolves on play.
+//
+// No playlist, favorite or download side effects: pressing play is not a save.
+func (s *Service) EnsureStreamableTrack(ctx context.Context, request ActionRequest) (*domain.TrackDTO, error) {
+	if s.library == nil {
+		return nil, fmt.Errorf("catalog action: no download pipeline is available")
+	}
+	provider := domain.NormalizeProvider(request.Provider)
+	externalID := strings.TrimSpace(request.ExternalID)
+	if provider == "" || externalID == "" {
+		return nil, fmt.Errorf("%w: provider and external id are required", domain.ErrCatalogActionInvalid)
+	}
+
+	if request.LocalTrackID != "" && s.localTracks != nil {
+		local, err := s.localTracks.GetTrack(ctx, request.LocalTrackID)
+		if err != nil {
+			return nil, fmt.Errorf("catalog action: load local track %s: %w", request.LocalTrackID, err)
+		}
+		if local != nil && !local.IsRemote() {
+			return local, nil
+		}
+	}
+
+	if s.resolver == nil || !s.resolver.CanResolve(provider) {
+		return nil, fmt.Errorf(
+			"%w: no enabled source can stream provider %q (install one that declares %q under \"providers\")",
+			domain.ErrCatalogActionInvalid, provider, provider)
+	}
+
+	coverURL := strings.TrimSpace(request.CoverURL)
+	if coverURL == "" {
+		coverURL = s.cachedCover(domain.CatalogIdentity{Provider: provider, ExternalID: externalID})
+	}
+
+	track, err := s.library.EnsureRemoteTrack(ctx, domain.RemoteTrackSpec{
+		Provider:   provider,
+		ExternalID: externalID,
+		Title:      strings.TrimSpace(request.Title),
+		Artists:    normaliseArtists(request.Artists),
+		AlbumName:  strings.TrimSpace(request.AlbumName),
+		Duration:   request.Duration,
+		CoverURL:   coverURL,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("catalog action: register %s/%s: %w", provider, externalID, err)
+	}
+	if track == nil {
+		return nil, fmt.Errorf("catalog action: %s/%s registered without a row", provider, externalID)
+	}
+	return track, nil
+}
+
 // Act performs the two things a search row can do: put the track in the library
 // (always) and optionally flag it as a favorite or add it to a playlist.
 //

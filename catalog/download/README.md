@@ -118,8 +118,9 @@ count move across, then the remote row is deleted).
 The "none" case is the common one, and getting it wrong is what made downloaded
 tracks unplayable: keeping the remote row and only flipping `availability` to
 `ready` left it pointing at `remote://<provider>/<id>` while the imported row held
-the file, so `IsRemote()` still reported true and the decoder was handed a path that
-is not a file (`ma_player_load failed: -10`). Two invariants follow:
+the file. A streamable build can play that row, but it streams it again instead
+of using the downloaded file, and `IsRemote()` still reports true, bypassing
+local-file behaviour (tag writes, file watching, delete). Two invariants follow:
 
 - **A row with `availability = 'ready'` has a real path.** It never keeps the
   virtual `remote://` form; the identity is not the path.

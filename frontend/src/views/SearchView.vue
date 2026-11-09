@@ -80,6 +80,18 @@ function downloadResultAnyway(
   void catalogStore.save(row, { forceDownload: true })
 }
 
+/** Play a cloud row by streaming it; no download is queued. */
+async function playResult(
+  row: import('../../bindings/airmedy/internal/infra/wails/models').CatalogRowDTO,
+) {
+  try {
+    const trackId = await catalogStore.preparePlayback(row)
+    await playerStore.playTrackIds([trackId])
+  } catch (e) {
+    console.error('Failed to play catalog result', e)
+  }
+}
+
 // Search results are a stored response, not a live query. A library change only
 // marks them stale: re-running the same query while the view is visible would
 // replace what the user is reading. The owner refreshes on activation or when
@@ -304,6 +316,7 @@ const hasResults = () => hasTracks() || hasAlbums() || hasArtists() || hasPlayli
         :has-query="catalogStore.hasQuery"
         @toggle-source="catalogStore.toggleSource"
         @load-more="catalogStore.loadMore"
+        @play="playResult"
         @favorite="favoriteResult"
         @add-to-playlist="addResultToPlaylist"
         @force-download="downloadResultAnyway"

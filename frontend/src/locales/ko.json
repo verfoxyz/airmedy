@@ -841,6 +841,7 @@
     "saved": "저장됨",
     "downloading": "다운로드 중",
     "failed": "다운로드 실패",
+    "play": "재생",
     "favorite": "즐겨찾기",
     "add_to_playlist": "재생목록에 추가",
     "download_anyway": "그래도 다운로드",

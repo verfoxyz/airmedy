@@ -55,6 +55,13 @@ func (c *Config) ArtworkCachePath() string {
 	return filepath.Join(c.DataDir, "artwork")
 }
 
+// StreamCachePath holds the temporary stream-playback cache: one audio file
+// plus one metadata file per remote identity. It is disposable and evicted by
+// size, unlike the artwork caches.
+func (c *Config) StreamCachePath() string {
+	return filepath.Join(c.DataDir, "stream-cache")
+}
+
 // CoverCachePath is the persistent remote-cover directory. It is separate from
 // the artwork cache because its files are addressed by remote URL hash and
 // evicted by an LRU index, while artwork files are addressed by content hash.

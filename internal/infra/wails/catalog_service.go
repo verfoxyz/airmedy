@@ -348,6 +348,27 @@ func (s *CatalogService) SaveCatalogResult(request CatalogActionRequest) (Catalo
 	return CatalogActionResultDTO{TrackID: outcome.TrackID, State: outcome.State}, nil
 }
 
+// PrepareCatalogPlayback registers a search row without downloading it and
+// returns the library track id the player should stream. The player resolves
+// the remote identity through the stream cache, so playing a row never queues
+// a download.
+func (s *CatalogService) PrepareCatalogPlayback(request CatalogActionRequest) (string, error) {
+	track, err := s.svc.EnsureStreamableTrack(context.Background(), catalog.ActionRequest{
+		Provider:     request.Provider,
+		ExternalID:   request.ExternalID,
+		Title:        request.Title,
+		Artists:      request.Artists,
+		AlbumName:    request.AlbumName,
+		Duration:     request.Duration,
+		CoverURL:     request.CoverURL,
+		LocalTrackID: request.LocalTrackID,
+	})
+	if err != nil {
+		return "", translateCatalogActionError(err)
+	}
+	return track.ID, nil
+}
+
 // translateCatalogActionError turns a domain failure into the message the frontend
 // surfaces. The machine sentinels are kept in the text so a bug report is
 // searchable, and the wording stays short enough for a toast.

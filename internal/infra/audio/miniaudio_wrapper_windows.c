@@ -123,6 +123,12 @@ static void internal_end_cb(void* userdata, ma_sound* pSound) {
 }
 
 static void unload_cur_locked(MaPlayer* p) {
+    /* Abort a network read blocked inside ffmpeg before tearing the sound
+     * down: ma_sound_uninit waits for the audio thread, which may be inside
+     * ffmpeg_read. ffmpeg_cancel only flips a flag, so it is safe here. */
+    if (p->cur_using_ffmpeg && p->cur_ffmpeg_ds->ffmpeg) {
+        ffmpeg_cancel(p->cur_ffmpeg_ds->ffmpeg);
+    }
     if (p->cur_loaded) {
         ma_sound_uninit(p->cur_sound);
         p->cur_loaded = 0;
@@ -134,6 +140,9 @@ static void unload_cur_locked(MaPlayer* p) {
 }
 
 static void unload_nxt_locked(MaPlayer* p) {
+    if (p->nxt_using_ffmpeg && p->nxt_ffmpeg_ds->ffmpeg) {
+        ffmpeg_cancel(p->nxt_ffmpeg_ds->ffmpeg);
+    }
     if (p->nxt_loaded) {
         ma_sound_uninit(p->nxt_sound);
         p->nxt_loaded = 0;
