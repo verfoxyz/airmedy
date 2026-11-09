@@ -10,6 +10,10 @@ vi.mock('vue-i18n', () => ({
   }),
 }))
 
+vi.mock('@/components/LazyImg.vue', () => ({
+  default: { props: ['src'], template: '<img v-if="src" :src="src" />' },
+}))
+
 vi.mock('@wailsio/runtime', () => ({
   Events: { On: vi.fn(), Off: vi.fn() },
   Create: {
@@ -96,5 +100,38 @@ describe('TrackInfoDrawer quality badge', () => {
     const w = mountDrawer(makeTrack({ copyright: '© 2026 Example Records' }))
     expect(w.text()).toContain('track_info.copyright')
     expect(w.text()).toContain('© 2026 Example Records')
+  })
+})
+
+describe('TrackInfoDrawer artwork', () => {
+  function mountForPlayer(track: TrackDTO, streamArtwork: string | null) {
+    return mount(TrackInfoDrawer, {
+      global: {
+        plugins: [
+          createTestingPinia({
+            createSpy: vi.fn,
+            initialState: {
+              player: {
+                trackInfoTrack: track,
+                currentTrack: track,
+                status: { stream_artwork_url: streamArtwork },
+              },
+            },
+          }),
+        ],
+      },
+    })
+  }
+
+  it('uses the streamed cover while it shows the playing track', () => {
+    const track = makeTrack({ artwork_key: null })
+    const w = mountForPlayer(track, '/cover-cache/streamed.jpg')
+    expect(w.get('img').attributes('src')).toBe('/cover-cache/streamed.jpg')
+  })
+
+  it('falls back to the local artwork when no streamed cover is set', () => {
+    const track = makeTrack({ artwork_key: 'local-key' })
+    const w = mountForPlayer(track, null)
+    expect(w.get('img').attributes('src')).toContain('local-key')
   })
 })

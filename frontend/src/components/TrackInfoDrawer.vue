@@ -12,7 +12,14 @@ const store = usePlayerStore()
 
 const track = computed(() => store.trackInfoTrack)
 
-const artworkUrl = computed(() => buildArtworkUrl(track.value?.artwork_key, 'md'))
+// A streamed track has no artwork_key; the player status carries the resolved
+// host-local cover for whatever is playing. Only use it while the drawer shows
+// that same track — a drawer opened for another row keeps its own artwork.
+const artworkUrl = computed(() =>
+  track.value?.id === store.currentTrack?.id
+    ? (store.artworkUrlMd ?? buildArtworkUrl(track.value?.artwork_key, 'md'))
+    : buildArtworkUrl(track.value?.artwork_key, 'md'),
+)
 
 const audioQuality = computed(() => (track.value ? determineAudioQuality(track.value) : 'UNKNOWN'))
 
