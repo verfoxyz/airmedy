@@ -7,6 +7,14 @@
 
 ---
 
+## 0. 数据验证（本机实测）
+
+- `track.getSimilar`：热门曲目有结果；当前账号的种子全部为空；
+- `artist.getSimilar`：正常返回相似艺人；
+- `artist.getTopTracks`：正常返回歌曲（如 Kobaryo 的 `Invisible Frenzy` / `Bookmaker`）；
+- `user.getTopTags`：**当前账号为空** → 标签兜底必须从种子艺人聚合，不能只用用户标签；
+- `chart.getTopTracks`：作为最终兜底始终有数据。
+
 ## 1. 根因
 
 ### 1.1 推荐为空
@@ -45,7 +53,7 @@ https://lastfm-img.freetls.fastly.net/i/u/.../2a96cbd8b46e442fc41c2b86b821562f.p
 4. 汇总后按“出现次数”排序，排除种子本身；
 5. 若仍为空 → 该种子放弃（记 debug 日志，不计入失败）；
 6. **全部种子都为空时**（冷门账号兜底，保证页面至少有一份歌曲推荐）：
-   - `user.getTopTags`（取前 5 个标签）→ `tag.getTopTracks`（每个标签 10 首）；
+   - 从种子艺人聚合 `artist.getTopTags`（`user.getTopTags` 对很多账号为空，不能只靠它），取前 5 个标签 → `tag.getTopTracks`（每个标签 10 首）；
    - 仍为空 → `chart.getTopTracks`（全站榜 20 首）；
    - 兜底结果单独标记 `source=fallback`，在页面上仍按普通推荐展示。
 
