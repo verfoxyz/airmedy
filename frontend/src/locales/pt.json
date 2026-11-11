@@ -436,6 +436,7 @@
     }
   },
   "sidebar": {
+    "download": "Downloads",
     "home": "Início",
     "recently_added": "Adicionados Recentemente",
     "artists": "Artistas",
@@ -614,7 +615,8 @@
     "remove_hint": "Remove apenas desta playlist. O arquivo permanece no disco.",
     "delete_file": "Excluir arquivo",
     "file_warning": "Exclui permanentemente o arquivo de áudio do disco e o remove da biblioteca. Não pode ser desfeito.",
-    "no_local_file": "Não há arquivo local para excluir. Baixe a faixa primeiro.",
+    "remove_from_library": "Remover da biblioteca",
+    "remove_from_library_hint": "Remove a entrada e o áudio em cache. As outras faixas não são afetadas.",
     "failed": "Não foi possível excluir: {reason}"
   },
   "export_lyrics": {

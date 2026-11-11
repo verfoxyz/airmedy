@@ -436,6 +436,7 @@
     }
   },
   "sidebar": {
+    "download": "ダウンロード",
     "home": "ホーム",
     "recently_added": "最近追加された項目",
     "artists": "アーティスト",
@@ -614,7 +615,8 @@
     "remove_hint": "このプレイリストからだけ削除します。ファイルはディスクに残ります。",
     "delete_file": "ファイルを削除",
     "file_warning": "ディスク上の音声ファイルを完全に削除し、ライブラリからも削除します。元に戻すことはできません。",
-    "no_local_file": "削除できるローカルファイルがありません。先に曲をダウンロードしてください。",
+    "remove_from_library": "ライブラリから削除",
+    "remove_from_library_hint": "ライブラリの登録とキャッシュ音声を削除します。ほかの曲には影響しません。",
     "failed": "削除できませんでした: {reason}"
   },
   "export_lyrics": {

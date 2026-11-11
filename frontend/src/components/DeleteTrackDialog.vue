@@ -68,6 +68,23 @@ async function deleteFile() {
     isWorking.value = false
   }
 }
+
+// A streamed row has no file to unlink, but it does have a library row and a
+// cached audio entry. This is the only way to remove it.
+async function removeFromLibrary() {
+  const track = targetTrack.value
+  if (!track || hasLocalFile.value || isWorking.value) return
+  isWorking.value = true
+  error.value = ''
+  try {
+    await LibraryService.RemoveTrackFromLibrary(track.id)
+    close()
+  } catch (e) {
+    error.value = errorText(e)
+  } finally {
+    isWorking.value = false
+  }
+}
 </script>
 
 <template>
@@ -95,17 +112,30 @@ async function deleteFile() {
       </button>
 
       <button
+        v-if="hasLocalFile"
         data-test="delete-option-file"
         class="flex w-full items-start gap-3 rounded-xl border border-foreground/[0.06] px-4 py-3 text-left transition-colors hover:bg-destructive/10 disabled:opacity-50"
-        :disabled="isWorking || !hasLocalFile"
+        :disabled="isWorking"
         @click="deleteFile"
       >
         <Trash2 class="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
         <span class="min-w-0">
           <span class="block text-sm font-medium text-destructive">{{ t('delete_track.delete_file') }}</span>
-          <span class="mt-0.5 block text-xs text-subdued">
-            {{ hasLocalFile ? t('delete_track.file_warning') : t('delete_track.no_local_file') }}
-          </span>
+          <span class="mt-0.5 block text-xs text-subdued">{{ t('delete_track.file_warning') }}</span>
+        </span>
+      </button>
+
+      <button
+        v-else
+        data-test="delete-option-library"
+        class="flex w-full items-start gap-3 rounded-xl border border-foreground/[0.06] px-4 py-3 text-left transition-colors hover:bg-destructive/10 disabled:opacity-50"
+        :disabled="isWorking"
+        @click="removeFromLibrary"
+      >
+        <Trash2 class="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+        <span class="min-w-0">
+          <span class="block text-sm font-medium text-destructive">{{ t('delete_track.remove_from_library') }}</span>
+          <span class="mt-0.5 block text-xs text-subdued">{{ t('delete_track.remove_from_library_hint') }}</span>
         </span>
       </button>
     </div>

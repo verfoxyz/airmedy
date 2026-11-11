@@ -178,6 +178,7 @@ RemoveArtistArtwork(artistID: string): void           // clear custom artwork
 ToggleFavorite(trackID: string): boolean
 UpdateTrackMetadata(trackID: string, update: MetadataUpdate): void
 DeleteTrackFile(trackID: string): void   // removes the audio file, row, jobs, index, playlist members
+RemoveTrackFromLibrary(trackID: string): void   // streamed rows: drops the row and its cached audio
 ShowInExplorer(trackID: string): void
 // Track queries
 GetAllTracks(): TrackDTO[]
@@ -268,6 +269,16 @@ removed afterwards (a failure is logged, not fatal), then the orphaned albums/ar
 composers/genres and their unreferenced artwork are pruned (also non-fatal). `library:track-deleted`
 lets views drop the row in place, and `library:updated` makes album/artist/genre/composer
 list views reload so a now-empty entity disappears.
+
+`LibraryService.RemoveTrackFromLibrary(ctx, id)` is the streamed-row counterpart, called
+from the same dialog when the row has no local file. It refuses local rows (deleting their
+bytes must go through `DeleteTrackFile`) and, in this order: releases playback through the
+`PlaybackRemover` port (the player stops when the row is loaded and removes it from the
+queue, which also closes the stream session), drops the cache entry through
+`StreamCacheDiscarder` (a failure is logged, never fatal), then runs the same DB delete,
+index removal and orphan cleanup as `DeleteTrackFile`. Both ports are wired in `app.Module`,
+so `app/library` imports neither `app/stream` nor `app/player`; a deployment without them
+still removes the row and leaves the cache file for eviction.
 
 ## Play Count & Recently Played
 

@@ -436,6 +436,7 @@
     }
   },
   "sidebar": {
+    "download": "Downloads",
     "home": "Home",
     "recently_added": "Recently Added",
     "artists": "Artists",
@@ -614,7 +615,8 @@
     "remove_hint": "Only removes it from this playlist. The file stays on disk.",
     "delete_file": "Delete file",
     "file_warning": "Permanently deletes the audio file from disk and removes it from the library. This cannot be undone.",
-    "no_local_file": "There is no local file to delete. Download the track first.",
+    "remove_from_library": "Remove from library",
+    "remove_from_library_hint": "Removes the library entry and deletes its cached audio. Other tracks are not affected.",
     "failed": "Could not delete: {reason}"
   },
   "export_lyrics": {

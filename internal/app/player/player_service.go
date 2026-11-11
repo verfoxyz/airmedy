@@ -469,6 +469,33 @@ func (s *PlayerService) Stop() error {
 	return err
 }
 
+// RemoveFromPlayback detaches a row that has been deleted from the library:
+// playback stops when that row is loaded, and the row leaves the queue so
+// nothing can resolve it again. It is the library's window into the decoder,
+// which holds the loopback stream URL until playback is released.
+func (s *PlayerService) RemoveFromPlayback(_ context.Context, trackID string) error {
+	if strings.TrimSpace(trackID) == "" {
+		return nil
+	}
+	s.mu.RLock()
+	current := s.currentTrack
+	s.mu.RUnlock()
+	if current != nil && current.ID == trackID {
+		if err := s.Stop(); err != nil {
+			return err
+		}
+	}
+	s.queue.RemoveTrack(trackID)
+	s.mu.Lock()
+	if s.currentTrack != nil && s.currentTrack.ID == trackID {
+		s.currentTrack = nil
+	}
+	s.mu.Unlock()
+	s.emitQueue()
+	s.emitStatus()
+	return nil
+}
+
 // Next plays the next track in the queue.
 func (s *PlayerService) Next() error {
 	status := s.player.GetStatus()

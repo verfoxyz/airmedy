@@ -2010,6 +2010,56 @@ func TestStreamArtwork_IsMaterialisedOnceIntoTheTrackRow(t *testing.T) {
 	}
 }
 
+func TestRemoveFromPlayback_StopsAndDropsTheDeletedRow(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1.0}}
+	s, _ := newTestService(t, fp)
+
+	first := &domain.TrackDTO{Track: domain.Track{ID: "t1", Duration: 120}}
+	second := &domain.TrackDTO{Track: domain.Track{ID: "t2", Duration: 120}}
+	if err := s.PlayTracks([]*domain.TrackDTO{first, second}, 0); err != nil {
+		t.Fatalf("PlayTracks: %v", err)
+	}
+
+	if err := s.RemoveFromPlayback(context.Background(), "t1"); err != nil {
+		t.Fatalf("RemoveFromPlayback: %v", err)
+	}
+	if state := fp.GetStatus().PlaybackState; state != domain.PlaybackStateStopped {
+		t.Fatalf("playback state = %v, want stopped", state)
+	}
+	queue := s.GetQueue()
+	if len(queue) != 1 || queue[0].ID != "t2" {
+		t.Fatalf("queue = %+v, want only t2", queue)
+	}
+	if current := s.GetCurrentTrack(); current != nil {
+		t.Fatalf("current track = %+v, want nil after deleting the loaded row", current)
+	}
+}
+
+func TestRemoveFromPlayback_LeavesAnotherTrackPlaying(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1.0}}
+	s, _ := newTestService(t, fp)
+
+	first := &domain.TrackDTO{Track: domain.Track{ID: "t1", Duration: 120}}
+	second := &domain.TrackDTO{Track: domain.Track{ID: "t2", Duration: 120}}
+	if err := s.PlayTracks([]*domain.TrackDTO{first, second}, 0); err != nil {
+		t.Fatalf("PlayTracks: %v", err)
+	}
+
+	if err := s.RemoveFromPlayback(context.Background(), "t2"); err != nil {
+		t.Fatalf("RemoveFromPlayback: %v", err)
+	}
+	if state := fp.GetStatus().PlaybackState; state != domain.PlaybackStatePlaying {
+		t.Fatalf("playback state = %v, want playing", state)
+	}
+	queue := s.GetQueue()
+	if len(queue) != 1 || queue[0].ID != "t1" {
+		t.Fatalf("queue = %+v, want only t1", queue)
+	}
+	if current := s.GetCurrentTrack(); current == nil || current.ID != "t1" {
+		t.Fatalf("current track = %+v, want t1", current)
+	}
+}
+
 func TestPause_FlushesStreamProgress(t *testing.T) {
 	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1.0}}
 	s, _ := newTestService(t, fp)

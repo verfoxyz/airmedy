@@ -176,7 +176,12 @@ var Module = fx.Module("app",
 		},
 		fx.ParamTags(``, `optional:"true"`),
 	)),
-	fx.Invoke(func(lc fx.Lifecycle, db *sqlite.DB, search domain.SearchService, lib *library.LibraryService, playerSvc *player.PlayerService, eqSvc *eq.EQService, lastfmSvc *lastfm.LastFmService, analysisSvc *analysis.AnalysisService, settingsSvc *appsettings.SettingsService, playlistSvc *playlist.PlaylistService, pairingSvc *pairing.Service, mobileSyncSvc *mobilesync.Service, downloadSvc *download.Service, logger *slog.Logger) {
+	fx.Invoke(func(lc fx.Lifecycle, db *sqlite.DB, search domain.SearchService, lib *library.LibraryService, playerSvc *player.PlayerService, eqSvc *eq.EQService, lastfmSvc *lastfm.LastFmService, analysisSvc *analysis.AnalysisService, settingsSvc *appsettings.SettingsService, playlistSvc *playlist.PlaylistService, pairingSvc *pairing.Service, mobileSyncSvc *mobilesync.Service, downloadSvc *download.Service, cache *stream.Cache, logger *slog.Logger) {
+		// Deleting a streamed row must also drop its cached audio and release the
+		// decoder that holds the loopback URL. Wired here so app/library imports
+		// neither app/stream nor app/player.
+		lib.SetStreamCacheDiscarder(cache)
+		lib.SetPlaybackRemover(playerSvc)
 		pairingSvc.AddDeviceConnectionListener(func(deviceID string, connected bool) {
 			if connected {
 				return

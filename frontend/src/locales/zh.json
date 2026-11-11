@@ -436,6 +436,7 @@
     }
   },
   "sidebar": {
+    "download": "下载",
     "home": "首页",
     "recently_added": "最近添加",
     "artists": "艺术家",
@@ -614,7 +615,8 @@
     "remove_hint": "只从当前歌单移除，磁盘文件保留。",
     "delete_file": "删除文件",
     "file_warning": "永久删除磁盘上的音频文件并从库中移除，无法撤销。",
-    "no_local_file": "没有可删除的本地文件，请先下载。",
+    "remove_from_library": "从音乐库移除",
+    "remove_from_library_hint": "移除库记录并清掉本地缓存，不影响其他曲目。",
     "failed": "删除失败：{reason}"
   },
   "export_lyrics": {

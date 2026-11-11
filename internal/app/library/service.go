@@ -126,6 +126,8 @@ type LibraryService struct {
 	favoriteChangeListeners []func(*domain.TrackDTO)
 	analysisListeners       []func(string)
 	trackDeletedListeners   []func([]string)
+	cachedAudio             StreamCacheDiscarder
+	playbackRemover         PlaybackRemover
 	syncFinishedListeners   []func()
 	artistArtworkQueue      chan artistArtworkJob
 	pendingArtistArtwork    map[string]struct{}
@@ -267,6 +269,34 @@ func (s *LibraryService) AddTrackDeletedListener(l func([]string)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.trackDeletedListeners = append(s.trackDeletedListeners, l)
+}
+
+// StreamCacheDiscarder drops the cached audio belonging to a streamed row.
+// *stream.Cache implements it; the port keeps this package from importing
+// app/stream, and a destination without stream playback can ignore it.
+type StreamCacheDiscarder interface {
+	DiscardEntry(ctx context.Context, track *domain.TrackDTO) error
+}
+
+// PlaybackRemover detaches a row that is being deleted from the player and the
+// queue, so nothing keeps pointing at a row that no longer exists.
+type PlaybackRemover interface {
+	RemoveFromPlayback(ctx context.Context, trackID string) error
+}
+
+// SetStreamCacheDiscarder wires the stream cache a remote row's deletion must
+// clear. A nil discarder means the row is removed from the library only.
+func (s *LibraryService) SetStreamCacheDiscarder(discarder StreamCacheDiscarder) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cachedAudio = discarder
+}
+
+// SetPlaybackRemover wires the player that must release a deleted row.
+func (s *LibraryService) SetPlaybackRemover(remover PlaybackRemover) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.playbackRemover = remover
 }
 
 func (s *LibraryService) notifyTracksDeleted(ids []string) {
@@ -1759,6 +1789,78 @@ func (s *LibraryService) DeleteTrackFile(ctx context.Context, id string) error {
 		app.Event.Emit("library:updated", nil)
 	}
 	s.logger.Info("Deleted track file", "track_id", id, "path", path)
+	return nil
+}
+
+// RemoveTrackFromLibrary deletes a streamed (remote) row and its stream-cache
+// entry. There is no file to unlink, so this is the only way to get such a row
+// out of the library.
+//
+// Playback is released first: the decoder holds the loopback proxy URL, and the
+// cache refuses to discard an entry a session still owns. A local row is
+// refused on purpose — deleting its file must go through DeleteTrackFile, which
+// is the only path that removes bytes the user may want to keep.
+func (s *LibraryService) RemoveTrackFromLibrary(ctx context.Context, trackID string) error {
+	if strings.TrimSpace(trackID) == "" {
+		return fmt.Errorf("remove track: empty id")
+	}
+	track, err := s.trackRepo.GetByID(ctx, trackID)
+	if err != nil {
+		return fmt.Errorf("remove track: load %s: %w", trackID, err)
+	}
+	if track == nil {
+		return fmt.Errorf("remove track: %s not found", trackID)
+	}
+	if !track.IsRemote() {
+		return fmt.Errorf("remove track: %s has a local file; delete the file instead", trackID)
+	}
+
+	s.mu.RLock()
+	remover := s.playbackRemover
+	discarder := s.cachedAudio
+	s.mu.RUnlock()
+
+	if remover != nil {
+		if err := remover.RemoveFromPlayback(ctx, trackID); err != nil {
+			return fmt.Errorf("remove track: stop playback: %w", err)
+		}
+	}
+	if discarder != nil {
+		// A cache that cannot be cleared (file in use, row already gone) must not
+		// keep the row in the library; the user asked for it to disappear.
+		if err := discarder.DiscardEntry(ctx, track); err != nil {
+			s.logger.Warn("remove track: cannot discard the stream cache", "track_id", trackID, "error", err)
+		}
+	}
+
+	if err := s.txManager.RunInTx(ctx, func(ctx context.Context) error {
+		if err := s.trackRepo.Delete(ctx, trackID); err != nil {
+			return fmt.Errorf("delete row: %w", err)
+		}
+		if err := s.downloadJobs.DeleteByTrack(ctx, trackID); err != nil {
+			return fmt.Errorf("delete download jobs: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("remove track: %s: %w", trackID, err)
+	}
+
+	if err := s.searchService.DeleteTracksFromIndex(ctx, []string{trackID}); err != nil {
+		s.logger.Warn("Failed to remove the deleted track from the search index", "track_id", trackID, "error", err)
+	}
+
+	s.cleanupOrphanedEntities(ctx)
+	if err := s.CleanupOrphanedArtworks(ctx); err != nil {
+		s.logger.Warn("Failed to cleanup orphaned artworks", "error", err)
+	}
+
+	s.notifyTracksDeleted([]string{trackID})
+	if app := application.Get(); app != nil && app.Event != nil {
+		app.Event.Emit("library:track-deleted", trackID)
+		app.Event.Emit("library:updated", nil)
+	}
+	s.logger.Info("Removed track from library", "track_id", trackID,
+		"provider", track.Provider, "external_id", track.ExternalID)
 	return nil
 }
 

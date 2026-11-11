@@ -436,6 +436,7 @@
     }
   },
   "sidebar": {
+    "download": "Downloads",
     "home": "Startseite",
     "recently_added": "Zuletzt hinzugefügt",
     "artists": "Künstler",
@@ -614,7 +615,8 @@
     "remove_hint": "Entfernt ihn nur aus dieser Playlist. Die Datei bleibt auf dem Datenträger.",
     "delete_file": "Datei löschen",
     "file_warning": "Löscht die Audiodatei dauerhaft vom Datenträger und entfernt sie aus der Bibliothek. Das kann nicht rückgängig gemacht werden.",
-    "no_local_file": "Es gibt keine lokale Datei zum Löschen. Lade den Titel zuerst herunter.",
+    "remove_from_library": "Aus der Bibliothek entfernen",
+    "remove_from_library_hint": "Entfernt den Eintrag und die zwischengespeicherte Audiodatei. Andere Titel sind nicht betroffen.",
     "failed": "Löschen fehlgeschlagen: {reason}"
   },
   "export_lyrics": {

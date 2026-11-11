@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
-import { Search, Settings, Sparkles } from '@lucide/vue'
+import { Download, Search, Settings, Sparkles } from '@lucide/vue'
 import { useI18n } from 'vue-i18n'
 import SidebarNav from './SidebarNav.vue'
 import SidebarPlaylists from './SidebarPlaylists.vue'
@@ -8,11 +8,13 @@ import SidebarItem from './SidebarItem.vue'
 import { useKeyboardShortcut } from '@/composables/useKeyboardShortcut'
 import { useDeviceStore } from '@/stores/device'
 import { useAppStore } from '@/stores/app'
+import { useDownloadStore } from '@/stores/download'
 
 const { t } = useI18n()
 const router = useRouter()
 const deviceStore = useDeviceStore()
 const appStore = useAppStore()
+const downloadStore = useDownloadStore()
 
 useKeyboardShortcut(
   {
@@ -60,6 +62,20 @@ function openUpdateDialog() {
         <Sparkles class="w-4 h-4 animate-pulse" />
         <span class="text-sm font-medium">{{ t('app.update_available') }}</span>
       </button>
+    </div>
+
+    <!-- Downloads -->
+    <div class="px-3 py-2">
+      <SidebarItem to="/downloads" :icon="Download" :label="t('sidebar.download')">
+        <template #actions>
+          <span
+            v-if="downloadStore.activeCount > 0"
+            class="h-1.5 w-1.5 rounded-full bg-primary"
+            aria-hidden="true"
+            data-test="sidebar-downloads-dot"
+          />
+        </template>
+      </SidebarItem>
     </div>
 
     <!-- Settings section -->

@@ -360,15 +360,15 @@ the tint reflects the viewed entity, not the playing track: `DetailHero.vue`
 ## Glass-Morphism Surfaces
 
 Glass is for **floating surfaces only** — context menus, popovers, drawers, modals,
-the download-queue panel, home analysis cards. Fixed chrome (`Sidebar`,
+home analysis cards. Fixed chrome (`Sidebar`,
 `PlayerFooter`, `LyricsDrawer`, `QueueDrawer`) is opaque `bg-background`, split by
 `border-foreground/[0.06]` hairlines: a translucent panel behind permanently moving
 content costs GPU compositing on every repaint and reads as noise.
 
 ```css
-/* Menus and popovers — ContextMenu, FilterDropdown, DownloadQueuePanel */
+/* Menus and popovers — ContextMenu, FilterDropdown */
 bg-glass-elevated + backdrop-blur-xl + ring-1 ring-border-glass + transform-gpu isolate
-/* Full-height side panel and modal sheet — DownloadQueuePanel, Modal */
+/* Modal sheet */
 bg-glass / bg-glass-modal + backdrop-blur-3xl
 ```
 

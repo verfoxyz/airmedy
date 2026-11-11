@@ -304,6 +304,12 @@ func (s *LibraryService) DeleteTrackFile(trackID string) error {
 	return s.libService.DeleteTrackFile(context.Background(), trackID)
 }
 
+// RemoveTrackFromLibrary deletes a streamed row and its stream-cache entry.
+// There is no file to unlink; DeleteTrackFile refuses these rows on purpose.
+func (s *LibraryService) RemoveTrackFromLibrary(trackID string) error {
+	return s.libService.RemoveTrackFromLibrary(context.Background(), trackID)
+}
+
 func (s *LibraryService) UpdateTrackMetadata(trackID string, update domain.MetadataUpdate) error {
 	ctx := context.Background()
 	current := s.playerService.GetCurrentTrack()

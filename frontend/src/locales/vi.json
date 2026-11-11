@@ -436,6 +436,7 @@
     }
   },
   "sidebar": {
+    "download": "Tải xuống",
     "home": "Trang chủ",
     "recently_added": "Thêm gần đây",
     "artists": "Nghệ sĩ",
@@ -614,7 +615,8 @@
     "remove_hint": "Chỉ xóa khỏi danh sách phát này. Tệp vẫn còn trên đĩa.",
     "delete_file": "Xóa tệp",
     "file_warning": "Xóa vĩnh viễn tệp âm thanh trên đĩa và xóa khỏi thư viện. Không thể hoàn tác.",
-    "no_local_file": "Không có tệp cục bộ để xóa. Hãy tải bài hát trước.",
+    "remove_from_library": "Xóa khỏi thư viện",
+    "remove_from_library_hint": "Xóa mục trong thư viện và âm thanh đã lưu đệm. Các bài khác không bị ảnh hưởng.",
     "failed": "Không thể xóa: {reason}"
   },
   "export_lyrics": {
