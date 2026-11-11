@@ -45,4 +45,8 @@ type PromotionTaskRepository interface {
 	MarkRunning(ctx context.Context, id string, at time.Time) error
 	// MarkFinished moves the row to done or failed.
 	MarkFinished(ctx context.Context, id, state, message string, at time.Time) error
+	// ActivePromotions reports which of the given identities have a queued or
+	// running promotion. The search-row resolver merges this with active
+	// downloads so the UI shows one task state.
+	ActivePromotions(ctx context.Context, identities []CatalogIdentity) (map[CatalogIdentity]bool, error)
 }

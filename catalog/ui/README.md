@@ -140,7 +140,8 @@ store does search, paging and saving): a **multi-select** source bar (`全部` p
 toggle per source the plugin reported through `describe`; no selection = all sources),
 rows showing **title**, **artist**, and one **source badge per contributing provider**
 (a cross-source duplicate is one row with several badges), a state chip
-(`in_library` / `saved` / `downloading` / `failed`), an inline chip per failed
+(`in_library` / `downloading` / `failed`; a promotion reads as `downloading` and a
+`saved` row renders no chip), an inline chip per failed
 source, a 5-row first screen, and a "load more" that adds 10 merged rows each time
 (capped at 100). The source selection persists across restarts
 in `localStorage` (`airmedy.catalog.sources`); the candidate drawer's selection (see
@@ -150,9 +151,9 @@ selectable before the first keyword and reflect a plugin enabled/disabled in
 settings; the call does not run a search, and a failure falls back to the sources
 reported by the next search response.
 
-Per-row actions (`收藏`, `加入歌单`) both register the track and start its download
-through `CatalogService.SaveCatalogResult`; the download setting does not gate
-them. `播放` is separate from saving: `CatalogService.PrepareCatalogPlayback`
+Per-row actions (`收藏`, `加入歌单`) both register the track and hand it to the
+download coordinator, which promotes a cached stream copy or queues a download; the
+playlist switch only gates the automatic path. `播放` is separate from saving: `CatalogService.PrepareCatalogPlayback`
 registers the row without enqueuing a download and returns its track id, which
 the player then streams through the cache (an imported file plays from disk). A
 downloadable row is playable before it is saved, and an `in_library` row keeps

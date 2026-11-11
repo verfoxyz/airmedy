@@ -134,6 +134,43 @@ func TestCatalogRowStates_RegisteredButIdle(t *testing.T) {
 	assert.Equal(t, domain.CatalogRowStateSaved, states[domain.CatalogIdentity{Provider: "wy", ExternalID: "idle"}])
 }
 
+// TestCatalogRowStates_ActivePromotionReadsAsDownloading: the search row no
+// longer distinguishes a promotion from a download. A queued promotion is a
+// task, so it reports the same state as a queued job.
+func TestCatalogRowStates_ActivePromotionReadsAsDownloading(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	track := h.seedRemote(t, "promoting")
+	_, err := h.promotions.EnsureQueued(ctx, &domain.PromotionTask{
+		TrackID: track.ID, Provider: "wy", ExternalID: "promoting",
+	})
+	require.NoError(t, err)
+
+	states, err := h.svc.CatalogRowStates(ctx, []domain.CatalogIdentity{{Provider: "wy", ExternalID: "promoting"}})
+	require.NoError(t, err)
+	assert.Equal(t, domain.CatalogRowStateDownloading, states[domain.CatalogIdentity{Provider: "wy", ExternalID: "promoting"}])
+}
+
+// TestCatalogRowStates_FinishedPromotionLeavesSaved: history is not work. Once
+// the promotion is done the cache worker has moved the audio (or the merge is
+// about to), and an idle registered row reads as metadata-only.
+func TestCatalogRowStates_FinishedPromotionLeavesSaved(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	track := h.seedRemote(t, "promoted")
+	id, err := h.promotions.EnsureQueued(ctx, &domain.PromotionTask{
+		TrackID: track.ID, Provider: "wy", ExternalID: "promoted",
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.promotions.MarkFinished(ctx, id, domain.PromotionStateDone, "", time.Now()))
+
+	states, err := h.svc.CatalogRowStates(ctx, []domain.CatalogIdentity{{Provider: "wy", ExternalID: "promoted"}})
+	require.NoError(t, err)
+	assert.Equal(t, domain.CatalogRowStateSaved, states[domain.CatalogIdentity{Provider: "wy", ExternalID: "promoted"}])
+}
+
 func TestCatalogRowStates_EmptyPageIsFree(t *testing.T) {
 	h := newHarness(t)
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"airmedy/internal/domain"
@@ -81,4 +82,56 @@ func (r *promotionTaskRepository) MarkFinished(ctx context.Context, id, state, m
 		return fmt.Errorf("promotion task: mark %s %s: %w", state, id, err)
 	}
 	return nil
+}
+
+// ActivePromotions answers the search-row resolver for a whole page. The set of
+// queued/running rows is small (only unfinished work), so one query reads it and
+// the caller's identities are matched in memory instead of building a large
+// tuple IN list.
+func (r *promotionTaskRepository) ActivePromotions(
+	ctx context.Context, identities []domain.CatalogIdentity,
+) (map[domain.CatalogIdentity]bool, error) {
+	active := make(map[domain.CatalogIdentity]bool, len(identities))
+	if len(identities) == 0 {
+		return active, nil
+	}
+	wanted := make(map[domain.CatalogIdentity]struct{}, len(identities))
+	for _, identity := range identities {
+		provider := domain.NormalizeProvider(identity.Provider)
+		externalID := strings.TrimSpace(identity.ExternalID)
+		if provider == "" || externalID == "" {
+			continue
+		}
+		wanted[domain.CatalogIdentity{Provider: provider, ExternalID: externalID}] = struct{}{}
+	}
+	if len(wanted) == 0 {
+		return active, nil
+	}
+
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT provider, external_id FROM promotion_tasks WHERE state IN (?, ?)`,
+		domain.PromotionStateQueued, domain.PromotionStateRunning,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("promotion task: list active: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var provider, externalID string
+		if err := rows.Scan(&provider, &externalID); err != nil {
+			return nil, fmt.Errorf("promotion task: read active: %w", err)
+		}
+		key := domain.CatalogIdentity{
+			Provider:   domain.NormalizeProvider(provider),
+			ExternalID: strings.TrimSpace(externalID),
+		}
+		if _, ok := wanted[key]; ok {
+			active[key] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("promotion task: scan active: %w", err)
+	}
+	return active, nil
 }

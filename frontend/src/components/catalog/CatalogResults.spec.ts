@@ -516,11 +516,19 @@ describe('CatalogResults', () => {
     wrapper.unmount()
   })
 
-  it('shows the saved state for a metadata-only save and keeps the actions', () => {
+  it('renders a promotion task with the same chip as a download', () => {
+    const wrapper = mountResults({ sources: SOURCES, rows: [row({ state: 'promoting' })] })
+
+    expect(wrapper.find('[data-test="catalog-state"]').text()).toBe('cloud_search.downloading')
+    wrapper.unmount()
+  })
+
+  it('renders no chip for a metadata-only save and keeps the actions', () => {
     const wrapper = mountResults({ sources: SOURCES, rows: [row({ state: 'saved' })] })
 
-    expect(wrapper.find('[data-test="catalog-state"]').text()).toBe('cloud_search.saved')
-    // Saved is not downloaded: the row must still offer the download actions.
+    // "saved" means registered with no work in flight; the row must not claim a
+    // task exists, and it still offers the download actions.
+    expect(wrapper.find('[data-test="catalog-state"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="catalog-favorite"]').exists()).toBe(true)
     wrapper.unmount()
   })

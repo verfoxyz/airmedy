@@ -235,11 +235,14 @@ package nor the playlist or library services.
   the relationship; the file stays in the library. There is no implicit deletion.
 
 `CatalogRowStates` answers what the search row should show, for a whole page in one
-call: `in_library` (audio on disk), `downloading` (queued/active job), `failed` (the
-newest job failed permanently), `saved` (registered but no job), or no state
-(never registered or canceled with no replacement). It reads the job list once and
-looks each identity up by its indexed `(provider, external_id)`, so a 50-row page
-costs one queue read plus 50 index hits. `CatalogRowStates` is also exposed to the
+call: `in_library` (audio on disk), `downloading` (a queued/active download **or**
+promotion), `failed` (the newest download job failed permanently), `saved`
+(registered with no work in flight), or no state (never registered or canceled with
+no replacement). Promotions are read in one extra batch call
+(`PromotionTaskRepository.ActivePromotions`), because the search row does not
+distinguish the two task kinds. It reads the job list once and looks each identity
+up by its indexed `(provider, external_id)`, so a 50-row page costs two small
+queue/promotion reads plus 50 index hits. `CatalogRowStates` is also exposed to the
 UI as `CatalogService.GetCatalogRowStates`: after `download:done` the remote row is
 already merged away, so the page re-reads the badge by identity instead of by the
 track id the event carries.

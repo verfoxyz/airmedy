@@ -339,11 +339,13 @@ function rowSources(row: CatalogRowDTO): string[] {
 }
 
 /** stateKey maps a backend row state onto a chip, or null for "nothing yet". */
-function stateKey(row: CatalogRowDTO): 'in_library' | 'saved' | 'downloading' | 'failed' | null {
+function stateKey(row: CatalogRowDTO): 'in_library' | 'downloading' | 'failed' | null {
   if (row.state === 'in_library') return 'in_library'
-  if (row.state === 'saved') return 'saved'
-  if (row.state === 'downloading') return 'downloading'
+  // A download and a promotion are both "a task was created"; the backend keeps
+  // the two apart internally but the search row does not show which one.
+  if (row.state === 'downloading' || row.state === 'promoting') return 'downloading'
   if (row.state === 'failed') return 'failed'
+  // "saved" is a registered row with no work in flight: no chip at all.
   return null
 }
 
@@ -512,7 +514,7 @@ defineExpose({
           {{ Math.floor(row.duration / 60) }}:{{ String(row.duration % 60).padStart(2, '0') }}
         </span>
 
-        <!-- Row state: in library / downloading / failed. -->
+        <!-- Row state: in library / task created / failed. -->
         <span
           v-if="stateKey(row) === 'in_library'"
           data-test="catalog-state"
@@ -520,14 +522,6 @@ defineExpose({
         >
           <Check class="h-3.5 w-3.5" />
           {{ $t('cloud_search.in_library') }}
-        </span>
-        <span
-          v-else-if="stateKey(row) === 'saved'"
-          data-test="catalog-state"
-          class="inline-flex items-center gap-1 rounded-full bg-foreground/[0.06] px-2.5 py-1 text-xs text-dim"
-        >
-          <Check class="h-3.5 w-3.5" />
-          {{ $t('cloud_search.saved') }}
         </span>
         <span
           v-else-if="stateKey(row) === 'downloading'"

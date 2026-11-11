@@ -228,7 +228,8 @@ type CatalogSearchPage struct {
 const (
 	// CatalogRowStateInLibrary means the audio is on disk and playable.
 	CatalogRowStateInLibrary = "in_library"
-	// CatalogRowStateDownloading means a queued or active download job exists.
+	// CatalogRowStateDownloading means a queued or active download job or
+	// promotion exists. The search row shows one "task created" chip for both.
 	CatalogRowStateDownloading = "downloading"
 	// CatalogRowStateFailed means the last download attempt failed and no job is
 	// active. The row offers a retry instead of a fresh enqueue.

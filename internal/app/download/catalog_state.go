@@ -53,6 +53,19 @@ func (s *Service) CatalogRowStates(
 	}
 
 	var errs []error
+	// A promotion is a task like a download, and the search row does not
+	// distinguish them. One batch lookup keeps the page at a constant query
+	// count.
+	activePromotions := map[domain.CatalogIdentity]bool{}
+	if s.promotionTask != nil {
+		promotions, promoErr := s.promotionTask.ActivePromotions(ctx, identities)
+		if promoErr != nil {
+			errs = append(errs, fmt.Errorf("catalog row states: active promotions: %w", promoErr))
+		} else {
+			activePromotions = promotions
+		}
+	}
+
 	for _, identity := range identities {
 		provider := domain.NormalizeProvider(identity.Provider)
 		externalID := strings.TrimSpace(identity.ExternalID)
@@ -80,6 +93,8 @@ func (s *Service) CatalogRowStates(
 		job := latest[track.ID]
 		switch {
 		case job != nil && domain.IsActiveState(job.State):
+			states[key] = domain.CatalogRowStateDownloading
+		case activePromotions[key]:
 			states[key] = domain.CatalogRowStateDownloading
 		case job != nil && job.State == domain.DownloadStateFailed:
 			states[key] = domain.CatalogRowStateFailed

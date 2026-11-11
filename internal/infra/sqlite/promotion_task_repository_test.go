@@ -77,3 +77,48 @@ func TestPromotionTaskRepository_TransitionsOneActiveRow(t *testing.T) {
 		t.Fatal("a finished row must not be reused as the active one")
 	}
 }
+
+func TestPromotionTaskRepository_ActivePromotionsReportsOnlyUnfinished(t *testing.T) {
+	repo := newPromotionTaskRepo(t)
+	ctx := context.Background()
+
+	if _, err := repo.EnsureQueued(ctx, &domain.PromotionTask{Provider: "wy", ExternalID: "queued"}); err != nil {
+		t.Fatalf("EnsureQueued queued: %v", err)
+	}
+	runningID, err := repo.EnsureQueued(ctx, &domain.PromotionTask{Provider: "wy", ExternalID: "running"})
+	if err != nil {
+		t.Fatalf("EnsureQueued running: %v", err)
+	}
+	if err := repo.MarkRunning(ctx, runningID, time.Now()); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+	doneID, err := repo.EnsureQueued(ctx, &domain.PromotionTask{Provider: "wy", ExternalID: "done"})
+	if err != nil {
+		t.Fatalf("EnsureQueued done: %v", err)
+	}
+	if err := repo.MarkFinished(ctx, doneID, domain.PromotionStateDone, "", time.Now()); err != nil {
+		t.Fatalf("MarkFinished: %v", err)
+	}
+
+	active, err := repo.ActivePromotions(ctx, []domain.CatalogIdentity{
+		{Provider: "WY", ExternalID: "queued"},
+		{Provider: "wy", ExternalID: "running"},
+		{Provider: "wy", ExternalID: "done"},
+		{Provider: "wy", ExternalID: "unrelated"},
+	})
+	if err != nil {
+		t.Fatalf("ActivePromotions: %v", err)
+	}
+	if !active[domain.CatalogIdentity{Provider: "wy", ExternalID: "queued"}] {
+		t.Fatal("a queued promotion must be active")
+	}
+	if !active[domain.CatalogIdentity{Provider: "wy", ExternalID: "running"}] {
+		t.Fatal("a running promotion must be active")
+	}
+	if active[domain.CatalogIdentity{Provider: "wy", ExternalID: "done"}] {
+		t.Fatal("a finished promotion is history, not active work")
+	}
+	if active[domain.CatalogIdentity{Provider: "wy", ExternalID: "unrelated"}] {
+		t.Fatal("an identity with no promotion must not be reported")
+	}
+}
