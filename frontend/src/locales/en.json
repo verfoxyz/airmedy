@@ -824,11 +824,13 @@
   },
   "tasks": {
     "title": "Downloads & Tasks",
+    "tab_all": "All",
     "tab_active": "In progress",
     "tab_done": "Completed",
     "tab_failed": "Errors",
     "kind_download": "Download",
     "kind_promote": "Promotion",
+    "empty_all": "No task records yet",
     "empty_active": "No tasks in progress",
     "empty_done": "No completed tasks yet",
     "empty_failed": "No failed tasks",

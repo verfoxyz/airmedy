@@ -824,11 +824,13 @@
   },
   "tasks": {
     "title": "Download e attività",
+    "tab_all": "Tutte",
     "tab_active": "In corso",
     "tab_done": "Completate",
     "tab_failed": "Errori",
     "kind_download": "Download",
     "kind_promote": "Promozione",
+    "empty_all": "Nessuna attività registrata",
     "empty_active": "Nessuna attività in corso",
     "empty_done": "Nessuna attività completata",
     "empty_failed": "Nessuna attività in errore",

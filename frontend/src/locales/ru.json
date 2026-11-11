@@ -824,11 +824,13 @@
   },
   "tasks": {
     "title": "Загрузки и задачи",
+    "tab_all": "Все",
     "tab_active": "В процессе",
     "tab_done": "Завершено",
     "tab_failed": "Ошибки",
     "kind_download": "Загрузка",
     "kind_promote": "Повышение",
+    "empty_all": "Задач пока нет",
     "empty_active": "Нет задач в процессе",
     "empty_done": "Завершённых задач пока нет",
     "empty_failed": "Задач с ошибкой нет",

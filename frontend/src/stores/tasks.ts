@@ -16,9 +16,10 @@ export interface TaskRunView extends DownloadJobView {
   createdAt: string
 }
 
-export type TaskTab = 'active' | 'done' | 'failed'
+export type TaskTab = 'all' | 'active' | 'done' | 'failed'
 
 const TAB_STATE: Record<TaskTab, (state: DownloadJobState) => boolean> = {
+  all: () => true,
   active: state => state === 'active',
   done: state => state === 'done',
   failed: state => state === 'failed' || state === 'canceled',
@@ -50,12 +51,14 @@ export const useTasksStore = defineStore('tasks', () => {
   let _hydrating: Promise<void> | null = null
 
   const byTab = computed<Record<TaskTab, TaskRunView[]>>(() => ({
+    all: tasks.value,
     active: tasks.value.filter(task => TAB_STATE.active(task.state)),
     done: tasks.value.filter(task => TAB_STATE.done(task.state)),
     failed: tasks.value.filter(task => TAB_STATE.failed(task.state)),
   }))
 
   const counts = computed(() => ({
+    all: byTab.value.all.length,
     active: byTab.value.active.length,
     done: byTab.value.done.length,
     failed: byTab.value.failed.length,

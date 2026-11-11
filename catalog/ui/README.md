@@ -189,9 +189,10 @@ Page-level failures travel as machine kinds in `error_kind` (`no_sources`,
 ## Downloads & Tasks Page
 
 `views/DownloadsView.vue` reads the `tasks` store (`stores/tasks.ts`), which loads
-`DownloadService.ListTasks()` — downloads and promotions merged newest first. Three
-tabs show counts and only their own rows: **in progress** (`active`), **completed**
-(`done`) and **errors** (`failed`/`canceled`). Every row carries a download/promotion
+`DownloadService.ListTasks()` — downloads and promotions merged newest first. Four
+tabs show counts and only their own rows: **all** (the default, every run once),
+**in progress** (`active`), **completed** (`done`) and **errors**
+(`failed`/`canceled`). Every row carries a download/promotion
 kind badge; only download rows offer cancel or retry, and a finished promotion shows
 its quality or error instead of a progress bar.
 

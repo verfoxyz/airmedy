@@ -11,11 +11,12 @@ import { useTasksStore, type TaskTab } from '../stores/tasks'
 const { t } = useI18n()
 const tasksStore = useTasksStore()
 
-const activeTab = ref<TaskTab>('active')
+const activeTab = ref<TaskTab>('all')
 const clearOpen = ref(false)
 const busyJobIds = ref<Set<string>>(new Set())
 
 const tabs = computed(() => [
+  { id: 'all' as TaskTab, label: t('tasks.tab_all'), count: tasksStore.counts.all },
   { id: 'active' as TaskTab, label: t('tasks.tab_active'), count: tasksStore.counts.active },
   { id: 'done' as TaskTab, label: t('tasks.tab_done'), count: tasksStore.counts.done },
   { id: 'failed' as TaskTab, label: t('tasks.tab_failed'), count: tasksStore.counts.failed },

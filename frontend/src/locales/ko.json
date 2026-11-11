@@ -824,11 +824,13 @@
   },
   "tasks": {
     "title": "다운로드 및 작업",
+    "tab_all": "전체",
     "tab_active": "진행 중",
     "tab_done": "완료됨",
     "tab_failed": "오류",
     "kind_download": "다운로드",
     "kind_promote": "승격",
+    "empty_all": "아직 작업 기록이 없습니다",
     "empty_active": "진행 중인 작업이 없습니다",
     "empty_done": "완료된 작업이 없습니다",
     "empty_failed": "오류가 발생한 작업이 없습니다",

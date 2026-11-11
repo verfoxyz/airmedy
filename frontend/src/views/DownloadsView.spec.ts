@@ -77,6 +77,7 @@ describe('DownloadsView', () => {
 
     expect(DownloadService.ListTasks).toHaveBeenCalled()
     expect(wrapper.get('[data-test="view-header"]').text()).toBe('tasks.title')
+    expect(wrapper.find('[data-test="tasks-tab-all"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="tasks-tab-active"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="tasks-list"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('tasks.kind_download')
@@ -88,14 +89,14 @@ describe('DownloadsView', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-test="tasks-empty"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain('tasks.empty_active')
+    expect(wrapper.text()).toContain('tasks.empty_all')
 
     await wrapper.get('[data-test="tasks-tab-done"]').trigger('click')
     expect(wrapper.text()).toContain('tasks.empty_done')
     wrapper.unmount()
   })
 
-  it('groups rows by tab and shows a count on each tab', async () => {
+  it('opens on the all tab and groups rows by the other tabs', async () => {
     vi.mocked(DownloadService.ListTasks).mockResolvedValue([
       task({ id: 'a', state: 'active' }),
       task({ id: 'd', state: 'done' }),
@@ -104,6 +105,12 @@ describe('DownloadsView', () => {
 
     const wrapper = mountView()
     await flushPromises()
+
+    // "All" is the default and holds every run exactly once.
+    expect(wrapper.get('[data-test="tasks-tab-all"]').text()).toContain('3')
+    expect(wrapper.find('[data-job-id="a"]').exists()).toBe(true)
+    expect(wrapper.find('[data-job-id="d"]').exists()).toBe(true)
+    expect(wrapper.find('[data-job-id="f"]').exists()).toBe(true)
 
     expect(wrapper.get('[data-test="tasks-tab-active"]').text()).toContain('1')
     expect(wrapper.get('[data-test="tasks-tab-done"]').text()).toContain('1')

@@ -824,11 +824,13 @@
   },
   "tasks": {
     "title": "Descargas y tareas",
+    "tab_all": "Todas",
     "tab_active": "En curso",
     "tab_done": "Completadas",
     "tab_failed": "Errores",
     "kind_download": "Descarga",
     "kind_promote": "Promoción",
+    "empty_all": "Aún no hay tareas",
     "empty_active": "No hay tareas en curso",
     "empty_done": "Aún no hay tareas completadas",
     "empty_failed": "No hay tareas con error",

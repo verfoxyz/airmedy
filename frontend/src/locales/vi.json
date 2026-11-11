@@ -824,11 +824,13 @@
   },
   "tasks": {
     "title": "Tải xuống & tác vụ",
+    "tab_all": "Tất cả",
     "tab_active": "Đang thực hiện",
     "tab_done": "Đã hoàn thành",
     "tab_failed": "Lỗi",
     "kind_download": "Tải xuống",
     "kind_promote": "Nâng cấp",
+    "empty_all": "Chưa có tác vụ nào",
     "empty_active": "Không có tác vụ đang thực hiện",
     "empty_done": "Chưa có tác vụ hoàn thành",
     "empty_failed": "Không có tác vụ lỗi",

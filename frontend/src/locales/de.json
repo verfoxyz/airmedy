@@ -824,11 +824,13 @@
   },
   "tasks": {
     "title": "Downloads & Aufgaben",
+    "tab_all": "Alle",
     "tab_active": "In Bearbeitung",
     "tab_done": "Abgeschlossen",
     "tab_failed": "Fehler",
     "kind_download": "Download",
     "kind_promote": "Übernahme",
+    "empty_all": "Noch keine Aufgaben",
     "empty_active": "Keine laufenden Aufgaben",
     "empty_done": "Noch keine abgeschlossenen Aufgaben",
     "empty_failed": "Keine fehlgeschlagenen Aufgaben",

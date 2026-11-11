@@ -824,11 +824,13 @@
   },
   "tasks": {
     "title": "ダウンロードとタスク",
+    "tab_all": "すべて",
     "tab_active": "進行中",
     "tab_done": "完了",
     "tab_failed": "エラー",
     "kind_download": "ダウンロード",
     "kind_promote": "昇格",
+    "empty_all": "タスクはまだありません",
     "empty_active": "進行中のタスクはありません",
     "empty_done": "完了したタスクはまだありません",
     "empty_failed": "エラーのあるタスクはありません",

@@ -824,11 +824,13 @@
   },
   "tasks": {
     "title": "下载/任务",
+    "tab_all": "全部",
     "tab_active": "正在进行",
     "tab_done": "已完成",
     "tab_failed": "出错",
     "kind_download": "下载",
     "kind_promote": "提升",
+    "empty_all": "还没有任务记录",
     "empty_active": "当前没有正在进行的任务",
     "empty_done": "还没有已完成的任务",
     "empty_failed": "没有出错的任务",
