@@ -160,9 +160,9 @@ func (f *fakeStreamCacheRepo) get(t *testing.T, key string) *domain.StreamCacheE
 
 // fakeCoverPinner records pin/unpin calls by remote identity.
 type fakeCoverPinner struct {
-	mu     sync.Mutex
-	pins   map[string]int
-	unpins map[string]int
+	mu      sync.Mutex
+	pins    map[string]int
+	unpins  map[string]int
 }
 
 func newFakeCoverPinner() *fakeCoverPinner {

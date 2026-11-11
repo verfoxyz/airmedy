@@ -130,16 +130,16 @@ type stubSettings struct {
 
 // stubCachedAudio stands in for the stream cache's promotion surface.
 type stubCachedAudio struct {
-	mu         sync.Mutex
-	path       string
-	quality    string
-	complete   bool
-	found      bool
-	infoErr    error
-	ensureErr  error
-	ensureWait <-chan error
-	marked     int
-	discarded  int
+	mu          sync.Mutex
+	path        string
+	quality     string
+	complete    bool
+	found       bool
+	infoErr     error
+	ensureErr   error
+	ensureWait  <-chan error
+	marked      int
+	discarded   int
 }
 
 func (c *stubCachedAudio) CachedFileInfo(context.Context, *domain.TrackDTO) (string, string, bool, bool, error) {
