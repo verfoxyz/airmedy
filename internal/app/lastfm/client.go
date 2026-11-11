@@ -568,7 +568,10 @@ type lastFmImage struct {
 }
 
 type lastFmArtistRef struct {
+	// Last.fm uses two shapes: recent tracks spell the artist as "#text",
+	// while top/similar tracks use "name". Both must be accepted.
 	Text string `json:"#text"`
+	Name string `json:"name"`
 	MBID string `json:"mbid"`
 }
 
@@ -586,8 +589,12 @@ type lastFmTrackWire struct {
 }
 
 func (w lastFmTrackWire) toTrack() LastFmTrack {
+	artist := strings.TrimSpace(w.Artist.Name)
+	if artist == "" {
+		artist = strings.TrimSpace(w.Artist.Text)
+	}
 	return LastFmTrack{
-		Artist:    strings.TrimSpace(w.Artist.Text),
+		Artist:    artist,
 		Title:     strings.TrimSpace(w.Name),
 		Album:     strings.TrimSpace(w.Album.Text),
 		ImageURL:  largestImage(w.Image),

@@ -146,3 +146,70 @@ func TestParseTagListDropsEmptyNames(t *testing.T) {
 		t.Fatalf("first tag = %+v", tags[0])
 	}
 }
+
+// TestParseTopTracksArtistNameShape covers the real user.getTopTracks response:
+// its artist object uses "name", not the recent-tracks "#text".
+func TestParseTopTracksArtistNameShape(t *testing.T) {
+	body := []byte(`{"toptracks":{"track":[` +
+		`{"name":"新·与天齐","artist":{"name":"指尖笑","mbid":"69a5aa40"},"image":[],"duration":"231"},` +
+		`{"name":"Grin","artist":{"name":"Hyun","mbid":""},"image":[],"duration":"180"}` +
+		`],"@attr":{"page":"1"}}}`)
+
+	var response struct {
+		TopTracks struct {
+			Track flexList[lastFmTrackWire] `json:"track"`
+		} `json:"toptracks"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	tracks := parseTrackList(response.TopTracks.Track)
+	if len(tracks) != 2 {
+		t.Fatalf("tracks = %d, want both top tracks", len(tracks))
+	}
+	if tracks[0].Artist != "指尖笑" || tracks[0].Title != "新·与天齐" {
+		t.Fatalf("first track = %+v, want the artist from the name field", tracks[0])
+	}
+}
+
+// TestParseRecentTracksArtistTextShape keeps the other accepted shape working.
+func TestParseRecentTracksArtistTextShape(t *testing.T) {
+	body := []byte(`{"recenttracks":{"track":[` +
+		`{"name":"Song","artist":{"#text":"Artist","mbid":""},"image":[],"duration":"200"}` +
+		`]}}`)
+
+	var response struct {
+		RecentTracks struct {
+			Track flexList[lastFmTrackWire] `json:"track"`
+		} `json:"recenttracks"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	tracks := parseTrackList(response.RecentTracks.Track)
+	if len(tracks) != 1 || tracks[0].Artist != "Artist" {
+		t.Fatalf("tracks = %+v, want the #text artist", tracks)
+	}
+}
+
+func TestParseTrackArtistNameWinsOverText(t *testing.T) {
+	body := []byte(`{"name":"Song","artist":{"name":"Preferred","#text":"Fallback"},"duration":"1"}`)
+
+	var wire lastFmTrackWire
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := wire.toTrack().Artist; got != "Preferred" {
+		t.Fatalf("artist = %q, want the name field", got)
+	}
+}
+
+func TestParseTrackDropsMissingArtist(t *testing.T) {
+	tracks := parseTrackList(flexList[lastFmTrackWire]{
+		{Name: "No Artist"},
+		{Name: "Valid", Artist: lastFmArtistRef{Name: "Artist"}},
+	})
+	if len(tracks) != 1 || tracks[0].Title != "Valid" {
+		t.Fatalf("tracks = %+v, want the artist-less row filtered", tracks)
+	}
+}
