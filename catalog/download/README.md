@@ -288,9 +288,11 @@ page reloads.
 `domain.TaskRun` list: `kind` (`download`/`promote`), `state`
 (`active`/`done`/`failed`/`canceled`), track, title/artist, quality, error and
 timestamps, newest first. Download rows resolve titles with one batched track lookup;
-promotions carry their request-time snapshot, so a later rename does not backfill
-history. The page groups rows into in-progress / completed / errors and labels the
-kind.
+when the merge has already deleted that row, the title and artist are recovered from
+the finished file name using the current `download_naming_order` (`<title> - <artist>`
+or the reverse; a name without the separator is the title). If nothing resolves, the
+row falls back to its track id. Promotions use their request-time snapshot. The page
+groups rows into in-progress / completed / errors and labels the kind.
 
 `ClearTaskHistory()` deletes terminal rows from both tables; queued/active work is
 never touched. Each table keeps at most 500 finished rows (trimmed after every

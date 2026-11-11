@@ -41,6 +41,8 @@ const canRetry = computed(() => !isPromote.value && (isFailed.value || isCancele
 /** Title, then the id, then a fallback: a deleted track must not blank the row. */
 const title = computed(() => props.job.title || props.job.trackId || t('download.unknown_track'))
 const artist = computed(() => props.job.artist)
+/** The id is a secondary label; showing it twice when it is the title is noise. */
+const showTrackId = computed(() => !!props.job.trackId && title.value !== props.job.trackId)
 
 const percent = computed(() => Math.min(100, Math.max(0, props.job.percent)))
 
@@ -77,13 +79,18 @@ const kindLabel = computed(() => (isPromote.value ? t('tasks.kind_promote') : t(
     </div>
 
     <div class="min-w-0 flex-1">
-      <div class="flex items-center gap-1.5">
+      <div class="flex min-w-0 items-center gap-1.5">
         <span
           class="shrink-0 rounded-full bg-foreground/[0.06] px-1.5 py-0.5 text-[10px] font-medium text-dimmer"
           data-test="task-kind">{{ kindLabel }}</span>
-        <p class="truncate text-sm font-medium" :class="{ 'text-dim': isCanceled || isQueued }">
+        <p class="min-w-0 truncate text-sm font-medium" :class="{ 'text-dim': isCanceled || isQueued }" data-test="task-title">
           {{ title }}
         </p>
+        <span
+          v-if="showTrackId"
+          class="max-w-[45%] shrink-0 truncate font-mono text-[10px] text-dimmer"
+          :title="job.trackId"
+          data-test="task-id">{{ job.trackId }}</span>
       </div>
       <p v-if="artist" class="truncate text-xs text-[color:var(--text-muted)]">{{ artist }}</p>
 

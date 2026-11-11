@@ -3,11 +3,17 @@ package download
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"airmedy/internal/domain"
 )
+
+// taskPathSeparator is the separator the finalizer puts between title and
+// artist in a downloaded file name.
+const taskPathSeparator = " - "
 
 // taskHistoryLimit is how many finished runs each table keeps. History is for
 // the tasks page, not an audit log; trimming the oldest rows keeps the tables
@@ -55,6 +61,14 @@ func (s *Service) ListTasks(ctx context.Context) ([]domain.TaskRun, error) {
 	}
 
 	runs := make([]domain.TaskRun, 0, len(jobs))
+	namingOrder := domain.DefaultNamingOrder
+	if s.settings != nil {
+		if settings, settingsErr := s.settings.GetSettings(ctx); settingsErr != nil {
+			s.logger.Warn("tasks: cannot read the naming order", "error", settingsErr)
+		} else if settings != nil {
+			namingOrder = domain.ResolveNamingOrder(settings.DownloadNamingOrder)
+		}
+	}
 	for _, job := range jobs {
 		if job == nil {
 			continue
@@ -63,6 +77,18 @@ func (s *Service) ListTasks(ctx context.Context) ([]domain.TaskRun, error) {
 		if track := titles[job.TrackID]; track != nil {
 			run.Title = track.Title
 			run.Artist = tagArtist(track)
+		}
+		// The merge deletes the remote row the job pointed at, so the title is
+		// gone and the finished file name is the only readable record left.
+		if strings.TrimSpace(run.Title) == "" {
+			pathTitle, pathArtist := taskTitleFromPath(job.TargetPath, namingOrder)
+			run.Title = pathTitle
+			if strings.TrimSpace(run.Artist) == "" {
+				run.Artist = pathArtist
+			}
+		}
+		if strings.TrimSpace(run.Title) == "" {
+			run.Title = job.TrackID
 		}
 		runs = append(runs, run)
 	}
@@ -76,7 +102,11 @@ func (s *Service) ListTasks(ctx context.Context) ([]domain.TaskRun, error) {
 			if task == nil {
 				continue
 			}
-			runs = append(runs, taskRunFromPromotion(task))
+			run := taskRunFromPromotion(task)
+			if strings.TrimSpace(run.Title) == "" {
+				run.Title = task.TrackID
+			}
+			runs = append(runs, run)
 		}
 	}
 
@@ -84,6 +114,29 @@ func (s *Service) ListTasks(ctx context.Context) ([]domain.TaskRun, error) {
 		return taskSortTime(runs[i]).After(taskSortTime(runs[j]))
 	})
 	return runs, nil
+}
+
+// taskTitleFromPath recovers a display title and artist from the finished file
+// name. The finalizer names files "<title> - <artist>" or the reverse; a name
+// without the separator is used whole. The result is display-only and is never
+// written back.
+func taskTitleFromPath(targetPath, namingOrder string) (title, artist string) {
+	base := filepath.Base(strings.TrimSpace(targetPath))
+	if base == "" || base == "." {
+		return "", ""
+	}
+	name := strings.TrimSuffix(base, filepath.Ext(base))
+	if strings.TrimSpace(name) == "" {
+		return "", ""
+	}
+	before, after, found := strings.Cut(name, taskPathSeparator)
+	if !found {
+		return strings.TrimSpace(name), ""
+	}
+	if domain.ResolveNamingOrder(namingOrder) == domain.NamingOrderArtistTitle {
+		return strings.TrimSpace(after), strings.TrimSpace(before)
+	}
+	return strings.TrimSpace(before), strings.TrimSpace(after)
 }
 
 // taskSortTime is the ordering key the tasks page contract names: the finish

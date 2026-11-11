@@ -194,7 +194,9 @@ tabs show counts and only their own rows: **all** (the default, every run once),
 **in progress** (`active`), **completed** (`done`) and **errors**
 (`failed`/`canceled`). Every row carries a download/promotion
 kind badge; only download rows offer cancel or retry, and a finished promotion shows
-its quality or error instead of a progress bar.
+its quality or error instead of a progress bar. The main label is the resolved title
+(a merged download derives it from the finished file name) with the track id in dim
+monospace beside it; when only the id exists it is shown once.
 
 The header's **clear history** action opens `ConfirmDialog`; confirming calls
 `ClearTaskHistory()` and reloads. The store also listens to `task:updated`, so a

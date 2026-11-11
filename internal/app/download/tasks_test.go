@@ -118,6 +118,73 @@ func TestTrimFinished_KeepsTheNewestRows(t *testing.T) {
 	assert.Equal(t, 1, active, "active work is never trimmed")
 }
 
+// TestListTasks_DerivesTitleFromTheFinishedFilePath: the merge deletes the
+// remote row the job pointed at, so the file name is the only readable record.
+func TestListTasks_DerivesTitleFromTheFinishedFilePath(t *testing.T) {
+	tests := []struct {
+		name        string
+		namingOrder string
+		targetPath  string
+		title       string
+		artist      string
+	}{
+		{
+			name:       "title-artist",
+			targetPath: "/music/QuomodocunquizE - かめりあ.flac",
+			title:      "QuomodocunquizE",
+			artist:     "かめりあ",
+		},
+		{
+			name:        "artist-title",
+			namingOrder: domain.NamingOrderArtistTitle,
+			targetPath:  "/music/かめりあ - QuomodocunquizE.flac",
+			title:       "QuomodocunquizE",
+			artist:      "かめりあ",
+		},
+		{
+			name:       "no separator",
+			targetPath: "/music/QuomodocunquizE.flac",
+			title:      "QuomodocunquizE",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.settings = stubSettings{dir: h.dir, namingOrder: tt.namingOrder}
+			h.rebuild()
+			ctx := context.Background()
+
+			track := h.seedRemote(t, "remote-path")
+			seedJob(t, h, "job-path", track.ID, domain.DownloadStateActive)
+			require.NoError(t, h.jobs.MarkDone(ctx, "job-path", tt.targetPath))
+			require.NoError(t, h.tracks.Delete(ctx, track.ID))
+
+			runs, err := h.svc.ListTasks(ctx)
+			require.NoError(t, err)
+			require.Len(t, runs, 1)
+			assert.Equal(t, tt.title, runs[0].Title)
+			assert.Equal(t, tt.artist, runs[0].Artist)
+		})
+	}
+}
+
+func TestListTasks_FallsBackToTheTrackIDWhenNothingElseExists(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	track := h.seedRemote(t, "remote-no-title")
+	seedJob(t, h, "job-no-title", track.ID, domain.DownloadStateActive)
+	require.NoError(t, h.jobs.MarkDone(ctx, "job-no-title", ""))
+	require.NoError(t, h.tracks.Delete(ctx, track.ID))
+
+	runs, err := h.svc.ListTasks(ctx)
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	assert.Equal(t, track.ID, runs[0].Title)
+	assert.Empty(t, runs[0].Artist)
+	assert.Equal(t, domain.TaskStateDone, runs[0].State)
+}
+
 func TestDownloadCompletionEmitsTaskUpdated(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

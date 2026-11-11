@@ -137,6 +137,32 @@ describe('DownloadsView', () => {
     wrapper.unmount()
   })
 
+  it('shows the title as the main label with a dimmed id next to it', async () => {
+    vi.mocked(DownloadService.ListTasks).mockResolvedValue([
+      task({ id: 't1', track_id: 'ebdbf6a9-a70c-4caf-94af-67a13bd0a7b7', title: 'QuomodocunquizE' }),
+    ] as never)
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="task-title"]').text()).toBe('QuomodocunquizE')
+    expect(wrapper.get('[data-test="task-id"]').text()).toBe('ebdbf6a9-a70c-4caf-94af-67a13bd0a7b7')
+    wrapper.unmount()
+  })
+
+  it('does not repeat the id when it is already the main label', async () => {
+    vi.mocked(DownloadService.ListTasks).mockResolvedValue([
+      task({ id: 't1', track_id: 'legacy-uuid', title: '' }),
+    ] as never)
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="task-title"]').text()).toBe('legacy-uuid')
+    expect(wrapper.find('[data-test="task-id"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('cancels an active download from its row action', async () => {
     vi.mocked(DownloadService.ListTasks).mockResolvedValue([task({ id: 'job-9', state: 'active' })] as never)
     vi.mocked(DownloadService.CancelDownload).mockResolvedValue(undefined)

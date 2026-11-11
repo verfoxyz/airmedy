@@ -121,11 +121,12 @@ func (f *stubFinalizer) Finalize(_ context.Context, in download.FinalizeInput) (
 }
 
 type stubSettings struct {
-	dir        string
-	quality    string
-	autoAdd    bool
-	withLyrics bool
-	withCover  bool
+	dir         string
+	quality     string
+	namingOrder string
+	autoAdd     bool
+	withLyrics  bool
+	withCover   bool
 }
 
 // stubCachedAudio stands in for the stream cache's promotion surface.
@@ -370,6 +371,7 @@ func (s stubSettings) GetSettings(context.Context) (*domain.AppSettings, error) 
 	return &domain.AppSettings{
 		DownloadDir:               s.dir,
 		DownloadQuality:           quality,
+		DownloadNamingOrder:       s.namingOrder,
 		AutoDownloadOnPlaylistAdd: s.autoAdd,
 		DownloadWithLyrics:        s.withLyrics,
 		DownloadWithCover:         s.withCover,
