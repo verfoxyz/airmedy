@@ -26,11 +26,21 @@ Last.fm 页那一行能显示缩略图，是因为它直接用 `item.cover_url` 
 
 ### 2.1 播放前预热封面缓存
 
-`EnsureStreamableTrack`（catalog）在拿到非空 `CoverURL` 时，best-effort 调用封面缓存：
+`EnsureStreamableTrack`（catalog）在拿到非空 `CoverURL` 时，best-effort 调用封面缓存。
+
+封面 URL 的选择（与推荐页一致）：
+
+1. Last.fm 的**真实图片**（非默认占位图）→ 用它；
+2. Last.fm 是占位图 → 用命中音乐源的封面；
+3. 都没有 → 不预热，保持无封面。
+
+> Last.fm 图最大约 300×300；按用户要求优先使用。
 
 ```go
 // Warm the identity → cover mapping so the player and the track info drawer
 // resolve the artwork by identity without a catalogue page request.
+// coverURL is the Last.fm real image when present, otherwise the matched
+// source cover.
 if coverURL != "" && s.coverAssets != nil {
     if _, err := s.coverAssets.Get(ctx, coverURL, provider, externalID, maxCoverBytes); err != nil {
         s.logger.Debug("catalog: cannot warm the cover cache", ...)

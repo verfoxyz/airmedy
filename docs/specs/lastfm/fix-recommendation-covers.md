@@ -22,23 +22,33 @@
 有两种“没有封面”的情况：
 
 1. **未匹配行**：直接用 Last.fm 的 `image`，而它是占位图 → 显示占位或空白；
-2. **已匹配行**：封面取自命中源的行，但部分源（尤其 `kg`/`ky` 的某些结果）`cover_url` 为空 → 命中后也没有封面。
+2. **已匹配行**：封面取自命中源的行，但部分源（尤其 `kg`/`kw` 的某些结果）`cover_url` 为空 → 命中后也没有封面。
 
 前端没有把“占位图 URL”当缺失处理，也没有兜底来源。
 
+### 1.1 封面优先级（已确认）
+
+1. **Last.fm 返回真实图片** → 用 Last.fm 的图；
+2. Last.fm 是默认星形占位图（`2a96cbd8…`）→ 用**命中音乐源**的封面；
+3. 都没有 → 占位块。
+
+> Last.fm 的图最大约 300×300，分辨率有限，但按用户要求优先使用。
+
 ## 2. 修法
 
-### 2.1 后端：过滤 Last.fm 占位图
+### 2.1 后端：区分“真实图”与“默认占位图”
 
-- `usableTrack` / 行转换时：若 `image` URL 包含 `2a96cbd8b46e442fc41c2b86b821562f`，视为**无封面**（`CoverURL=""`）；
-- 其它 Last.fm 真实图片照常使用。
+- `usableTrack` / 行转换时：若 `image` URL 包含 `2a96cbd8b46e442fc41c2b86b821562f`，视为**占位图**（`CoverURL=""`，但保留 `HasLastFmCover=false` 语义）；
+- 其它 Last.fm 真实图片照常使用，且**优先于命中源的封面**。
 
-### 2.2 后端：命中后无封面时用封面缓存
+### 2.2 后端：占位图时改用命中源封面（或封面缓存）
 
-- 命中行 `cover_url` 为空时，用 `provider + external_id` 查 `covercache`：
-  - `AssetForIdentity` → 返回 `/cover-cache/<hash>.jpg` 本地 URL；
-  - 命中后写入该行的 `CoverURL` / `CoverURLLarge`。
-- 若本就未匹配 → 保持空，前端显示占位。
+- 命中后：
+  - Last.fm 有真实图 → **保留 Last.fm 图**，忽略源封面；
+  - Last.fm 是占位图 / 无图 → 用命中行的 `cover_url_large || cover_url`；
+  - 命中行也没有封面 → 用 `provider + external_id` 查 `covercache.AssetForIdentity` → `/cover-cache/<hash>.jpg`；
+  - 仍没有 → 保持空，前端显示占位块。
+- 未匹配 → 保持空，前端显示占位块。
 
 ### 2.3 前端：统一占位
 
