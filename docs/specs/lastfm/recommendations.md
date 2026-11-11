@@ -10,16 +10,20 @@
 ## 1. 目标
 
 1. 侧边栏「搜索」下面新增 **Last.fm** 入口；
-2. 页面两个区块：
-   - **为你推荐**：由 Last.fm `track.getSimilar` 生成，匹配到 5 个源，可直接播放/保存；
+2. 页面区块：
+   - **综合推荐**：最近播放、收藏、常听三路种子合并去重后的推荐；
+   - **最近播放推荐**：只用最近播放做种子；
+   - **收藏推荐**：只用收藏（loved）做种子；
+   - **常听推荐**：只用常听曲目做种子；
    - **相似艺人**：由 `artist.getSimilar` 生成，点击可跳转到搜索该艺人；
+   - 四份推荐都匹配到 5 个源，可直接播放/保存；
 3. 未连接 Last.fm 时显示引导（去设置连接）；
 4. 支持手动刷新；有缓存，不每次进页面都打 API。
 
 ## 2. 已确认的需求
 
-- 区块：为你推荐、相似艺人（不要最近播放/常听排行区块）；
-- **种子同时使用三类**：最近播放、常听曲目、收藏（loved）；
+- 区块：综合推荐、最近播放推荐、收藏推荐、常听推荐、相似艺人；
+- 四份推荐分别由三类种子生成，再合并出综合推荐；
 - 推荐必须能播放（匹配到源），匹配不到的**不显示**；
 - 只读取 Last.fm，不写。
 
@@ -41,9 +45,14 @@
 
 1. 每个种子调 `track.getSimilar`（limit 10，`autocorrect=1`）；
 2. 合并所有结果，按 `artist + title` 去重；
-3. 计分：被多少个种子命中（“共识度”）+ 种子来源权重（最近播放 1.0、常听 0.8、收藏 0.6）；
-4. 过滤掉种子本身的曲目；
-5. 取前 60 条进入源匹配。
+3. 按种子来源分别生成三份列表：
+   - 最近播放 → `tracks_recent`
+   - 收藏 → `tracks_loved`
+   - 常听 → `tracks_top`
+   每份各自去重、按被几首种子命中排序，各取前 40 条；
+4. 综合列表 = 三份合并去重，计分 = 被多少个种子命中 × 来源权重（最近 1.0、常听 0.8、收藏 0.6），取前 60 条；
+5. 四份列表都过滤掉种子本身；
+6. 进入 §4 的源匹配。
 
 ### 3.3 限流
 
@@ -99,13 +108,17 @@ GetSimilarArtists(ctx, artist string, limit int) ([]LastFmArtist, error)
 ```go
 GetRecommendations(ctx, opts) (RecommendationPage, error)
 type RecommendationPage struct {
-    Status       string   // "ok" | "not_connected" | "partial"
-    Tracks       []RecommendedTrack  // 已匹配到源，可直接播
+    Status         string   // "ok" | "not_connected" | "partial"
+    Tracks         []RecommendedTrack  // 综合
+    RecentTracks   []RecommendedTrack  // 最近播放种子
+    LovedTracks    []RecommendedTrack  // 收藏种子
+    TopTracks      []RecommendedTrack  // 常听种子
     SimilarArtists []SimilarArtist
 }
 ```
 
-- 内部按 §3 聚合，再按 §4 匹配；
+- 内部按 §3 生成四份列表，再按 §4 匹配；
+- **源匹配结果按曲目共享缓存**（`provider + title + artist`），四份列表复用同一次搜索，避免请求翻倍；
 - 30 分钟内存缓存（key = username + 种子哈希），并发请求合并（single-flight）；
 - 可手动刷新（`force=true`）。
 
@@ -126,7 +139,8 @@ type RecommendationPage struct {
 ### 6.2 页面 `LastFmView.vue`
 
 - 顶部标题 + 刷新按钮 + Last.fm 用户名/头像（已连接时）；
-- **为你推荐**：横向/网格卡片列表（封面 + 标题 + 艺人 + 源标签），悬停出现播放/保存按钮（复用 catalog row 的 action）；
+- **综合推荐**：网格卡片列表（封面 + 标题 + 艺人 + 源标签），悬停出现播放/保存按钮（复用 catalog row 的 action）；
+- **最近播放推荐 / 收藏推荐 / 常听推荐**：同样式的小节，各自独立，可横向滚动；
 - **相似艺人**：头像网格，点击 → 跳转搜索页并预填艺人名（`/search?q=...`）；
 - 状态：
   - 未连接：引导卡片 → 设置 → 集成；
@@ -152,14 +166,15 @@ type RecommendationPage struct {
 
 - 侧边栏出现 Last.fm 入口且位于搜索之后；
 - 未连接状态渲染引导；
-- 推荐卡片渲染与播放/保存调用；
+- 四份列表分别渲染（综合 + 三个来源）；
+- 推荐卡片播放/保存调用共用；
 - 相似艺人点击跳搜索；
 - 空状态与刷新；
 - 12 locale key 覆盖。
 
 **人工**
 
-1. Last.fm 已连接 → 打开页面有推荐与相似艺人；
+1. Last.fm 已连接 → 打开页面有综合、最近、收藏、常听四份推荐与相似艺人；
 2. 点播推荐曲目 → 正常播放（走流播）；保存 → 出现「已创建任务」；
 3. 未连接 → 显示去设置；
 4. 刷新按钮有效，重复进入不会每次打满 API；
@@ -181,6 +196,7 @@ type RecommendationPage struct {
 ## 10. 风险
 
 - Last.fm 限流（5 req/s）：推荐生成 + 源匹配的请求量较大，必须限速与缓存，否则会被 429；
+- 四份列表让种子相似查询与匹配请求变多：必须共享匹配缓存并严格限流；
 - 推荐质量依赖种子：新账号数据少时推荐可能为空，要有空状态；
 - 源匹配会丢弃很多推荐（标题/艺人/时长不严格一致），页面条数可能少于预期；
 - 后端需复用现有 `NormalizationKey` 与匹配容差，避免两套规则。
