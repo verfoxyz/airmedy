@@ -30,7 +30,14 @@
 
 条目的 identity（`provider + external_id`）已经对应一个**非 remote** 的 track → 缓存不再需要，删除。
 
-### 2.3 孤儿文件
+### 2.3 无效条目
+
+- `complete = 0` 且 `received_bytes = 0`（可选再加 `os.Stat` 文件大小为 0）→ 删除；
+- 典型来源：拉流/解析失败，只创建了空文件和未完成行；
+- 跳过条件：有活动 session、`pending_promote=1`、`promoted=1`、`discard_pending=1`；
+- 判断只用数据库字段（+ 元数据 stat），**不读文件内容**。
+
+### 2.4 孤儿文件
 
 `stream-cache/` 下没有对应 `stream_cache` 行的 `.audio` 文件 → 删除（扫目录与表对比）。
 
@@ -84,6 +91,7 @@ type DuplicateCacheReport struct {
     DuplicateGroups int      `json:"duplicate_groups"`
     Removable       int      `json:"removable"`      // 条目数
     RemovableBytes  int64    `json:"removable_bytes"`
+    InvalidEntries  int      `json:"invalid_entries"`
     OrphanFiles     int      `json:"orphan_files"`
     PromotedLeftovers int    `json:"promoted_leftovers"`
     Skipped         []string `json:"skipped"`        // 跳过原因摘要
@@ -108,6 +116,7 @@ type DuplicateCacheReport struct {
 
 - 跨源重复：同组保留最高音质；同音质保留完整/最近；无法区分时不删；
 - 已入库条目被识别并删除；
+- 无效条目（`complete=0` 且 `received_bytes=0`）被识别并删除；有活动 session 或 pending_promote 时跳过；
 - 孤儿 `.audio` 被识别并删除；
 - `pending_promote` 与活动 session 跳过；
 - 当前播放条目：暂停 → 关闭 session → 删除 → 恢复播放（断言队列与进度不变）；
