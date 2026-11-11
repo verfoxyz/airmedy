@@ -275,10 +275,11 @@ from the same dialog when the row has no local file. It refuses local rows (dele
 bytes must go through `DeleteTrackFile`) and, in this order: releases playback through the
 `PlaybackRemover` port (the player stops when the row is loaded and removes it from the
 queue, which also closes the stream session), drops the cache entry through
-`StreamCacheDiscarder` (a failure is logged, never fatal), then runs the same DB delete,
+`StreamCacheDiscarder` (a deferred result sets `discard_pending` and
+`domain.ErrStreamDiscardDeferred` is not a failure), then runs the same DB delete,
 index removal and orphan cleanup as `DeleteTrackFile`. Both ports are wired in `app.Module`,
-so `app/library` imports neither `app/stream` nor `app/player`; a deployment without them
-still removes the row and leaves the cache file for eviction.
+so `app/library` imports neither `app/stream` nor `app/player`; the download maintenance
+worker deletes a deferred cache entry once playback releases it.
 
 ## Play Count & Recently Played
 

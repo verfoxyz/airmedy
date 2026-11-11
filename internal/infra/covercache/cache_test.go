@@ -241,6 +241,50 @@ func TestRemoteAndBytesForIdentityReuseTheCachedImage(t *testing.T) {
 	assert.Empty(t, goneData)
 }
 
+func TestSharedCoverIsFoundByEveryIdentity(t *testing.T) {
+	body := jpegBody("shared", 64)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	cache, db := newTestCache(t, t.TempDir(), server.Client(), func() time.Time { return time.Unix(11, 0) })
+	ctx := context.Background()
+	remote := server.URL + "/shared.jpg"
+
+	first, err := cache.Get(ctx, remote, "wy", "1336689106", 10<<20)
+	require.NoError(t, err)
+	// The same album image, requested by another track of that album.
+	second, err := cache.Get(ctx, remote, "wy", "1336656391", 10<<20)
+	require.NoError(t, err)
+	assert.Equal(t, first, second, "the image is downloaded and stored once")
+
+	data, mime, err := cache.BytesForIdentity(ctx, "wy", "1336656391")
+	require.NoError(t, err)
+	assert.Equal(t, body, data)
+	assert.Equal(t, "image/jpeg", mime)
+
+	var links int
+	require.NoError(t, db.QueryRow(
+		`SELECT COUNT(*) FROM cover_cache_links WHERE url_hash = ?`, hashURL(remote),
+	).Scan(&links))
+	assert.Equal(t, 2, links, "both identities must be linked to the shared image")
+
+	// Pinning either identity pins the shared URL.
+	require.NoError(t, cache.Pin(ctx, "wy", "1336656391"))
+	var pinned int
+	require.NoError(t, db.QueryRow(
+		`SELECT pinned FROM cover_cache WHERE url_hash = ?`, hashURL(remote),
+	).Scan(&pinned))
+	assert.Equal(t, 1, pinned)
+	require.NoError(t, cache.Unpin(ctx, "wy", "1336656391"))
+	require.NoError(t, db.QueryRow(
+		`SELECT pinned FROM cover_cache WHERE url_hash = ?`, hashURL(remote),
+	).Scan(&pinned))
+	assert.Equal(t, 0, pinned)
+}
+
 func TestMissingFileDropsTheIndexRowAndRedownloads(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -71,10 +71,13 @@ type Cache struct {
 
 	mu       sync.Mutex
 	sessions map[string]*cacheSession
-	server   *http.Server
-	listener net.Listener
-	port     int
-	started  bool
+	// sessionClosed notifies promotion, which must wait until the decoder no
+	// longer owns the file before moving or deleting it.
+	sessionClosed []func(provider, externalID string)
+	server        *http.Server
+	listener      net.Listener
+	port          int
+	started       bool
 }
 
 // SettingsProvider is the settings slice the cache needs. *appsettings.Service
@@ -358,6 +361,7 @@ func (c *Cache) takeSession(ctx context.Context, key string) (*Session, error) {
 	delete(c.sessions, key)
 	c.mu.Unlock()
 	c.stopSession(existing)
+	c.notifySessionClosed(existing)
 	return nil, nil
 }
 
@@ -373,6 +377,7 @@ func (c *Cache) resolveEntry(ctx context.Context, provider string, track *domain
 	}
 	if entry != nil {
 		entry.LastUsed = now
+		c.healEntryForReplay(ctx, entry)
 		if upsertErr := c.repo.Upsert(ctx, entry); upsertErr != nil {
 			c.logger.Warn("Failed to touch stream cache entry", "cache_key", entry.CacheKey, "error", upsertErr)
 		}
@@ -405,6 +410,33 @@ func (c *Cache) resolveEntry(ctx context.Context, provider string, track *domain
 		return nil, fmt.Errorf("register stream cache entry: %w", err)
 	}
 	return entry, nil
+}
+
+// healEntryForReplay clears deletion intent when the user plays a cached entry
+// again. A discard that never ran must not delete the audio the player is about
+// to use; a promoted entry whose file was moved away is no longer promoted,
+// because the next Open downloads it afresh and the worker must not treat that
+// new cache as the old, already-moved one.
+func (c *Cache) healEntryForReplay(ctx context.Context, entry *domain.StreamCacheEntry) {
+	if entry == nil || (!entry.DiscardPending && !entry.Promoted) {
+		return
+	}
+	if entry.Promoted {
+		if _, err := os.Stat(filepath.Join(c.dir, entry.AudioPath)); err != nil {
+			entry.Promoted = false
+			if resetErr := c.repo.SetPromoted(ctx, entry.CacheKey, false); resetErr != nil {
+				c.logger.Warn("Failed to reset stream cache promotion flag",
+					"cache_key", entry.CacheKey, "error", resetErr)
+			}
+		}
+	}
+	if entry.DiscardPending {
+		entry.DiscardPending = false
+		if resetErr := c.repo.SetDiscardPending(ctx, entry.CacheKey, false); resetErr != nil {
+			c.logger.Warn("Failed to reset stream cache discard flag",
+				"cache_key", entry.CacheKey, "error", resetErr)
+		}
+	}
 }
 
 // lookupEntry finds an existing entry by identity first, then by the same
@@ -482,6 +514,7 @@ func (c *Cache) Close(session *Session) {
 		return
 	}
 	c.stopSession(s)
+	c.notifySessionClosed(s)
 }
 
 // ReportProgress records how far the player has advanced, in seconds. It only
@@ -583,6 +616,7 @@ func (c *Cache) EnsureComplete(ctx context.Context, track *domain.TrackDTO) (<-c
 			}
 			c.mu.Unlock()
 			c.stopSession(existing)
+			c.notifySessionClosed(existing)
 			existing = nil
 		}
 	}
@@ -620,18 +654,114 @@ func (c *Cache) MarkPendingPromote(ctx context.Context, track *domain.TrackDTO) 
 	return c.repo.SetPendingPromote(ctx, entry.CacheKey, true)
 }
 
-// DiscardEntry deletes a cache entry and its audio. A session that is still
-// playing is left alone: deleting the file under the decoder breaks playback,
-// and the entry will be evicted when it closes.
-func (c *Cache) DiscardEntry(ctx context.Context, track *domain.TrackDTO) error {
+// OnSessionClosed registers a callback fired after a session has been removed
+// from the cache. Promotion uses it to retry as soon as playback releases the
+// file instead of waiting for its next periodic sweep.
+func (c *Cache) OnSessionClosed(fn func(provider, externalID string)) {
+	if fn == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sessionClosed = append(c.sessionClosed, fn)
+}
+
+// PendingPromotions returns every entry the promotion worker must handle.
+func (c *Cache) PendingPromotions(ctx context.Context) ([]*domain.StreamCacheEntry, error) {
+	return c.repo.ListPendingPromote(ctx)
+}
+
+// PendingDiscards returns every entry whose cache must be deleted once idle.
+func (c *Cache) PendingDiscards(ctx context.Context) ([]*domain.StreamCacheEntry, error) {
+	return c.repo.ListPendingDiscard(ctx)
+}
+
+// HasActiveSession reports whether a playback or background session still holds
+// the entry. Promotion moves the file, so it must wait for this to be false.
+func (c *Cache) HasActiveSession(provider, externalID string) bool {
+	provider = domain.NormalizeProvider(provider)
+	externalID = strings.TrimSpace(externalID)
+	if provider == "" || externalID == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range c.sessions {
+		if s.provider == provider && s.externalID == externalID {
+			return true
+		}
+	}
+	return false
+}
+
+// notifySessionClosed wakes the observers after the session left the map. It
+// runs without the cache lock: a listener must not be able to deadlock playback.
+func (c *Cache) notifySessionClosed(s *cacheSession) {
+	if s == nil {
+		return
+	}
+	c.mu.Lock()
+	listeners := append([]func(string, string){}, c.sessionClosed...)
+	c.mu.Unlock()
+	for _, fn := range listeners {
+		fn(s.provider, s.externalID)
+	}
+}
+
+// SetPromoted records whether the entry's audio was moved into the library.
+// The row stays so the cleanup can delete the cache file without re-downloading
+// it; a promoted entry is never completed again.
+func (c *Cache) SetPromoted(ctx context.Context, track *domain.TrackDTO, promoted bool) error {
+	entry, err := c.entryFor(ctx, track)
+	if err != nil || entry == nil {
+		return err
+	}
+	return c.repo.SetPromoted(ctx, entry.CacheKey, promoted)
+}
+
+// ClearPendingPromote ends the request after a higher-quality download was
+// queued: that job owns the file now and deletes the cache when it finishes.
+func (c *Cache) ClearPendingPromote(ctx context.Context, track *domain.TrackDTO) error {
+	entry, err := c.entryFor(ctx, track)
+	if err != nil || entry == nil {
+		return err
+	}
+	return c.repo.SetPendingPromote(ctx, entry.CacheKey, false)
+}
+
+// SetDiscardPending flags the entry's cache for deletion once no session owns
+// it. Callers use it when DiscardEntry cannot run right now (a normal download
+// finished while the user is still playing the cached audio).
+func (c *Cache) SetDiscardPending(ctx context.Context, track *domain.TrackDTO, pending bool) error {
+	entry, err := c.entryFor(ctx, track)
+	if err != nil || entry == nil {
+		return err
+	}
+	return c.repo.SetDiscardPending(ctx, entry.CacheKey, pending)
+}
+
+// entryFor resolves a track's entry through the same identity-then-cross-source
+// path playback uses.
+func (c *Cache) entryFor(ctx context.Context, track *domain.TrackDTO) (*domain.StreamCacheEntry, error) {
 	if track == nil {
-		return nil
+		return nil, nil
 	}
 	provider := domain.NormalizeProvider(track.Provider)
 	if provider == "" || strings.TrimSpace(track.ExternalID) == "" {
-		return nil
+		return nil, nil
 	}
-	entry, err := c.lookupEntry(ctx, provider, track)
+	return c.lookupEntry(ctx, provider, track)
+}
+
+// DiscardEntry deletes a cache entry and its audio.
+//
+// A session that is still playing defers the deletion — removing the file under
+// the decoder breaks playback — and returns domain.ErrStreamDiscardDeferred; the
+// caller sets discard_pending so the maintenance worker retries once the
+// session closes. A promoted entry whose file is already gone is a success, not
+// an error: the move is the only thing that mattered.
+func (c *Cache) DiscardEntry(ctx context.Context, track *domain.TrackDTO) error {
+	entry, err := c.entryFor(ctx, track)
 	if err != nil || entry == nil {
 		return err
 	}
@@ -640,7 +770,7 @@ func (c *Cache) DiscardEntry(ctx context.Context, track *domain.TrackDTO) error 
 	_, active := c.sessions[entry.CacheKey]
 	c.mu.Unlock()
 	if active {
-		return nil
+		return domain.ErrStreamDiscardDeferred
 	}
 
 	if err := os.Remove(filepath.Join(c.dir, entry.AudioPath)); err != nil && !os.IsNotExist(err) {
@@ -688,6 +818,7 @@ func (c *Cache) watchCompletion(s *cacheSession) <-chan error {
 			}
 			c.mu.Unlock()
 			c.stopSession(s)
+			c.notifySessionClosed(s)
 		} else {
 			for {
 				c.mu.Lock()
@@ -797,6 +928,7 @@ func (c *Cache) abandonSession(s *cacheSession) {
 	}
 	c.mu.Unlock()
 	c.stopSession(s)
+	c.notifySessionClosed(s)
 }
 
 func (c *Cache) openAudio(s *cacheSession) error {

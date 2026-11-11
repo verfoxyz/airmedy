@@ -2,9 +2,11 @@ package download
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"airmedy/internal/domain"
 )
@@ -112,70 +114,320 @@ func (s *Service) PromoteCachedFile(
 	return survivorID, nil
 }
 
-// PromoteOnSave is called when a remote track joins a playlist or becomes a
-// favorite. It marks the stream entry and does the work in the background, so a
-// promotion failure can never fail the save.
+// PromoteOnSave records a durable promotion request when a remote track joins a
+// playlist or becomes a favorite.
+//
+// Promotion moves the cache file, so the work cannot run while playback owns it.
+// Nothing is moved here: the flag and the history row are written immediately
+// (a request survives a restart) and the worker retries once the session closes.
 //
 // An active download job already produces the file at the configured quality;
 // promotion would duplicate that work.
-func (s *Service) PromoteOnSave(ctx context.Context, track *domain.TrackDTO, playlistID string) {
+func (s *Service) PromoteOnSave(ctx context.Context, track *domain.TrackDTO) {
 	if s.cached == nil || track == nil || !track.IsRemote() {
 		return
 	}
 	if active, err := s.jobs.GetActiveByTrackID(ctx, track.ID); err == nil && active != nil {
 		return
 	}
-	trackCopy := *track
-	go s.promoteSaved(context.Background(), &trackCopy, playlistID)
-}
-
-// promoteSaved completes the cache, then promotes it or re-downloads at the
-// configured quality when the cache is below it.
-func (s *Service) promoteSaved(ctx context.Context, track *domain.TrackDTO, playlistID string) {
 	if err := s.cached.MarkPendingPromote(ctx, track); err != nil {
 		s.logger.Warn("promote: cannot flag the stream cache entry", "track_id", track.ID, "error", err)
 		return
 	}
+	if s.promotionTask != nil {
+		task := &domain.PromotionTask{
+			TrackID:    track.ID,
+			Provider:   domain.NormalizeProvider(track.Provider),
+			ExternalID: strings.TrimSpace(track.ExternalID),
+			Title:      track.Title,
+			Artist:     tagArtist(track),
+		}
+		if _, err := s.promotionTask.EnsureQueued(ctx, task); err != nil {
+			s.logger.Warn("promote: cannot record the request", "track_id", track.ID, "error", err)
+		} else {
+			s.emitTaskUpdated()
+		}
+	}
+	s.WakeCacheMaintenance()
+}
+
+// WakeCacheMaintenance asks the maintenance worker to look for pending work
+// now. It never blocks: a wake already queued covers the request.
+func (s *Service) WakeCacheMaintenance() {
+	if s.maintenanceWake == nil {
+		return
+	}
+	select {
+	case s.maintenanceWake <- struct{}{}:
+	default:
+	}
+}
+
+// maintenanceLoop sweeps once on start (a request made before a restart, or one
+// deferred by playback, must finish without user action), then on every wake
+// and every promotionSweepInterval.
+func (s *Service) maintenanceLoop(stop, done chan struct{}) {
+	defer close(done)
+
+	s.RunCacheMaintenanceSweep(context.Background())
+	timer := time.NewTimer(maintenanceSweepInterval)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-s.maintenanceWake:
+		case <-timer.C:
+		}
+		s.RunCacheMaintenanceSweep(context.Background())
+		timer.Reset(maintenanceSweepInterval)
+	}
+}
+
+// RunCacheMaintenanceSweep finishes deferred cache work: pending deletions
+// first (a finished download or a moved promotion), then pending promotions.
+// It is single-flight, so a session closing during a sweep cannot start a
+// second one.
+func (s *Service) RunCacheMaintenanceSweep(ctx context.Context) {
+	if s.cached == nil || s.promotionTask == nil {
+		return
+	}
+	if !s.maintenanceSweeping.CompareAndSwap(false, true) {
+		return
+	}
+	defer s.maintenanceSweeping.Store(false)
+
+	discards, err := s.cached.PendingDiscards(ctx)
+	if err != nil {
+		s.logger.Warn("promote: cannot list pending discards", "error", err)
+	}
+	for _, entry := range discards {
+		if ctx.Err() != nil {
+			return
+		}
+		s.sweepDiscard(ctx, entry)
+	}
+
+	promotions, err := s.cached.PendingPromotions(ctx)
+	if err != nil {
+		s.logger.Warn("promote: cannot list pending entries", "error", err)
+		return
+	}
+	for _, entry := range promotions {
+		if ctx.Err() != nil {
+			return
+		}
+		s.sweepPromotion(ctx, entry)
+	}
+}
+
+// sweepDiscard deletes a cache nobody needs any more. A session still holding
+// the file means "try again later"; the entry keeps discard_pending.
+func (s *Service) sweepDiscard(ctx context.Context, entry *domain.StreamCacheEntry) {
+	if entry == nil {
+		return
+	}
+	provider := domain.NormalizeProvider(entry.Provider)
+	externalID := strings.TrimSpace(entry.ExternalID)
+	if provider == "" || externalID == "" {
+		return
+	}
+	if s.cached.HasActiveSession(provider, externalID) {
+		return
+	}
+	if err := s.cached.DiscardEntry(ctx, trackFromEntry(entry)); err != nil {
+		if errors.Is(err, domain.ErrStreamDiscardDeferred) {
+			return
+		}
+		s.logger.Warn("promote: cannot delete the cache entry", "cache_key", entry.CacheKey, "error", err)
+	}
+}
+
+// sweepPromotion advances one entry. A session still holding the file means
+// "try again later": the cache is the decoder's source and must not move.
+func (s *Service) sweepPromotion(ctx context.Context, entry *domain.StreamCacheEntry) {
+	if entry == nil {
+		return
+	}
+	provider := domain.NormalizeProvider(entry.Provider)
+	externalID := strings.TrimSpace(entry.ExternalID)
+	if provider == "" || externalID == "" {
+		return
+	}
+	if s.cached.HasActiveSession(provider, externalID) {
+		return
+	}
+
+	if entry.Promoted || entry.DiscardPending {
+		// The move (if any) already happened: only the cache is left, and
+		// completing it again would re-download the bytes.
+		if !entry.DiscardPending {
+			if err := s.cached.SetDiscardPending(ctx, trackFromEntry(entry), true); err != nil {
+				s.logger.Warn("promote: cannot flag a promoted entry for cleanup",
+					"cache_key", entry.CacheKey, "error", err)
+			}
+		}
+		s.sweepDiscard(ctx, entry)
+		return
+	}
+
+	track, err := s.merger.FindByRemoteIdentity(ctx, provider, externalID)
+	if err != nil {
+		s.logger.Warn("promote: cannot look up the row",
+			"provider", provider, "external_id", externalID, "error", err)
+		return
+	}
+	if track == nil || !track.IsRemote() {
+		// The row was deleted, or another path already downloaded it: the cached
+		// audio is redundant, and promoting it would resurrect the row.
+		if err := s.cached.SetDiscardPending(ctx, trackFromEntry(entry), true); err != nil {
+			s.logger.Warn("promote: cannot flag an obsolete entry for cleanup",
+				"cache_key", entry.CacheKey, "error", err)
+			return
+		}
+		s.sweepDiscard(ctx, entry)
+		return
+	}
+	s.executePromotion(ctx, entry, track)
+}
+
+// executePromotion completes the cache and either promotes it or hands the
+// track to the download queue when the cache is below the configured quality.
+func (s *Service) executePromotion(ctx context.Context, entry *domain.StreamCacheEntry, track *domain.TrackDTO) {
+	taskID := s.startPromotionTask(ctx, entry, track)
+
 	done, err := s.cached.EnsureComplete(ctx, track)
 	if err != nil {
-		s.logger.Warn("promote: cannot complete the stream cache", "track_id", track.ID, "error", err)
+		s.failPromotion(ctx, taskID, err)
 		return
 	}
 	if err := <-done; err != nil {
-		s.logger.Warn("promote: stream cache did not complete", "track_id", track.ID, "error", err)
+		s.failPromotion(ctx, taskID, err)
 		return
 	}
 
 	path, cacheQuality, complete, found, err := s.cached.CachedFileInfo(ctx, track)
 	if err != nil {
-		s.logger.Warn("promote: cannot inspect the stream cache", "track_id", track.ID, "error", err)
+		s.failPromotion(ctx, taskID, err)
 		return
 	}
 	if !found || !complete {
+		s.failPromotion(ctx, taskID, errors.New("stream cache is incomplete"))
 		return
 	}
 
 	settings, err := s.settings.GetSettings(ctx)
 	if err != nil {
-		s.logger.Warn("promote: cannot read settings", "track_id", track.ID, "error", err)
+		s.failPromotion(ctx, taskID, err)
 		return
 	}
 	downloadQuality := domain.ResolveDownloadQuality(settings.DownloadQuality)
 	if cachedQualityRank(cacheQuality) < downloadQualityRank(downloadQuality) {
 		// The cached audio is below the download setting: fetch the better copy
 		// through the normal queue; a finished download discards the cache.
-		if err := s.Enqueue(ctx, track.ID, playlistID, downloadQuality); err != nil {
-			s.logger.Info("promote: higher-quality download not queued", "track_id", track.ID, "error", err)
+		if err := s.Enqueue(ctx, track.ID, "", downloadQuality); err != nil &&
+			!errors.Is(err, domain.ErrDownloadAlreadyQueued) {
+			s.failPromotion(ctx, taskID, err)
+			return
 		}
+		if err := s.cached.ClearPendingPromote(ctx, track); err != nil {
+			s.logger.Warn("promote: cannot clear the pending flag", "track_id", track.ID, "error", err)
+		}
+		s.finishPromotionTask(ctx, taskID, domain.PromotionStateDone, "")
 		return
 	}
 
 	if _, err := s.PromoteCachedFile(ctx, track, path, cacheQuality); err != nil {
-		s.logger.Warn("promote: cached file could not be promoted", "track_id", track.ID, "error", err)
+		s.failPromotion(ctx, taskID, err)
 		return
 	}
-	if err := s.cached.DiscardEntry(ctx, track); err != nil {
-		s.logger.Warn("promote: cannot drop the promoted cache entry", "track_id", track.ID, "error", err)
+	if err := s.cached.SetPromoted(ctx, track, true); err != nil {
+		// Without the flag the next sweep would complete the entry again and
+		// re-download audio that is already in the library.
+		s.failPromotion(ctx, taskID, err)
+		return
+	}
+	if err := s.cached.SetDiscardPending(ctx, track, true); err != nil {
+		s.logger.Warn("promote: cannot flag the moved cache for cleanup", "track_id", track.ID, "error", err)
+	}
+	if err := s.cached.DiscardEntry(ctx, track); err != nil &&
+		!errors.Is(err, domain.ErrStreamDiscardDeferred) {
+		s.logger.Warn("promote: cache cleanup deferred", "track_id", track.ID, "error", err)
+	}
+	s.finishPromotionTask(ctx, taskID, domain.PromotionStateDone, "")
+}
+
+// trackFromEntry builds the minimal row EnsureComplete and DiscardEntry read:
+// both address the entry by remote identity.
+func trackFromEntry(entry *domain.StreamCacheEntry) *domain.TrackDTO {
+	if entry == nil {
+		return nil
+	}
+	return &domain.TrackDTO{Track: domain.Track{
+		ID:           entry.CacheKey,
+		Path:         domain.RemotePath(entry.Provider, entry.ExternalID),
+		Title:        entry.Title,
+		Provider:     entry.Provider,
+		ExternalID:   entry.ExternalID,
+		Availability: domain.AvailabilityRemote,
+	}}
+}
+
+// startPromotionTask records that the worker is executing the entry and returns
+// the history row id (empty when there is no repository).
+func (s *Service) startPromotionTask(ctx context.Context, entry *domain.StreamCacheEntry, track *domain.TrackDTO) string {
+	if s.promotionTask == nil {
+		return ""
+	}
+	task := &domain.PromotionTask{
+		TrackID:    track.ID,
+		Provider:   entry.Provider,
+		ExternalID: entry.ExternalID,
+		Title:      track.Title,
+		Artist:     tagArtist(track),
+		Quality:    entry.Quality,
+	}
+	id, err := s.promotionTask.EnsureQueued(ctx, task)
+	if err != nil {
+		s.logger.Warn("promote: cannot record the running task", "track_id", track.ID, "error", err)
+		return ""
+	}
+	if err := s.promotionTask.MarkRunning(ctx, id, time.Now()); err != nil {
+		s.logger.Warn("promote: cannot mark the task running", "task_id", id, "error", err)
+	}
+	s.emitTaskUpdated()
+	return id
+}
+
+func (s *Service) finishPromotionTask(ctx context.Context, taskID, state, message string) {
+	if taskID == "" || s.promotionTask == nil {
+		return
+	}
+	if err := s.promotionTask.MarkFinished(ctx, taskID, state, message, time.Now()); err != nil {
+		s.logger.Warn("promote: cannot record the task result", "task_id", taskID, "error", err)
+		return
+	}
+	s.emitTaskUpdated()
+}
+
+// failPromotion records a failed attempt. The entry keeps pending_promote, so
+// the next sweep retries it; other entries are unaffected.
+func (s *Service) failPromotion(ctx context.Context, taskID string, cause error) {
+	if cause == nil {
+		cause = errors.New("promotion failed")
+	}
+	s.logger.Warn("promote: attempt failed", "task_id", taskID, "error", cause)
+	s.finishPromotionTask(ctx, taskID, domain.PromotionStateFailed, cause.Error())
+}
+
+// emitTaskUpdated tells the tasks page a promotion row changed.
+func (s *Service) emitTaskUpdated() {
+	s.sinkMu.RLock()
+	sink := s.sink
+	s.sinkMu.RUnlock()
+	if sink != nil {
+		sink.TaskUpdated()
 	}
 }
 

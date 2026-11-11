@@ -276,6 +276,8 @@ func (s *LibraryService) AddTrackDeletedListener(l func([]string)) {
 // app/stream, and a destination without stream playback can ignore it.
 type StreamCacheDiscarder interface {
 	DiscardEntry(ctx context.Context, track *domain.TrackDTO) error
+	// SetDiscardPending flags a cache the current session prevented deleting.
+	SetDiscardPending(ctx context.Context, track *domain.TrackDTO, pending bool) error
 }
 
 // PlaybackRemover detaches a row that is being deleted from the player and the
@@ -1827,9 +1829,20 @@ func (s *LibraryService) RemoveTrackFromLibrary(ctx context.Context, trackID str
 	}
 	if discarder != nil {
 		// A cache that cannot be cleared (file in use, row already gone) must not
-		// keep the row in the library; the user asked for it to disappear.
+		// keep the row in the library; the user asked for it to disappear. A
+		// deferred discard is normal: the promotion worker finishes it after the
+		// session closes.
 		if err := discarder.DiscardEntry(ctx, track); err != nil {
-			s.logger.Warn("remove track: cannot discard the stream cache", "track_id", trackID, "error", err)
+			if errors.Is(err, domain.ErrStreamDiscardDeferred) {
+				// The decoder still owns the file; the maintenance worker deletes
+				// the cache once the session closes.
+				if markErr := discarder.SetDiscardPending(ctx, track, true); markErr != nil {
+					s.logger.Warn("remove track: cannot flag the cache for cleanup",
+						"track_id", trackID, "error", markErr)
+				}
+			} else {
+				s.logger.Warn("remove track: cannot discard the stream cache", "track_id", trackID, "error", err)
+			}
 		}
 	}
 

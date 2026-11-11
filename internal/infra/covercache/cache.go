@@ -178,6 +178,11 @@ func (c *Cache) hit(ctx context.Context, hash, remoteURL, provider, externalID s
 	filePath := filepath.Join(c.dir, name)
 	if _, statErr := os.Stat(filePath); statErr != nil {
 		if os.IsNotExist(statErr) {
+			// The file is gone, so every identity link to it is dead weight.
+			if _, delErr := c.db.ExecContext(ctx,
+				`DELETE FROM cover_cache_links WHERE url_hash = ?`, hash); delErr != nil {
+				return "", false, fmt.Errorf("cover cache: drop missing links: %w", delErr)
+			}
 			if _, delErr := c.db.ExecContext(ctx,
 				`DELETE FROM cover_cache WHERE url_hash = ?`, hash); delErr != nil {
 				return "", false, fmt.Errorf("cover cache: drop missing row: %w", delErr)
@@ -187,22 +192,22 @@ func (c *Cache) hit(ctx context.Context, hash, remoteURL, provider, externalID s
 		return "", false, fmt.Errorf("cover cache: stat %q: %w", filePath, statErr)
 	}
 
-	// A pre-migration row has no identity or URL; record them on the next hit so
-	// the row can be pinned and its image re-fetched without rewriting every row
-	// during the migration.
+	// A pre-migration row has no URL; record it on the next hit so the row's
+	// image can be re-fetched without rewriting every row during the migration.
 	if _, err := c.db.ExecContext(ctx,
 		`UPDATE cover_cache
 		 SET last_used = ?,
-		     provider = CASE WHEN provider = '' THEN ? ELSE provider END,
-		     external_id = CASE WHEN external_id = '' THEN ? ELSE external_id END,
 		     url = CASE WHEN url = '' THEN ? ELSE url END
 		 WHERE url_hash = ?`,
-		c.now().Unix(), provider, externalID, remoteURL, hash,
+		c.now().Unix(), remoteURL, hash,
 	); err != nil {
 		// A hit whose timestamp cannot be written still serves the file; the
 		// eviction order is slightly stale but the image is correct.
 		c.logger.Warn("cover cache: cannot update last_used", "hash", hash, "error", err)
 	}
+	// Identity is many-to-many: several tracks share one album cover, and each
+	// one must be able to look the cached image up later.
+	c.linkIdentity(ctx, hash, provider, externalID)
 	return assetPath(name), true, nil
 }
 
@@ -224,6 +229,7 @@ func (c *Cache) fetchAndStore(ctx context.Context, remoteURL, hash, provider, ex
 		if err := c.upsert(ctx, hash, name, int64(len(data)), mime, remoteURL, provider, externalID); err != nil {
 			return "", err
 		}
+		c.linkIdentity(ctx, hash, provider, externalID)
 		c.evict(ctx, limitBytes)
 		return assetPath(name), nil
 	}
@@ -236,6 +242,7 @@ func (c *Cache) fetchAndStore(ctx context.Context, remoteURL, hash, provider, ex
 		// makes it visible, and an orphan is harmless until the next cleanup.
 		return "", err
 	}
+	c.linkIdentity(ctx, hash, provider, externalID)
 	c.evict(ctx, limitBytes)
 	return assetPath(name), nil
 }
@@ -299,12 +306,34 @@ func (c *Cache) upsert(ctx context.Context, hash, name string, bytes int64, mime
 	return nil
 }
 
+// linkIdentity records that a track identity uses this cached image. The image
+// is shared by every track of an album, so this is many-to-many: the row's own
+// provider/external_id columns only remember the first requester.
+func (c *Cache) linkIdentity(ctx context.Context, hash, provider, externalID string) {
+	provider = strings.TrimSpace(provider)
+	externalID = strings.TrimSpace(externalID)
+	if provider == "" || externalID == "" {
+		return
+	}
+	if _, err := c.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO cover_cache_links (url_hash, provider, external_id, created_at)
+		 VALUES (?, ?, ?, ?)`,
+		hash, provider, externalID, c.now().Unix(),
+	); err != nil {
+		c.logger.Warn("cover cache: cannot link identity",
+			"hash", hash, "provider", provider, "external_id", externalID, "error", err)
+	}
+}
+
 // Pin marks every cover cached for a remote identity so eviction keeps it while
 // the audio is in the stream cache. A missing cover is fine: pinning is called
 // again when the download completes.
 func (c *Cache) Pin(ctx context.Context, provider, externalID string) error {
 	_, err := c.db.ExecContext(ctx,
-		`UPDATE cover_cache SET pinned = 1 WHERE provider = ? AND external_id = ?`,
+		`UPDATE cover_cache SET pinned = 1
+		 WHERE url_hash IN (
+		   SELECT url_hash FROM cover_cache_links WHERE provider = ? AND external_id = ?
+		 )`,
 		strings.TrimSpace(provider), strings.TrimSpace(externalID),
 	)
 	if err != nil {
@@ -324,9 +353,10 @@ func (c *Cache) AssetForIdentity(ctx context.Context, provider, externalID strin
 	}
 	var name string
 	err := c.db.QueryRowContext(ctx,
-		`SELECT path FROM cover_cache
-		 WHERE provider = ? AND external_id = ?
-		 ORDER BY last_used DESC LIMIT 1`,
+		`SELECT c.path FROM cover_cache c
+		 JOIN cover_cache_links l ON l.url_hash = c.url_hash
+		 WHERE l.provider = ? AND l.external_id = ?
+		 ORDER BY c.last_used DESC LIMIT 1`,
 		provider, externalID,
 	).Scan(&name)
 	if err == sql.ErrNoRows {
@@ -353,9 +383,10 @@ func (c *Cache) RemoteForIdentity(ctx context.Context, provider, externalID stri
 	}
 	var remoteURL string
 	err := c.db.QueryRowContext(ctx,
-		`SELECT url FROM cover_cache
-		 WHERE provider = ? AND external_id = ? AND url <> ''
-		 ORDER BY last_used DESC LIMIT 1`,
+		`SELECT c.url FROM cover_cache c
+		 JOIN cover_cache_links l ON l.url_hash = c.url_hash
+		 WHERE l.provider = ? AND l.external_id = ? AND c.url <> ''
+		 ORDER BY c.last_used DESC LIMIT 1`,
 		provider, externalID,
 	).Scan(&remoteURL)
 	if err == sql.ErrNoRows {
@@ -378,9 +409,10 @@ func (c *Cache) BytesForIdentity(ctx context.Context, provider, externalID strin
 	}
 	var name, mime string
 	err := c.db.QueryRowContext(ctx,
-		`SELECT path, mime FROM cover_cache
-		 WHERE provider = ? AND external_id = ?
-		 ORDER BY last_used DESC LIMIT 1`,
+		`SELECT c.path, c.mime FROM cover_cache c
+		 JOIN cover_cache_links l ON l.url_hash = c.url_hash
+		 WHERE l.provider = ? AND l.external_id = ?
+		 ORDER BY c.last_used DESC LIMIT 1`,
 		provider, externalID,
 	).Scan(&name, &mime)
 	if err == sql.ErrNoRows {
@@ -402,7 +434,10 @@ func (c *Cache) BytesForIdentity(ctx context.Context, provider, externalID strin
 // Unpin releases an identity's covers when its stream-cache entry is deleted.
 func (c *Cache) Unpin(ctx context.Context, provider, externalID string) error {
 	_, err := c.db.ExecContext(ctx,
-		`UPDATE cover_cache SET pinned = 0 WHERE provider = ? AND external_id = ?`,
+		`UPDATE cover_cache SET pinned = 0
+		 WHERE url_hash IN (
+		   SELECT url_hash FROM cover_cache_links WHERE provider = ? AND external_id = ?
+		 )`,
 		strings.TrimSpace(provider), strings.TrimSpace(externalID),
 	)
 	if err != nil {
@@ -465,6 +500,11 @@ func (c *Cache) evict(ctx context.Context, limitBytes int64) {
 			c.logger.Warn("cover cache: cannot remove file", "file", item.name, "error", err)
 			// The row stays so the file is retried later; deleting the row first
 			// would make the image unreachable while still occupying disk.
+			continue
+		}
+		if _, err := c.db.ExecContext(ctx,
+			`DELETE FROM cover_cache_links WHERE url_hash = ?`, item.hash); err != nil {
+			c.logger.Warn("cover cache: cannot remove links", "hash", item.hash, "error", err)
 			continue
 		}
 		if _, err := c.db.ExecContext(ctx,

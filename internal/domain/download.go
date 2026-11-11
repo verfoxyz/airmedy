@@ -140,6 +140,12 @@ var (
 	ErrStreamAuth        = errors.New("stream auth rejected") // 403, retrying cannot help
 )
 
+// ErrStreamDiscardDeferred means a stream-cache entry could not be deleted
+// because a playback session still owns its file. The entry is flagged for the
+// promotion worker, which retries once the session closes; callers must treat
+// this as "not deleted yet", not as a failure.
+var ErrStreamDiscardDeferred = errors.New("stream cache discard deferred")
+
 // ErrDownloadPermanent marks a download failure a retry cannot fix (403/404/410,
 // an unsupported URL scheme). The downloader adapter wraps it.
 var ErrDownloadPermanent = errors.New("download permanently failed")

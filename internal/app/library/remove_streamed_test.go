@@ -15,9 +15,10 @@ import (
 )
 
 type fakeStreamCacheDiscarder struct {
-	ids  []string
-	err  error
-	note func()
+	ids      []string
+	deferred []string
+	err      error
+	note     func()
 }
 
 func (f *fakeStreamCacheDiscarder) DiscardEntry(_ context.Context, track *domain.TrackDTO) error {
@@ -26,6 +27,13 @@ func (f *fakeStreamCacheDiscarder) DiscardEntry(_ context.Context, track *domain
 		f.note()
 	}
 	return f.err
+}
+
+func (f *fakeStreamCacheDiscarder) SetDiscardPending(_ context.Context, track *domain.TrackDTO, pending bool) error {
+	if pending && track != nil {
+		f.deferred = append(f.deferred, track.ID)
+	}
+	return nil
 }
 
 type fakePlaybackRemover struct {
@@ -175,6 +183,27 @@ func TestRemoveTrackFromLibrary_RefusesALocalRow(t *testing.T) {
 	}
 	if len(discarder.ids) != 0 {
 		t.Fatal("a refused removal must not touch the stream cache")
+	}
+}
+
+func TestRemoveTrackFromLibrary_DeferredCacheStillDeletesTheRow(t *testing.T) {
+	svc, db, _, _ := newRemoveStreamedFixture(t)
+	ctx := context.Background()
+	seedRemoteRow(t, db, "remote-5")
+
+	// Playback still owns the file: the cache delete is deferred and flagged, the
+	// row is not.
+	discarder := &fakeStreamCacheDiscarder{err: domain.ErrStreamDiscardDeferred}
+	svc.SetStreamCacheDiscarder(discarder)
+
+	if err := svc.RemoveTrackFromLibrary(ctx, "remote-5"); err != nil {
+		t.Fatalf("RemoveTrackFromLibrary = %v, want the row removed", err)
+	}
+	if trackExists(t, db, "remote-5") {
+		t.Fatal("a deferred cache discard must not keep the row")
+	}
+	if len(discarder.deferred) != 1 || discarder.deferred[0] != "remote-5" {
+		t.Fatalf("deferred flags = %v, want the deleted entry flagged for cleanup", discarder.deferred)
 	}
 }
 

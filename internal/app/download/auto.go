@@ -2,13 +2,13 @@ package download
 
 import (
 	"context"
+	"errors"
 
 	"airmedy/internal/domain"
 )
 
 // ShouldAutoDownload decides whether adding a track to a playlist should queue
-// a download. It is a pure decision so the playlist hook, the Wails layer and
-// the tests all agree on it.
+// a download. It is a pure decision so the coordinator and the tests agree.
 //
 // The track must be remote (a local file needs nothing) and the setting must be
 // on. A track that already has an active job needs nothing either: adding it to
@@ -23,27 +23,73 @@ func ShouldAutoDownload(settings *domain.AppSettings, track *domain.TrackDTO, ac
 	return activeJob == nil
 }
 
-// AutoDownloadHook builds the function PlaylistService calls when a track is
-// added to a playlist. It consults the settings and the queue, then enqueues.
+// OnRemoteTrackSaved is the single decision point for a saved remote row.
 //
-// A failure is logged rather than returned: the playlist edit already
-// succeeded, and the user can start the download by hand.
-func (s *Service) AutoDownloadHook(ctx context.Context, track *domain.TrackDTO, playlistID string) {
-	settings, err := s.settings.GetSettings(ctx)
+// A cached copy wins: the audio is already on disk, so the row only needs a
+// durable promotion task (the worker moves it once playback releases the file).
+// Without a cache the old behaviour applies — an explicit user save always
+// downloads, a playlist add follows the auto-download setting.
+//
+// It returns the row state to show immediately: "downloading" when a job was
+// queued, otherwise "saved" (the promotion chip is resolved by the state query).
+// Failures are returned so a caller can log them; they never undo the save that
+// already happened.
+func (s *Service) OnRemoteTrackSaved(ctx context.Context, ev domain.RemoteTrackSaved) (string, error) {
+	track := ev.Track
+	if track == nil || !track.IsRemote() {
+		return "", nil
+	}
+	if active, err := s.jobs.GetActiveByTrackID(ctx, track.ID); err == nil && active != nil {
+		return domain.CatalogRowStateSaved, nil
+	} else if err != nil {
+		return "", err
+	}
+
+	if s.hasCachedAudio(ctx, track) {
+		s.PromoteOnSave(ctx, track)
+		return domain.CatalogRowStateSaved, nil
+	}
+
+	allowed := ev.Explicit
+	if !allowed {
+		settings, err := s.settings.GetSettings(ctx)
+		if err != nil {
+			return "", err
+		}
+		allowed = ShouldAutoDownload(settings, track, nil)
+	}
+	if !allowed {
+		return domain.CatalogRowStateSaved, nil
+	}
+
+	coverURL := ev.CoverURL
+	if coverURL == "" && s.coverAssets != nil {
+		provider := domain.NormalizeProvider(track.Provider)
+		if provider != "" && track.ExternalID != "" {
+			if resolved, err := s.coverAssets.RemoteForIdentity(ctx, provider, track.ExternalID); err == nil {
+				coverURL = resolved
+			}
+		}
+	}
+	if err := s.EnqueueWithCover(ctx, track.ID, ev.PlaylistID, s.DefaultQuality(ctx), coverURL); err != nil {
+		if errors.Is(err, domain.ErrDownloadAlreadyQueued) {
+			return domain.CatalogRowStateDownloading, nil
+		}
+		return "", err
+	}
+	return domain.CatalogRowStateDownloading, nil
+}
+
+// hasCachedAudio reports whether the stream cache already holds this identity's
+// audio. CachedFileInfo never creates an entry and never goes online.
+func (s *Service) hasCachedAudio(ctx context.Context, track *domain.TrackDTO) bool {
+	if s.cached == nil {
+		return false
+	}
+	_, _, _, found, err := s.cached.CachedFileInfo(ctx, track)
 	if err != nil {
-		s.logger.Warn("download: cannot read settings for auto-download", "error", err)
-		return
+		s.logger.Warn("download: cannot inspect the stream cache", "track_id", track.ID, "error", err)
+		return false
 	}
-	active, err := s.jobs.GetActiveByTrackID(ctx, track.ID)
-	if err != nil {
-		s.logger.Warn("download: cannot check for an active job", "track_id", track.ID, "error", err)
-		return
-	}
-	if !ShouldAutoDownload(settings, track, active) {
-		return
-	}
-	if err := s.Enqueue(ctx, track.ID, playlistID, settings.DownloadQuality); err != nil {
-		// A second playlist add that lost the race is the expected error here.
-		s.logger.Info("download: auto-download not queued", "track_id", track.ID, "error", err)
-	}
+	return found
 }

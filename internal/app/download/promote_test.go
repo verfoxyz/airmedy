@@ -2,6 +2,7 @@ package download_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -119,6 +120,14 @@ func seedPromotion(t *testing.T, h *harness, id, cacheQuality string, complete b
 	h.cached.quality = cacheQuality
 	h.cached.complete = complete
 	h.cached.found = true
+	h.cached.pending = append(h.cached.pending, &domain.StreamCacheEntry{
+		CacheKey:       remote.ID,
+		Provider:       domain.NormalizeProvider(remote.Provider),
+		ExternalID:     remote.ExternalID,
+		Title:          remote.Title,
+		Quality:        cacheQuality,
+		PendingPromote: true,
+	})
 	h.cached.mu.Unlock()
 
 	h.finalizer.mu.Lock()
@@ -160,15 +169,13 @@ func TestPromoteOnSave_UsesTheCacheAtEqualOrHigherQuality(t *testing.T) {
 			h.rebuild()
 			remote := seedPromotion(t, h, "remote-"+tt.name, tt.cacheQuality, true)
 
-			h.svc.PromoteOnSave(context.Background(), remote, "playlist-1")
+			h.svc.PromoteOnSave(context.Background(), remote)
+			h.svc.RunCacheMaintenanceSweep(context.Background())
 
-			waitFor(t, "the cached file to be promoted", func() bool {
-				return h.finalizer.count() == 1
-			})
-			waitFor(t, "the cache entry to be dropped", func() bool {
-				_, discarded := h.cached.counts()
-				return discarded > 0
-			})
+			require.Equal(t, 1, h.finalizer.count(), "the cached file must be promoted")
+			_, discarded := h.cached.counts()
+			assert.Equal(t, 1, discarded, "the cache entry is deleted after the move")
+			assert.Equal(t, []string{remote.ID}, h.cached.promoted)
 
 			// The merge carried the identity to the imported row.
 			row, err := h.tracks.GetByID(context.Background(), "local-remote-"+tt.name)
@@ -196,7 +203,7 @@ func TestPromoteOnSave_RedownloadsWhenTheDownloadQualityIsHigher(t *testing.T) {
 			t.Cleanup(func() { _ = h.svc.Stop(context.Background()) })
 			remote := seedPromotion(t, h, "remote-"+tt.name, tt.cacheQuality, true)
 
-			h.svc.PromoteOnSave(context.Background(), remote, "")
+			h.svc.PromoteOnSave(context.Background(), remote)
 
 			waitFor(t, "the higher-quality job to finish", func() bool {
 				jobs, err := h.jobs.List(context.Background())
@@ -210,33 +217,141 @@ func TestPromoteOnSave_RedownloadsWhenTheDownloadQualityIsHigher(t *testing.T) {
 				}
 				return false
 			})
-			waitFor(t, "the old cache entry to be dropped", func() bool {
-				_, discarded := h.cached.counts()
-				return discarded > 0
+			waitFor(t, "the request to be handed to the download queue", func() bool {
+				h.cached.mu.Lock()
+				defer h.cached.mu.Unlock()
+				return len(h.cached.cleared) == 1 && len(h.cached.pending) == 0
 			})
 		})
 	}
 }
 
-func TestPromoteOnSave_WaitsForPlaybackToReleaseTheFile(t *testing.T) {
+func TestPromotionSweep_WaitsForPlaybackToReleaseTheFile(t *testing.T) {
 	h := newHarness(t)
 	remote := seedPromotion(t, h, "remote-delayed", domain.Quality320k, true)
+	h.cached.setActive("wy", remote.ExternalID, true)
 
-	release := make(chan error, 1)
+	h.svc.PromoteOnSave(context.Background(), remote)
+	h.svc.RunCacheMaintenanceSweep(context.Background())
+
+	if h.finalizer.count() != 0 {
+		t.Fatal("promotion ran while a session still owned the file")
+	}
 	h.cached.mu.Lock()
-	h.cached.ensureWait = release
+	assert.Len(t, h.cached.pending, 1, "the request must survive the skipped round")
 	h.cached.mu.Unlock()
 
-	h.svc.PromoteOnSave(context.Background(), remote, "")
-
-	// The completion channel has not fired: a playback session still holds it.
-	time.Sleep(100 * time.Millisecond)
-	if h.finalizer.count() != 0 {
-		t.Fatal("promotion ran while the cache was still reported busy")
-	}
-
-	release <- nil
-	close(release)
-
+	// The session closes: the next sweep (woken by OnSessionClosed in production)
+	// performs the move.
+	h.cached.setActive("wy", remote.ExternalID, false)
+	h.svc.RunCacheMaintenanceSweep(context.Background())
 	waitFor(t, "the deferred promotion", func() bool { return h.finalizer.count() == 1 })
+}
+
+func TestPromotionSweep_PurgesAPromotedEntryWithoutCompletingIt(t *testing.T) {
+	h := newHarness(t)
+	seedPromotion(t, h, "remote-promoted", domain.Quality320k, true)
+	// A move happened but the cleanup did not: promoted=1 means "delete only".
+	h.cached.mu.Lock()
+	h.cached.pending[0].Promoted = true
+	h.cached.mu.Unlock()
+
+	h.svc.RunCacheMaintenanceSweep(context.Background())
+
+	_, discarded := h.cached.counts()
+	assert.Equal(t, 1, discarded)
+	h.cached.mu.Lock()
+	assert.Equal(t, 0, h.cached.ensureCalls, "a promoted entry must never be completed again")
+	assert.Empty(t, h.cached.pending)
+	h.cached.mu.Unlock()
+	assert.Equal(t, 0, h.finalizer.count())
+}
+
+func TestPromoteOnSave_RecordsTheHistoryTransitions(t *testing.T) {
+	h := newHarness(t)
+	remote := seedPromotion(t, h, "remote-history", domain.Quality320k, true)
+
+	h.svc.PromoteOnSave(context.Background(), remote)
+	// A repeated request while the row is still queued must reuse it.
+	h.svc.PromoteOnSave(context.Background(), remote)
+
+	var rows int
+	require.NoError(t, h.db.Get(&rows, `SELECT COUNT(*) FROM promotion_tasks`))
+	assert.Equal(t, 1, rows, "a repeated request must not add a second active row")
+
+	var state string
+	require.NoError(t, h.db.Get(&state, `SELECT state FROM promotion_tasks`))
+	assert.Equal(t, domain.PromotionStateQueued, state)
+	assert.Greater(t, h.sink.taskUpdates(), 0, "the tasks page is told about the request")
+
+	h.svc.RunCacheMaintenanceSweep(context.Background())
+
+	require.NoError(t, h.db.Get(&state, `SELECT state FROM promotion_tasks`))
+	assert.Equal(t, domain.PromotionStateDone, state)
+	var started, finished bool
+	require.NoError(t, h.db.Get(&started, `SELECT started_at IS NOT NULL FROM promotion_tasks`))
+	require.NoError(t, h.db.Get(&finished, `SELECT finished_at IS NOT NULL FROM promotion_tasks`))
+	assert.True(t, started)
+	assert.True(t, finished)
+}
+
+func TestPromotionSweep_FailureKeepsTheRequestForARetry(t *testing.T) {
+	h := newHarness(t)
+	remote := seedPromotion(t, h, "remote-fail", domain.Quality320k, true)
+	h.finalizer.mu.Lock()
+	h.finalizer.err = errors.New("target directory is read-only")
+	h.finalizer.mu.Unlock()
+
+	h.svc.PromoteOnSave(context.Background(), remote)
+	h.svc.RunCacheMaintenanceSweep(context.Background())
+
+	var state, lastError string
+	require.NoError(t, h.db.Get(&state, `SELECT state FROM promotion_tasks`))
+	require.NoError(t, h.db.Get(&lastError, `SELECT error FROM promotion_tasks`))
+	assert.Equal(t, domain.PromotionStateFailed, state)
+	assert.Contains(t, lastError, "read-only")
+
+	h.cached.mu.Lock()
+	assert.Len(t, h.cached.pending, 1, "the entry stays pending so the next sweep retries")
+	h.cached.mu.Unlock()
+}
+
+func TestDownloadCompletionFlagsTheCacheWhenPlaybackStillOwnsIt(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	track := h.seedRemote(t, "remote-downloading")
+	// The decoder is still reading the cached copy.
+	h.cached.mu.Lock()
+	h.cached.discardErr = domain.ErrStreamDiscardDeferred
+	h.cached.mu.Unlock()
+
+	require.NoError(t, h.svc.Enqueue(ctx, track.ID, "", domain.Quality320k))
+	job, err := h.jobs.ClaimNext(ctx, time.Now().Add(24*time.Hour))
+	require.NoError(t, err)
+	require.NotNil(t, job)
+	h.svc.ProcessJobForTest(job)
+
+	h.cached.mu.Lock()
+	require.Len(t, h.cached.discards, 1, "a deferred discard must be flagged for the worker")
+	assert.False(t, h.cached.discards[0].Promoted, "a normal download must not pretend it promoted")
+	h.cached.discardErr = nil
+	h.cached.mu.Unlock()
+
+	// Once playback releases the file, the maintenance sweep removes the copy.
+	h.svc.RunCacheMaintenanceSweep(ctx)
+	h.cached.mu.Lock()
+	assert.Empty(t, h.cached.discards)
+	h.cached.mu.Unlock()
+}
+
+func TestPromotionOnStartSweepsRequestsLeftByAPreviousRun(t *testing.T) {
+	h := newHarness(t)
+	remote := seedPromotion(t, h, "remote-startup", domain.Quality320k, true)
+	// A previous run recorded the request and flagged the entry, then quit.
+	require.NoError(t, h.cached.MarkPendingPromote(context.Background(), remote))
+
+	require.NoError(t, h.svc.Start(context.Background()))
+	t.Cleanup(func() { _ = h.svc.Stop(context.Background()) })
+
+	waitFor(t, "the pending request to finish", func() bool { return h.finalizer.count() == 1 })
 }

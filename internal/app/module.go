@@ -139,6 +139,9 @@ var Module = fx.Module("app",
 		// narrow port so app/catalog imports none of them.
 		func(svc *download.Service) catalog.RemoteTracks { return svc },
 		func(svc *download.Service) catalog.LocalTracks { return svc },
+		// Saving a row is decided in one place: the download coordinator promotes
+		// a cached stream copy or queues a download.
+		func(svc *download.Service) catalog.SavedTracks { return svc },
 		func(cache *stream.Cache) download.CachedAudio { return cache },
 		func(lib *library.LibraryService) download.LocalFileRemover { return lib },
 		func(st *appsettings.SettingsService) catalog.SettingsReader { return st },
@@ -182,6 +185,12 @@ var Module = fx.Module("app",
 		// neither app/stream nor app/player.
 		lib.SetStreamCacheDiscarder(cache)
 		lib.SetPlaybackRemover(playerSvc)
+		// Promotion moves the cache file, so it waits for playback to release it;
+		// a closing session is the fastest signal, the worker's timer is the
+		// backstop. Wire direction: stream notifies download, never the reverse.
+		cache.OnSessionClosed(func(_, _ string) {
+			downloadSvc.WakeCacheMaintenance()
+		})
 		pairingSvc.AddDeviceConnectionListener(func(deviceID string, connected bool) {
 			if connected {
 				return
@@ -207,7 +216,12 @@ var Module = fx.Module("app",
 					// A saved remote track becomes permanent: complete the stream
 					// cache and promote it (or re-download at a higher quality).
 					if track.IsFavorite {
-						downloadSvc.PromoteOnSave(context.Background(), track, "")
+						if _, err := downloadSvc.OnRemoteTrackSaved(context.Background(), domain.RemoteTrackSaved{
+							Track:    track,
+							Explicit: true,
+						}); err != nil {
+							slog.Warn("promote saved favorite", "track_id", track.ID, "error", err)
+						}
 					}
 				})
 
@@ -261,12 +275,17 @@ var Module = fx.Module("app",
 					playerSvc.SetAutoAdvanceNotificationsEnabled(settings.AutoAdvanceNotificationsEnabled)
 				})
 
-				// Adding an online track to a playlist queues its download when
-				// auto-download is on and always offers stream-cache promotion.
-				// Wired here so the playlist package never imports download.
+				// Adding an online track to a playlist is one save event: the
+				// coordinator promotes a cached copy, otherwise the auto-download
+				// setting decides. Wired here so the playlist package never imports
+				// download.
 				playlistSvc.SetAutoDownload(func(ctx context.Context, track *domain.TrackDTO, playlistID string) {
-					downloadSvc.AutoDownloadHook(ctx, track, playlistID)
-					downloadSvc.PromoteOnSave(ctx, track, playlistID)
+					if _, err := downloadSvc.OnRemoteTrackSaved(ctx, domain.RemoteTrackSaved{
+						Track:      track,
+						PlaylistID: playlistID,
+					}); err != nil {
+						slog.Warn("auto-download decision failed", "track_id", track.ID, "error", err)
+					}
 				})
 
 				if err := playlistSvc.EnsureFavoritesPlaylist(ctx); err != nil {

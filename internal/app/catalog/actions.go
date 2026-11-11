@@ -2,7 +2,6 @@ package catalog
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -18,13 +17,14 @@ type RemoteTracks interface {
 	// EnsureRemoteTrack registers the identity and returns its row, creating it
 	// only when nothing represents it yet.
 	EnsureRemoteTrack(ctx context.Context, spec domain.RemoteTrackSpec) (*domain.TrackDTO, error)
-	// EnqueueWithCover queues one download and carries the cover URL the search
-	// result supplied, so the finished file can embed the artwork. Empty is fine.
-	// domain.ErrDownloadAlreadyQueued is success for an action: the user asked
-	// for the download, and it is already happening.
-	EnqueueWithCover(ctx context.Context, trackID, playlistID, quality, coverURL string) error
-	// DefaultQuality reports the user's download quality.
-	DefaultQuality(ctx context.Context) string
+}
+
+// SavedTracks hands a saved row to the download coordinator, the single place
+// that decides between promoting an existing stream-cache entry and queueing a
+// download. *download.Service implements it; app/catalog never imports it.
+type SavedTracks interface {
+	// OnRemoteTrackSaved returns the row state to show immediately.
+	OnRemoteTrackSaved(ctx context.Context, ev domain.RemoteTrackSaved) (string, error)
 }
 
 // SettingsReader is the slice of the settings service that decides whether a
@@ -281,13 +281,26 @@ func (s *Service) Act(ctx context.Context, request ActionRequest) (ActionOutcome
 		return ActionOutcome{TrackID: track.ID, State: domain.CatalogRowStateSaved}, nil
 	}
 
-	if err := s.library.EnqueueWithCover(ctx, track.ID, request.PlaylistID,
-		s.library.DefaultQuality(ctx), spec.CoverURL); err != nil &&
-		!errors.Is(err, domain.ErrDownloadAlreadyQueued) {
-		return ActionOutcome{TrackID: track.ID}, fmt.Errorf("catalog action: enqueue %s: %w", track.ID, err)
+	// The save itself is done. Let the coordinator choose between promoting the
+	// stream copy that is already on disk and queueing a download; the row state
+	// it returns is what the search chip shows until the next state query.
+	state := domain.CatalogRowStateDownloading
+	if s.savedTracks != nil {
+		resolved, err := s.savedTracks.OnRemoteTrackSaved(ctx, domain.RemoteTrackSaved{
+			Track:      track,
+			PlaylistID: request.PlaylistID,
+			CoverURL:   spec.CoverURL,
+			Explicit:   true,
+		})
+		if err != nil {
+			// A failed decision must not undo the save the user just made.
+			s.logger.Warn("catalog: cannot start work for a saved track",
+				"track_id", track.ID, "error", err)
+		} else if resolved != "" {
+			state = resolved
+		}
 	}
-
-	return ActionOutcome{TrackID: track.ID, State: domain.CatalogRowStateDownloading}, nil
+	return ActionOutcome{TrackID: track.ID, State: state}, nil
 }
 
 // fetchCoverForSave asks the source once more with covers forced on. It is the

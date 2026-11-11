@@ -93,8 +93,8 @@ cached one is exactly why a naive retry "does nothing".
 3. Write tags with taglib, including the cover when the enqueue carried one. The cover URL
    is the source's large rendition (500×500 or original), not the 100×100 search
    thumbnail; a source that does not distinguish sizes falls back to its thumbnail. It is
-   stored **before** the job is enqueued: the playlist auto-download hook may already have
-   created the job, and an `ErrDownloadAlreadyQueued` answer must not drop the cover.
+   stored **before** the job is enqueued: a repeated save may already hold a job, and an
+   `ErrDownloadAlreadyQueued` answer must not drop the cover.
    Cover URLs live in memory only: a restart loses the cover, never the download. Tags are
    read back afterwards; an empty title or artist is logged as a warning. A caller that
    already holds the bytes (promoting a streamed file) passes them as `CoverData`
@@ -104,6 +104,51 @@ cached one is exactly why a naive retry "does nothing".
 5. `LibraryService.ImportFileWithID(path)` → the track id this file became.
 6. Attach to `playlist_id` when the job carries one (it may be NULL: deleting the playlist
    does not abort an in-flight download, the FK is `ON DELETE SET NULL`).
+
+## Stream promotion
+
+A saved remote track can be turned into a library file without downloading it again:
+the stream cache's audio is *moved* into the download directory. Because the move must
+not happen while the decoder holds the file, the request is durable and the work runs in
+a worker.
+
+- **Request.** `download.Service.OnRemoteTrackSaved(ctx, domain.RemoteTrackSaved)` is the
+  single decision point for a saved remote row. A stream-cache entry for the identity wins:
+  it calls `PromoteOnSave`, which writes `stream_cache.pending_promote=1` and a `queued`
+  `promotion_tasks` row and wakes the worker — no download job is created. Without a cache
+  an explicit save (search-row save, favorite) downloads, and a playlist add follows the
+  "download when adding to a playlist" switch. A repeated request reuses the active history
+  row, and an active download job wins: nothing is promoted then. The catalog action, the
+  playlist auto-download hook and the favorite listener only send the event; they never
+  queue or promote themselves.
+- **Worker.** Its own loop (not the download worker): one sweep on `Start`, one on every
+  wake, and a 30 s backstop. `stream.Cache.OnSessionClosed` wakes it, wired in `app.Module`.
+  `RunCacheMaintenanceSweep` is single-flight and handles **pending discards first**, then
+  pending promotions. Entries with an active playback session are skipped, not failed.
+- **Two independent flags.** `promoted` means the audio was moved into the library;
+  `discard_pending` means the cache is no longer needed and must be deleted once idle. A
+  promotion sets both after the move; a finished download sets only `discard_pending` when
+  `DiscardEntry` is deferred, because nothing was moved. Neither flag may reach
+  `EnsureComplete` (the file is gone or already in the library): `promoted=1` entries and
+  `discard_pending=1` entries only get deleted.
+- **Quality.** Cache tier ≥ download setting → promote. Download setting higher (or the
+  cache tier unknown, treated as lowest) → `Enqueue` at the download quality and clear
+  `pending_promote`; that job owns the file and flags the cache for cleanup when it
+  finishes.
+- **Deferred delete.** `DiscardEntry` returns `domain.ErrStreamDiscardDeferred` while a
+  session owns the entry; every caller then sets `discard_pending` so the maintenance
+  worker deletes it once the session closes. A promoted entry whose file is already gone
+  is a success.
+- **Replay.** Opening a `discard_pending` entry clears the flag and reuses the audio (the
+  user asked to play it again). If a promoted entry's file was already moved, Open clears
+  `promoted` too, so the fresh download is not treated as the old, moved one.
+- **Failure.** The entry stays pending and the history row goes `failed`; the next sweep
+  retries the same request. A missing library row (deleted while pending) or a row that
+  is already local flags the cache for deletion instead of promoting, so a removed track
+  is not resurrected.
+- **History.** `promotion_tasks` is the tasks page's source: `queued → running →
+  done|failed`, written through `domain.PromotionTaskRepository`. Every write emits
+  `task:updated`.
 
 ## Merge rules
 

@@ -130,6 +130,10 @@ SQLite database managed via `golang-migrate` for schema versioning and `sqlx` fo
 | 000091 | `stream_cache.up.sql` | Add `stream_cache(cache_key, provider, external_id, title, title_key, artist, artist_key, artists, album, duration_ms, quality, audio_path, total_bytes, received_bytes, complete, playback_progress, pending_promote, created_at, last_used)` plus identity/match/LRU indexes. The audio body stays at `<DataDir>/stream-cache/<cache_key>.audio`; this row is the only metadata, replacing the `<key>.json` sidecar. `cache_key` is `sha256(provider + "/" + external_id)`; `title_key`/`artist_key` are `domain.NormalizationKey` values used for strict cross-source matching, with `duration_ms` compared only when both sides are non-zero. Timestamps are Unix seconds. Down drops the indexes and table |
 | 000092 | `cover_cache_identity.up.sql` | Add `cover_cache.provider/external_id/pinned` plus `idx_cover_cache_identity`. The identity is written by `GetCatalogCovers` so a cover can be pinned while its audio is in `stream_cache`; eviction orders by `pinned ASC, last_used ASC`, so unpinned covers go first and a pinned one survives until every unpinned row is gone. Existing rows get an empty identity and `pinned = 0` (pure LRU) and are filled in on the next hit for the same URL. Down drops the index and columns |
 | 000093 | `cover_cache_url.up.sql` | Add `cover_cache.url TEXT NOT NULL DEFAULT ''`, the remote URL a cover came from. A row keyed only by `url_hash` can serve the file but cannot re-fetch an evicted image, and promotion into the library needs the URL (or the cached bytes) to embed artwork. Existing rows keep an empty URL, filled in on the next hit for the same hash. Down drops the column |
+| 000094 | `stream_cache_promoted.up.sql` | Add `stream_cache.promoted INTEGER NOT NULL DEFAULT 0`. Promotion **moves** the cache file, so the row outlives its audio; `promoted=1` tells the worker the entry must never be completed again (that would re-download bytes already in the library). Down drops the column. Frozen: applied databases never re-run it, so later columns go in a new migration |
+| 000095 | `promotion_tasks.up.sql` | Add `promotion_tasks(id, track_id, provider, external_id, title, artist, state, quality, error, created_at, started_at, finished_at)` plus `(state, created_at)` and `(provider, external_id)` indexes. One row per promotion request: `queued|running` is the single active row an entry may have (a repeated save reuses it), `done|failed` is history for the download/tasks page. Title/artist are request-time snapshots. Down drops the indexes and table |
+| 000096 | `stream_cache_discard_pending.up.sql` | Add `stream_cache.discard_pending INTEGER NOT NULL DEFAULT 0`, the independent "this cache is no longer needed" flag: set by a promotion after the move, and by a finished download whose `DiscardEntry` was deferred because playback still owned the file. The cache-maintenance worker deletes flagged entries once idle. This is a separate migration because 000094 had already run on existing databases (editing it afterwards left them without the column). Down drops the column |
+| 000097 | `cover_cache_links.up.sql` | Add `cover_cache_links(url_hash, provider, external_id, created_at)` plus identity and hash indexes, and backfill it from the non-empty single-value `cover_cache.provider/external_id` columns. One album cover is shared by several tracks, so identity is many-to-many: `AssetForIdentity`/`RemoteForIdentity`/`BytesForIdentity` join links, and every `Get` inserts a link for the identity that resolved to the URL. `pinned` stays on `cover_cache` (any linked identity pins the URL). Down drops the indexes and table; the legacy columns stay for rollback |
 
 `listeningRepository.GetListeningInsights` returns up to 50 entries for both Top Artists
 (ordered by listened seconds) and Top Tracks (ordered by play count, then listened
@@ -384,13 +388,44 @@ cover_cache (   -- persistent remote cover cache (000089)
     bytes INTEGER NOT NULL,      -- recorded on write so eviction SUMs without stat-ing files
     mime TEXT NOT NULL,          -- image/jpeg | image/png | image/webp
     last_used INTEGER NOT NULL,  -- unix seconds; the LRU key, updated on every hit
-    provider TEXT NOT NULL,      -- remote identity, for pinning and identity lookups (000092)
+    provider TEXT NOT NULL,      -- legacy single-value identity (000092); reads use cover_cache_links
     external_id TEXT NOT NULL,
     pinned INTEGER NOT NULL,     -- eviction orders pinned rows last (000092)
     url TEXT NOT NULL            -- remote URL, so an evicted image can be re-fetched (000093)
 )
 -- idx_cover_cache_last_used: INDEX(last_used)
 -- idx_cover_cache_identity: INDEX(provider, external_id)
+```
+
+```sql
+cover_cache_links (   -- many-to-many identity → cover (000097)
+    url_hash TEXT NOT NULL,     -- cover_cache.url_hash; one image, several tracks
+    provider TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (url_hash, provider, external_id)
+)
+-- idx_cover_cache_links_identity: INDEX(provider, external_id)
+-- idx_cover_cache_links_hash: INDEX(url_hash)
+```
+
+```sql
+promotion_tasks (   -- stream-cache promotion history (000095)
+    id TEXT PRIMARY KEY,
+    track_id TEXT,                           -- snapshot; the row may be merged away later
+    provider TEXT NOT NULL DEFAULT '',
+    external_id TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    artist TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'queued',    -- queued|running|done|failed
+    quality TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at DATETIME,
+    finished_at DATETIME
+)
+-- idx_promotion_tasks_state: INDEX(state, created_at DESC)
+-- idx_promotion_tasks_identity: INDEX(provider, external_id)
 ```
 
 ### Listening Insights Tables

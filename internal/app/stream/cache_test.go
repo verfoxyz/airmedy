@@ -140,6 +140,40 @@ func (f *fakeStreamCacheRepo) SetPendingPromote(_ context.Context, key string, p
 	return f.update(key, func(entry *domain.StreamCacheEntry) { entry.PendingPromote = pending })
 }
 
+func (f *fakeStreamCacheRepo) SetPromoted(_ context.Context, key string, promoted bool) error {
+	return f.update(key, func(entry *domain.StreamCacheEntry) { entry.Promoted = promoted })
+}
+
+func (f *fakeStreamCacheRepo) SetDiscardPending(_ context.Context, key string, pending bool) error {
+	return f.update(key, func(entry *domain.StreamCacheEntry) { entry.DiscardPending = pending })
+}
+
+func (f *fakeStreamCacheRepo) ListPendingDiscard(_ context.Context) ([]*domain.StreamCacheEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	entries := make([]*domain.StreamCacheEntry, 0, len(f.entries))
+	for _, entry := range f.entries {
+		if entry.DiscardPending {
+			entries = append(entries, cloneEntry(entry))
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].LastUsed < entries[j].LastUsed })
+	return entries, nil
+}
+
+func (f *fakeStreamCacheRepo) ListPendingPromote(_ context.Context) ([]*domain.StreamCacheEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	entries := make([]*domain.StreamCacheEntry, 0, len(f.entries))
+	for _, entry := range f.entries {
+		if entry.PendingPromote {
+			entries = append(entries, cloneEntry(entry))
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].LastUsed < entries[j].LastUsed })
+	return entries, nil
+}
+
 func (f *fakeStreamCacheRepo) Delete(_ context.Context, key string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -160,9 +194,9 @@ func (f *fakeStreamCacheRepo) get(t *testing.T, key string) *domain.StreamCacheE
 
 // fakeCoverPinner records pin/unpin calls by remote identity.
 type fakeCoverPinner struct {
-	mu      sync.Mutex
-	pins    map[string]int
-	unpins  map[string]int
+	mu     sync.Mutex
+	pins   map[string]int
+	unpins map[string]int
 }
 
 func newFakeCoverPinner() *fakeCoverPinner {
@@ -911,6 +945,197 @@ func TestOpenPinsTheStreamCover(t *testing.T) {
 
 	if pinner.pinCount("wy/42") == 0 {
 		t.Fatal("Open did not pin the cover for the streamed identity")
+	}
+}
+
+func TestDiscardEntryDefersUntilPlaybackCloses(t *testing.T) {
+	upstream := &chunkedUpstream{body: bytes.Repeat([]byte{7}, 2<<20), chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	repo := newFakeStreamCacheRepo()
+	cache := newTestCacheWithRepo(t,
+		&fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}}, repo)
+	ctx := context.Background()
+	track := remoteTrack()
+
+	session, err := cache.Open(ctx, track)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	closed := make(chan string, 1)
+	cache.OnSessionClosed(func(provider, externalID string) {
+		closed <- provider + "/" + externalID
+	})
+
+	if err := cache.MarkPendingPromote(ctx, track); err != nil {
+		t.Fatalf("MarkPendingPromote: %v", err)
+	}
+	if err := cache.DiscardEntry(ctx, track); !errors.Is(err, domain.ErrStreamDiscardDeferred) {
+		t.Fatalf("DiscardEntry = %v, want ErrStreamDiscardDeferred", err)
+	}
+	// The caller owns the retry: the entry keeps its data and gets the flag.
+	if err := cache.SetDiscardPending(ctx, track, true); err != nil {
+		t.Fatalf("SetDiscardPending: %v", err)
+	}
+	entry := repo.get(t, session.ID)
+	if !entry.DiscardPending || entry.Promoted {
+		t.Fatalf("deferred entry = %+v, want discard_pending without promoted", entry)
+	}
+	if _, statErr := os.Stat(filepath.Join(cache.dir, entry.AudioPath)); statErr != nil {
+		t.Fatalf("the audio must stay while a session owns it: %v", statErr)
+	}
+
+	cache.Close(session)
+	select {
+	case got := <-closed:
+		if got != "wy/42" {
+			t.Fatalf("session-closed callback got %q, want wy/42", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Closing the session did not notify the promotion observer")
+	}
+
+	if err := cache.DiscardEntry(ctx, track); err != nil {
+		t.Fatalf("DiscardEntry after close: %v", err)
+	}
+	if remaining, err := repo.GetByIdentity(ctx, "wy", "42"); err != nil || remaining != nil {
+		t.Fatalf("entry = %+v, err = %v, want the row deleted", remaining, err)
+	}
+}
+
+func TestDiscardEntryAcceptsAPromotedEntryWhoseFileIsGone(t *testing.T) {
+	repo := newFakeStreamCacheRepo()
+	cache := &Cache{dir: t.TempDir(), repo: repo, sessions: map[string]*cacheSession{}, logger: slog.Default()}
+	ctx := context.Background()
+
+	if err := repo.Upsert(ctx, &domain.StreamCacheEntry{
+		CacheKey: "wy/42", Provider: "wy", ExternalID: "42", AudioPath: "wy-42.audio",
+		PendingPromote: true, Promoted: true,
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	if err := cache.DiscardEntry(ctx, remoteTrack()); err != nil {
+		t.Fatalf("DiscardEntry = %v, want success for a moved file", err)
+	}
+	if remaining, err := repo.GetByIdentity(ctx, "wy", "42"); err != nil || remaining != nil {
+		t.Fatalf("entry = %+v, err = %v, want the row deleted", remaining, err)
+	}
+}
+
+func TestOpenHealsDeletionIntentWhenTheCacheIsReused(t *testing.T) {
+	repo := newFakeStreamCacheRepo()
+	cache := newTestCacheWithRepo(t, &fakeResolver{}, repo)
+	audioPath := "wy-42.audio"
+	if err := os.WriteFile(filepath.Join(cache.dir, audioPath), []byte("cached"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Upsert(context.Background(), &domain.StreamCacheEntry{
+		CacheKey: "wy/42", Provider: "wy", ExternalID: "42", AudioPath: audioPath,
+		TotalBytes: 6, ReceivedBytes: 6, Complete: true,
+		PendingPromote: true, Promoted: true, DiscardPending: true,
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	session, err := cache.Open(context.Background(), remoteTrack())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+
+	entry := repo.get(t, "wy/42")
+	if entry.DiscardPending {
+		t.Fatal("replaying a cached entry must clear discard_pending, or the audio would be deleted under the decoder")
+	}
+	if !entry.Promoted {
+		t.Fatal("the audio was moved into the library, so promoted must stay set")
+	}
+}
+
+func TestOpenClearsPromotionWhenTheMovedFileIsGone(t *testing.T) {
+	upstream := &chunkedUpstream{body: bytes.Repeat([]byte{9}, 2<<20), chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	repo := newFakeStreamCacheRepo()
+	cache := newTestCacheWithRepo(t,
+		&fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}}, repo)
+	// The file was moved away by a promotion, leaving the flags behind.
+	if err := repo.Upsert(context.Background(), &domain.StreamCacheEntry{
+		CacheKey: "wy/42", Provider: "wy", ExternalID: "42", AudioPath: "wy-42.audio",
+		TotalBytes: 6, ReceivedBytes: 6, Complete: true,
+		PendingPromote: true, Promoted: true, DiscardPending: true,
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	session, err := cache.Open(context.Background(), remoteTrack())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+
+	entry := repo.get(t, "wy/42")
+	if entry.Promoted || entry.DiscardPending {
+		t.Fatalf("entry = %+v, want a fresh cache without deletion intent", entry)
+	}
+}
+
+func TestPendingPromotionsAndActiveSessions(t *testing.T) {
+	upstream := &chunkedUpstream{body: bytes.Repeat([]byte{8}, 2<<20), chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	repo := newFakeStreamCacheRepo()
+	cache := newTestCacheWithRepo(t,
+		&fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}}, repo)
+	ctx := context.Background()
+
+	if err := repo.Upsert(ctx, &domain.StreamCacheEntry{
+		CacheKey: "other/7", Provider: "kg", ExternalID: "7", AudioPath: "kg-7.audio",
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	track := remoteTrack()
+	session, err := cache.Open(ctx, track)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if !cache.HasActiveSession("wy", "42") {
+		t.Fatal("HasActiveSession = false while a session is open")
+	}
+	if cache.HasActiveSession("kg", "7") {
+		t.Fatal("HasActiveSession matched an unrelated identity")
+	}
+
+	if err := cache.MarkPendingPromote(ctx, track); err != nil {
+		t.Fatalf("MarkPendingPromote: %v", err)
+	}
+	entries, err := cache.PendingPromotions(ctx)
+	if err != nil {
+		t.Fatalf("PendingPromotions: %v", err)
+	}
+	if len(entries) != 1 || entries[0].ExternalID != "42" {
+		t.Fatalf("pending = %+v, want only the flagged entry", entries)
+	}
+
+	if err := cache.SetDiscardPending(ctx, track, true); err != nil {
+		t.Fatalf("SetDiscardPending: %v", err)
+	}
+	discards, err := cache.PendingDiscards(ctx)
+	if err != nil {
+		t.Fatalf("PendingDiscards: %v", err)
+	}
+	if len(discards) != 1 || discards[0].ExternalID != "42" {
+		t.Fatalf("discards = %+v, want only the flagged entry", discards)
+	}
+
+	cache.Close(session)
+	if cache.HasActiveSession("wy", "42") {
+		t.Fatal("HasActiveSession = true after Close")
 	}
 }
 

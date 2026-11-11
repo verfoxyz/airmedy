@@ -15,6 +15,9 @@ const (
 	EventDownloadProgress = "download:progress"
 	EventDownloadDone     = "download:done"
 	EventDownloadFailed   = "download:failed"
+	// EventTaskUpdated announces a promotion-history change. The tasks page
+	// reloads; the payload is empty because it reads the list itself.
+	EventTaskUpdated = "task:updated"
 )
 
 // DownloadProgressEvent is what the UI needs for one progress ring. It is a
@@ -42,7 +45,9 @@ type DownloadService struct {
 // constructed before the window and events are simply dropped until one exists.
 func NewDownloadService(svc *download.Service) *DownloadService {
 	s := &DownloadService{svc: svc}
-	svc.SetEventSink(s)
+	// The sink wrapper keeps TaskUpdated off the Wails method surface: it is an
+	// event payload trigger, not something the frontend calls.
+	svc.SetEventSink(downloadEventSink{DownloadService: s})
 	return s
 }
 
@@ -61,6 +66,22 @@ func (s *DownloadService) DownloadDone(job *domain.DownloadJob) {
 // either without a second event type.
 func (s *DownloadService) DownloadFailed(job *domain.DownloadJob) {
 	emitDownloadEvent(EventDownloadFailed, job)
+}
+
+// downloadEventSink adds the promotion notification without widening the
+// service's public (bound) methods.
+type downloadEventSink struct {
+	*DownloadService
+}
+
+// TaskUpdated implements download.EventSink: a promotion task changed state, so
+// the tasks page reloads its list.
+func (downloadEventSink) TaskUpdated() {
+	app := application.Get()
+	if app == nil || app.Event == nil {
+		return
+	}
+	app.Event.Emit(EventTaskUpdated, nil)
 }
 
 func emitDownloadEvent(name string, job *domain.DownloadJob) {

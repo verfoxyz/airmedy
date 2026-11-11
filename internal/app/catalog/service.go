@@ -41,6 +41,7 @@ type Service struct {
 	states         domain.CatalogRowStateResolver
 	library        RemoteTracks
 	localTracks    LocalTracks
+	savedTracks    SavedTracks
 	favorites      FavoritesWriter
 	playlists      PlaylistMembership
 	settings       SettingsReader
@@ -81,6 +82,7 @@ type Deps struct {
 	States         domain.CatalogRowStateResolver
 	Library        RemoteTracks
 	LocalTracks    LocalTracks
+	SavedTracks    SavedTracks
 	Favorites      FavoritesWriter
 	Playlists      PlaylistMembership
 	Settings       SettingsReader
@@ -108,6 +110,7 @@ func NewService(deps Deps) *Service {
 		states:         deps.States,
 		library:        deps.Library,
 		localTracks:    deps.LocalTracks,
+		savedTracks:    deps.SavedTracks,
 		favorites:      deps.Favorites,
 		playlists:      deps.Playlists,
 		settings:       deps.Settings,

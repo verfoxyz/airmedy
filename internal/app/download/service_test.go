@@ -130,16 +130,23 @@ type stubSettings struct {
 
 // stubCachedAudio stands in for the stream cache's promotion surface.
 type stubCachedAudio struct {
-	mu         sync.Mutex
-	path       string
-	quality    string
-	complete   bool
-	found      bool
-	infoErr    error
-	ensureErr  error
-	ensureWait <-chan error
-	marked     int
-	discarded  int
+	mu          sync.Mutex
+	path        string
+	quality     string
+	complete    bool
+	found       bool
+	infoErr     error
+	ensureErr   error
+	marked      int
+	discarded   int
+	ensureCalls int
+
+	pending    []*domain.StreamCacheEntry
+	discards   []*domain.StreamCacheEntry
+	active     map[string]bool
+	promoted   []string
+	cleared    []string
+	discardErr error
 }
 
 func (c *stubCachedAudio) CachedFileInfo(context.Context, *domain.TrackDTO) (string, string, bool, bool, error) {
@@ -150,32 +157,153 @@ func (c *stubCachedAudio) CachedFileInfo(context.Context, *domain.TrackDTO) (str
 
 func (c *stubCachedAudio) EnsureComplete(context.Context, *domain.TrackDTO) (<-chan error, error) {
 	c.mu.Lock()
-	wait := c.ensureWait
+	c.ensureCalls++
 	err := c.ensureErr
 	c.mu.Unlock()
 	if err != nil {
 		return nil, err
-	}
-	if wait != nil {
-		return wait, nil
 	}
 	done := make(chan error, 1)
 	close(done)
 	return done, nil
 }
 
-func (c *stubCachedAudio) MarkPendingPromote(context.Context, *domain.TrackDTO) error {
+func (c *stubCachedAudio) MarkPendingPromote(_ context.Context, track *domain.TrackDTO) error {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.marked++
-	c.mu.Unlock()
+	if track == nil {
+		return nil
+	}
+	provider := domain.NormalizeProvider(track.Provider)
+	for _, entry := range c.pending {
+		if entry.Provider == provider && entry.ExternalID == track.ExternalID {
+			return nil
+		}
+	}
+	c.pending = append(c.pending, &domain.StreamCacheEntry{
+		CacheKey:       track.ID,
+		Provider:       provider,
+		ExternalID:     track.ExternalID,
+		Title:          track.Title,
+		Quality:        c.quality,
+		PendingPromote: true,
+	})
 	return nil
 }
 
-func (c *stubCachedAudio) DiscardEntry(context.Context, *domain.TrackDTO) error {
+func (c *stubCachedAudio) DiscardEntry(_ context.Context, track *domain.TrackDTO) error {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.discarded++
-	c.mu.Unlock()
+	if c.discardErr != nil {
+		return c.discardErr
+	}
+	if track != nil {
+		provider := domain.NormalizeProvider(track.Provider)
+		keep := func(list []*domain.StreamCacheEntry) []*domain.StreamCacheEntry {
+			kept := list[:0]
+			for _, entry := range list {
+				if entry.Provider == provider && entry.ExternalID == track.ExternalID {
+					continue
+				}
+				kept = append(kept, entry)
+			}
+			return kept
+		}
+		c.pending = keep(c.pending)
+		c.discards = keep(c.discards)
+	}
 	return nil
+}
+
+func (c *stubCachedAudio) PendingPromotions(context.Context) ([]*domain.StreamCacheEntry, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]*domain.StreamCacheEntry(nil), c.pending...), nil
+}
+
+func (c *stubCachedAudio) PendingDiscards(context.Context) ([]*domain.StreamCacheEntry, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]*domain.StreamCacheEntry(nil), c.discards...), nil
+}
+
+func (c *stubCachedAudio) HasActiveSession(provider, externalID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.active[domain.NormalizeProvider(provider)+"/"+externalID]
+}
+
+func (c *stubCachedAudio) SetPromoted(_ context.Context, track *domain.TrackDTO, promoted bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if track == nil {
+		return nil
+	}
+	if promoted {
+		c.promoted = append(c.promoted, track.ID)
+	}
+	for _, entry := range c.pending {
+		if entry.ExternalID == track.ExternalID {
+			entry.Promoted = promoted
+		}
+	}
+	return nil
+}
+
+func (c *stubCachedAudio) SetDiscardPending(_ context.Context, track *domain.TrackDTO, pending bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if track == nil {
+		return nil
+	}
+	provider := domain.NormalizeProvider(track.Provider)
+	filter := func(list []*domain.StreamCacheEntry) []*domain.StreamCacheEntry {
+		kept := list[:0]
+		for _, entry := range list {
+			if entry.Provider == provider && entry.ExternalID == track.ExternalID {
+				continue
+			}
+			kept = append(kept, entry)
+		}
+		return kept
+	}
+	if !pending {
+		c.discards = filter(c.discards)
+		return nil
+	}
+	for _, entry := range c.discards {
+		if entry.Provider == provider && entry.ExternalID == track.ExternalID {
+			return nil
+		}
+	}
+	c.discards = append(c.discards, &domain.StreamCacheEntry{
+		CacheKey:       track.ID,
+		Provider:       provider,
+		ExternalID:     track.ExternalID,
+		Title:          track.Title,
+		DiscardPending: true,
+	})
+	return nil
+}
+
+func (c *stubCachedAudio) ClearPendingPromote(_ context.Context, track *domain.TrackDTO) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if track != nil {
+		c.cleared = append(c.cleared, track.ID)
+	}
+	return nil
+}
+
+func (c *stubCachedAudio) setActive(provider, externalID string, active bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.active == nil {
+		c.active = make(map[string]bool)
+	}
+	c.active[domain.NormalizeProvider(provider)+"/"+externalID] = active
 }
 
 func (c *stubCachedAudio) counts() (marked, discarded int) {
@@ -240,6 +368,7 @@ type recordingSink struct {
 	progress []*domain.DownloadJob
 	done     []*domain.DownloadJob
 	failed   []*domain.DownloadJob
+	tasks    int
 }
 
 func (s *recordingSink) DownloadProgress(j *domain.DownloadJob) {
@@ -258,6 +387,18 @@ func (s *recordingSink) DownloadFailed(j *domain.DownloadJob) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failed = append(s.failed, j)
+}
+
+func (s *recordingSink) TaskUpdated() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tasks++
+}
+
+func (s *recordingSink) taskUpdates() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tasks
 }
 
 func (s *recordingSink) counts() (progress, done, failed int) {
@@ -296,6 +437,7 @@ type harness struct {
 	finalizer   *stubFinalizer
 	cached      *stubCachedAudio
 	coverAssets *stubCoverAssets
+	promotions  domain.PromotionTaskRepository
 	probe       *stubDurationProbe
 	sink        *recordingSink
 	dir         string
@@ -330,6 +472,7 @@ func newHarness(t *testing.T) *harness {
 		finalizer:   &stubFinalizer{},
 		cached:      &stubCachedAudio{},
 		coverAssets: &stubCoverAssets{},
+		promotions:  sqlite.NewPromotionTaskRepository(db),
 		probe:       &stubDurationProbe{err: errors.New("probe unavailable in this fixture")},
 		sink:        &recordingSink{},
 		dir:         dir,
@@ -364,7 +507,7 @@ func (h *harness) rebuild() {
 		h.jobs, h.tracks, resolver, mover, h.finalizer,
 		h.probe,
 		download.NewMerger(h.tracks, sqlite.NewDownloadMergeRepository(h.db, h.tracks), sqlite.NewTxManager(h.db), logger),
-		h.settings, h.cached, h.coverAssets, logger,
+		h.settings, h.cached, h.coverAssets, h.promotions, logger,
 	)
 	h.svc.SetEventSink(h.sink)
 }
@@ -971,7 +1114,7 @@ func TestService_StartRecoversInterruptedJobs(t *testing.T) {
 		h.jobs, h.tracks, h.resolver, h.downloader, h.finalizer,
 		h.probe,
 		download.NewMerger(h.tracks, sqlite.NewDownloadMergeRepository(h.db, h.tracks), sqlite.NewTxManager(h.db), logger),
-		stubSettings{dir: h.dir}, h.cached, h.coverAssets, logger,
+		stubSettings{dir: h.dir}, h.cached, h.coverAssets, h.promotions, logger,
 	)
 	require.NoError(t, restarted.Start(ctx))
 	t.Cleanup(func() { _ = restarted.Stop(context.Background()) })

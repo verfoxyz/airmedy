@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"airmedy/internal/domain"
@@ -20,6 +21,10 @@ import (
 // enqueue wakes it immediately, so this only bounds how late a retry that comes
 // due while the queue is otherwise empty is picked up.
 const defaultPollInterval = 30 * time.Second
+
+// maintenanceSweepInterval bounds how long cache maintenance waits for the next
+// attempt when nothing wakes the worker (a session closing wakes it immediately).
+const maintenanceSweepInterval = 30 * time.Second
 
 // Duration sanity thresholds for applyDecodedDuration. A decoded value shorter
 // than minimumDecodedDurationSeconds is only plausible when the row already
@@ -41,6 +46,20 @@ type CachedAudio interface {
 	EnsureComplete(ctx context.Context, track *domain.TrackDTO) (<-chan error, error)
 	MarkPendingPromote(ctx context.Context, track *domain.TrackDTO) error
 	DiscardEntry(ctx context.Context, track *domain.TrackDTO) error
+	// PendingPromotions lists the entries waiting for a promotion attempt.
+	PendingPromotions(ctx context.Context) ([]*domain.StreamCacheEntry, error)
+	// PendingDiscards lists the entries whose cache must be deleted.
+	PendingDiscards(ctx context.Context) ([]*domain.StreamCacheEntry, error)
+	// HasActiveSession reports whether playback still owns the entry's file.
+	HasActiveSession(provider, externalID string) bool
+	// SetPromoted records that the audio was moved into the library, so the
+	// entry is only cleaned up and never completed again.
+	SetPromoted(ctx context.Context, track *domain.TrackDTO, promoted bool) error
+	// SetDiscardPending flags a cache for deletion once it goes idle.
+	SetDiscardPending(ctx context.Context, track *domain.TrackDTO, pending bool) error
+	// ClearPendingPromote ends a request whose audio is being downloaded at a
+	// higher quality instead.
+	ClearPendingPromote(ctx context.Context, track *domain.TrackDTO) error
 }
 
 // SettingsReader is the slice of the settings service the download service
@@ -69,6 +88,8 @@ type EventSink interface {
 	DownloadProgress(job *domain.DownloadJob)
 	DownloadDone(job *domain.DownloadJob)
 	DownloadFailed(job *domain.DownloadJob)
+	// TaskUpdated reports a promotion task change; the tasks page reloads.
+	TaskUpdated()
 }
 
 // Service runs the download queue: it claims due jobs, resolves a fresh stream,
@@ -86,9 +107,17 @@ type Service struct {
 	settings      SettingsReader
 	cached        CachedAudio
 	coverAssets   domain.CoverIdentityAssets
+	promotionTask domain.PromotionTaskRepository
 	lyrics        LyricsWriter
 	remover       LocalFileRemover
 	logger        *slog.Logger
+
+	// Cache maintenance runs on its own loop: it must react to a playback session
+	// closing even while the download worker is busy, and the two never share a
+	// job. maintenanceSweeping makes a sweep single-flight.
+	maintenanceWake     chan struct{}
+	maintenanceDone     chan struct{}
+	maintenanceSweeping atomic.Bool
 
 	// pollInterval and now are test seams: a test drives the clock instead of
 	// sleeping through the 5s/30s/5min backoff.
@@ -126,26 +155,29 @@ func NewService(
 	settings SettingsReader,
 	cached CachedAudio,
 	coverAssets domain.CoverIdentityAssets,
+	promotionTask domain.PromotionTaskRepository,
 	logger *slog.Logger,
 ) *Service {
 	return &Service{
-		jobs:          jobs,
-		tracks:        tracks,
-		resolver:      resolver,
-		downloader:    downloader,
-		finalizer:     finalizer,
-		durationProbe: durationProbe,
-		merger:        merger,
-		settings:      settings,
-		cached:        cached,
-		coverAssets:   coverAssets,
-		logger:        logger,
-		pollInterval:  defaultPollInterval,
-		now:           time.Now,
-		wake:          make(chan struct{}, 1),
-		stop:          make(chan struct{}),
-		done:          make(chan struct{}),
-		coverURLs:     make(map[string]string),
+		jobs:            jobs,
+		tracks:          tracks,
+		resolver:        resolver,
+		downloader:      downloader,
+		finalizer:       finalizer,
+		durationProbe:   durationProbe,
+		merger:          merger,
+		settings:        settings,
+		cached:          cached,
+		coverAssets:     coverAssets,
+		promotionTask:   promotionTask,
+		logger:          logger,
+		pollInterval:    defaultPollInterval,
+		now:             time.Now,
+		wake:            make(chan struct{}, 1),
+		maintenanceWake: make(chan struct{}, 1),
+		stop:            make(chan struct{}),
+		done:            make(chan struct{}),
+		coverURLs:       make(map[string]string),
 	}
 }
 
@@ -437,10 +469,12 @@ func (s *Service) Start(ctx context.Context) error {
 	s.running = true
 	s.stop = make(chan struct{})
 	s.done = make(chan struct{})
-	stop, done := s.stop, s.done
+	s.maintenanceDone = make(chan struct{})
+	stop, done, maintenanceDone := s.stop, s.done, s.maintenanceDone
 	s.mu.Unlock()
 
 	go s.loop(stop, done)
+	go s.maintenanceLoop(stop, maintenanceDone)
 	s.signal()
 	return nil
 }
@@ -455,15 +489,20 @@ func (s *Service) Stop(ctx context.Context) error {
 		return nil
 	}
 	s.running = false
-	stop, done := s.stop, s.done
+	stop, done, maintenanceDone := s.stop, s.done, s.maintenanceDone
 	s.mu.Unlock()
 
 	close(stop)
 	select {
 	case <-done:
-		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("stop download service: %w", ctx.Err())
+	}
+	select {
+	case <-maintenanceDone:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("stop cache maintenance worker: %w", ctx.Err())
 	}
 }
 
@@ -749,11 +788,18 @@ func (s *Service) execute(ctx context.Context, job *domain.DownloadJob) error {
 		s.logger.Warn("download: failed to store the decoded duration", "track_id", finalized.TrackID, "error", err)
 	}
 
-	// The library now owns the audio. Drop the temporary stream copy unless a
-	// playback session still holds it (DiscardEntry checks).
+	// The library now owns the audio. Drop the temporary stream copy, or flag it
+	// for the maintenance worker when playback still owns the file.
 	if s.cached != nil {
 		if err := s.cached.DiscardEntry(ctx, track); err != nil {
-			s.logger.Debug("download: cannot discard the stream cache", "track_id", track.ID, "error", err)
+			if errors.Is(err, domain.ErrStreamDiscardDeferred) {
+				if markErr := s.cached.SetDiscardPending(ctx, track, true); markErr != nil {
+					s.logger.Warn("download: cannot flag the stream cache for cleanup",
+						"track_id", track.ID, "error", markErr)
+				}
+			} else {
+				s.logger.Debug("download: cannot discard the stream cache", "track_id", track.ID, "error", err)
+			}
 		}
 	}
 

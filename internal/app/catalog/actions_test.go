@@ -74,6 +74,37 @@ func (f *fakeRemoteTracks) recorded() ([]domain.RemoteTrackSpec, []enqueueCall) 
 	return append([]domain.RemoteTrackSpec(nil), f.specs...), append([]enqueueCall(nil), f.enqueues...)
 }
 
+// fakeSavedTracks stands in for the download coordinator. The catalog only
+// reports the save; whether it becomes a promotion or a download is the
+// coordinator's decision. This fake keeps the old assertions meaningful by
+// translating the event into the same enqueue the pipeline would perform.
+type fakeSavedTracks struct {
+	tracks *fakeRemoteTracks
+
+	mu     sync.Mutex
+	events []domain.RemoteTrackSaved
+}
+
+func (f *fakeSavedTracks) OnRemoteTrackSaved(ctx context.Context, ev domain.RemoteTrackSaved) (string, error) {
+	f.mu.Lock()
+	f.events = append(f.events, ev)
+	f.mu.Unlock()
+
+	if ev.Track == nil {
+		return "", nil
+	}
+	if err := f.tracks.EnqueueWithCover(ctx, ev.Track.ID, ev.PlaylistID, f.tracks.DefaultQuality(ctx), ev.CoverURL); err != nil {
+		return "", err
+	}
+	return domain.CatalogRowStateDownloading, nil
+}
+
+func (f *fakeSavedTracks) recorded() []domain.RemoteTrackSaved {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]domain.RemoteTrackSaved(nil), f.events...)
+}
+
 // fakeFavorites records favorite writes.
 type fakeFavorites struct {
 	err  error
@@ -112,12 +143,13 @@ func newActionService(tracks *fakeRemoteTracks, favorites *fakeFavorites, playli
 		settings = fakeSettings{enabled: true}
 	}
 	return NewService(Deps{
-		Library:   tracks,
-		Favorites: favorites,
-		Playlists: playlists,
-		Settings:  settings,
-		Resolver:  fakeResolver{"wy": true},
-		Logger:    quietLogger(),
+		Library:     tracks,
+		SavedTracks: &fakeSavedTracks{tracks: tracks},
+		Favorites:   favorites,
+		Playlists:   playlists,
+		Settings:    settings,
+		Resolver:    fakeResolver{"wy": true},
+		Logger:      quietLogger(),
 	})
 }
 
@@ -453,6 +485,41 @@ func TestAct_CarriesTheCoverURL(t *testing.T) {
 	_, enqueues := tracks.recorded()
 	if len(enqueues) != 1 || enqueues[0].coverURL != "https://img.example/cover.jpg" {
 		t.Fatalf("enqueue = %+v, want the trimmed cover URL", enqueues)
+	}
+}
+
+// TestAct_HandsTheSaveToTheCoordinator: the catalog registers and saves, then
+// reports the save to the download coordinator with the explicit flag and the
+// resolved cover. Promotion-versus-download is the coordinator's decision.
+func TestAct_HandsTheSaveToTheCoordinator(t *testing.T) {
+	tracks := &fakeRemoteTracks{track: remoteTrack("t1")}
+	saved := &fakeSavedTracks{tracks: tracks}
+	service := NewService(Deps{
+		Library:     tracks,
+		SavedTracks: saved,
+		Favorites:   &fakeFavorites{},
+		Playlists:   &fakePlaylists{},
+		Settings:    fakeSettings{enabled: true},
+		Resolver:    fakeResolver{"wy": true},
+		Logger:      quietLogger(),
+	})
+
+	if _, err := service.Act(context.Background(), ActionRequest{
+		Provider: "wy", ExternalID: "t1", PlaylistID: "pl-1",
+		CoverURL: " https://img.example/cover.jpg ",
+	}); err != nil {
+		t.Fatalf("Act: %v", err)
+	}
+	events := saved.recorded()
+	if len(events) != 1 {
+		t.Fatalf("coordinator events = %d, want 1", len(events))
+	}
+	ev := events[0]
+	if !ev.Explicit || ev.PlaylistID != "pl-1" || ev.CoverURL != "https://img.example/cover.jpg" {
+		t.Fatalf("event = %+v, want explicit with the trimmed playlist and cover", ev)
+	}
+	if ev.Track == nil || ev.Track.ID != "t1" {
+		t.Fatalf("event track = %+v, want the registered row", ev.Track)
 	}
 }
 
