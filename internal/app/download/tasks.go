@@ -86,14 +86,11 @@ func (s *Service) ListTasks(ctx context.Context) ([]domain.TaskRun, error) {
 	return runs, nil
 }
 
-// taskSortTime is the newest timestamp a run has: a finished run sorts by when
-// it finished, an active one by when it started or was created.
+// taskSortTime is the ordering key the tasks page contract names: the finish
+// time when the run is over, otherwise its creation time.
 func taskSortTime(run domain.TaskRun) time.Time {
 	if run.FinishedAt != nil {
 		return *run.FinishedAt
-	}
-	if run.StartedAt != nil {
-		return *run.StartedAt
 	}
 	return run.CreatedAt
 }
