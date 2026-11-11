@@ -20,7 +20,7 @@ import {
 import LazyImg from '@/components/LazyImg.vue'
 import { usePlayerStore } from '../stores/player'
 import { RepeatMode } from '../../bindings/airmedy/internal/domain/models'
-import { formatTime, getTrackDisplayTitle } from '@airmedy/utils'
+import { formatTime, getTrackDisplayArtist, getTrackDisplayTitle } from '@airmedy/utils'
 import { Slider } from '@airmedy/ui'
 import * as WindowService from '../../bindings/airmedy/internal/infra/wails/windowservice'
 import { useI18n } from 'vue-i18n'
@@ -57,9 +57,9 @@ const displayPosition = computed(() =>
 
 const trackTitle = computed(() => store.currentTrack ? (getTrackDisplayTitle(store.currentTrack) || t('player.not_playing')) : t('player.not_playing'))
 const trackArtist = computed(() => {
-  const artists = store.currentTrack?.artists
-  if (!artists || artists.length === 0) return t('player.select_track')
-  return artists.filter((a): a is NonNullable<typeof a> => a !== null).map((a) => a.name).join(', ')
+  if (!store.currentTrack) return t('player.select_track')
+  // A remote row has no artist entities, only the text snapshot from search.
+  return getTrackDisplayArtist(store.currentTrack) || t('library.unknown_artist')
 })
 
 const repeatIcon = computed(() =>

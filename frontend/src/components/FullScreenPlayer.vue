@@ -10,7 +10,7 @@ import { useDeviceStore } from '../stores/device'
 import LivingArtworkBackground from './LivingArtworkBackground.vue'
 import { TabSwitcher } from '@airmedy/ui'
 import { useI18n } from 'vue-i18n'
-import { getTrackDisplayTitle, hexToRgba } from '@airmedy/utils'
+import { getTrackDisplayArtist, getTrackDisplayTitle, hexToRgba } from '@airmedy/utils'
 
 import PlayerArtwork from './player/PlayerArtwork.vue'
 import PlayerTrackInfo from './player/PlayerTrackInfo.vue'
@@ -97,9 +97,11 @@ const tabOptions = computed(() => [
 
 const trackTitle = computed(() => store.currentTrack ? (getTrackDisplayTitle(store.currentTrack) || t('player.not_playing')) : t('player.not_playing'))
 const trackArtist = computed(() =>
-  store.currentTrack?.artists?.map((a) => a?.name).filter(Boolean).join(', ') ?? '',
+  store.currentTrack ? (getTrackDisplayArtist(store.currentTrack) || t('library.unknown_artist')) : '',
 )
-const albumTitle = computed(() => store.currentTrack?.album?.title ?? '')
+const albumTitle = computed(() =>
+  store.currentTrack?.album?.title || store.currentTrack?.raw_album_name?.trim() || '',
+)
 
 const showRightColumn = computed(() => store.isQueueOpen || store.isLyricsOpen)
 const artworkCrossfade = computed(() =>

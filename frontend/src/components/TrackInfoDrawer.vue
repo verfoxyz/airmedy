@@ -4,7 +4,7 @@ import { usePlayerStore } from '@/stores/player'
 import { Music, AudioLines, Zap, Crown, X } from '@lucide/vue'
 import LazyImg from '@/components/LazyImg.vue'
 import { useI18n } from 'vue-i18n'
-import { formatTime, buildArtworkUrl, getTrackDisplayTitle } from '@airmedy/utils'
+import { formatTime, buildArtworkUrl, getTrackDisplayArtist, getTrackDisplayTitle } from '@airmedy/utils'
 import { determineAudioQuality } from '@/lib/audioQuality'
 
 const { t } = useI18n()
@@ -25,6 +25,19 @@ const artworkUrl = computed(() => {
 
 const audioQuality = computed(() => (track.value ? determineAudioQuality(track.value) : 'UNKNOWN'))
 
+// A remote row has text snapshots but no linked entities. Show the entities
+// first and fall back to the snapshots; the header hides its line only when
+// both sides are empty.
+const artistNames = computed(() =>
+  track.value ? getTrackDisplayArtist(track.value) : '',
+)
+const albumTitle = computed(() =>
+  track.value?.album?.title || track.value?.raw_album_name?.trim() || '',
+)
+const headerSubtitle = computed(() =>
+  [artistNames.value, albumTitle.value].filter(Boolean).join(' • '),
+)
+
 const qualityBadge = computed(() => {
   switch (audioQuality.value) {
     case 'LOSSY':
@@ -43,7 +56,8 @@ const qualityBadge = computed(() => {
 const details = computed(() => {
   if (!track.value) return []
   return [
-    { label: t('track_info.artist'), value: track.value.raw_artist_names || '', isHyphenAuto: true },
+    { label: t('track_info.artist'), value: getTrackDisplayArtist(track.value) || t('library.unknown_artist'), isHyphenAuto: true },
+    { label: t('track_info.album'), value: albumTitle.value, isHyphenAuto: true },
     { label: t('track_info.genre'), value: track.value.raw_genre_names || '', isHyphenAuto: true },
     { label: t('track_info.year'), value: track.value.year || '', isHyphenAuto: true },
     { label: t('track_info.composer'), value: track.value.raw_composer_names || '', isHyphenAuto: true },
@@ -107,10 +121,8 @@ function formatFileSize(bytes: number) {
         <!-- Basic Info -->
         <div class="text-center mb-8 w-full px-4">
           <h1 class="text-lg font-bold mb-1 tracking-tight leading-tight">{{ getTrackDisplayTitle(track) || t('library.unknown_title') }}</h1>
-          <p class="text-xs text-foreground opacity-70 font-medium mb-3">
-            {{ track.raw_album_artist_names || t('library.unknown_artist') }}
-            <span v-if="track.album?.title" class="mx-1 opacity-30">•</span>
-            {{ track.album?.title }}
+          <p v-if="headerSubtitle" class="text-xs text-foreground opacity-70 font-medium mb-3">
+            {{ headerSubtitle }}
           </p>
 
           <!-- Quality Badge -->

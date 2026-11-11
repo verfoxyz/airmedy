@@ -12,7 +12,7 @@ import LazyImg from '@/components/LazyImg.vue'
 import { usePlayerStore } from '@/stores/player'
 import { useMoodRadioStore } from '@/stores/moodRadio'
 import { RepeatMode } from '../../bindings/airmedy/internal/domain/models'
-import { formatTime, hexToRgba, getTrackDisplayTitle } from '@airmedy/utils'
+import { formatTime, getTrackDisplayArtist, hexToRgba, getTrackDisplayTitle } from '@airmedy/utils'
 import { Slider } from '@airmedy/ui'
 import { MarqueeText } from '@airmedy/ui'
 import * as WindowService from '../../bindings/airmedy/internal/infra/wails/windowservice'
@@ -62,10 +62,7 @@ const displayPosition = computed(() =>
 )
 const trackTitle = computed(() => store.currentTrack ? (getTrackDisplayTitle(store.currentTrack) || 'Not Playing') : 'Not Playing')
 const trackArtist = computed(() =>
-  store.currentTrack?.artists
-    ?.filter((a): a is NonNullable<typeof a> => a !== null)
-    .map((a) => a.name)
-    .join(', ') ?? '',
+  store.currentTrack ? (getTrackDisplayArtist(store.currentTrack) || t('library.unknown_artist')) : '',
 )
 const repeatActive = computed(
   () => store.repeatMode === RepeatMode.RepeatModeOne || store.repeatMode === RepeatMode.RepeatModeAll,

@@ -110,6 +110,36 @@ describe('TrackInfoDrawer quality badge', () => {
   })
 })
 
+describe('TrackInfoDrawer remote fallbacks', () => {
+  it('shows the snapshot artist and album in the header and details', () => {
+    const w = mountDrawer(makeTrack({
+      availability: 'remote',
+      artists: [],
+      raw_artist_names: 'かめりあ; 重音テト',
+      raw_album_name: 'アルバム名',
+      album: null,
+    }))
+
+    expect(w.text()).toContain('かめりあ; 重音テト')
+    expect(w.text()).toContain('アルバム名')
+    expect(w.text()).toContain('track_info.album')
+  })
+
+  it('prefers entities when the row has them', () => {
+    const w = mountDrawer(makeTrack({
+      artists: [{ name: 'Entity Artist' }],
+      raw_artist_names: 'Snapshot Artist',
+      album: { id: 'album-1', title: 'Entity Album' },
+      raw_album_name: 'Snapshot Album',
+    }))
+
+    expect(w.text()).toContain('Entity Artist')
+    expect(w.text()).toContain('Entity Album')
+    expect(w.text()).not.toContain('Snapshot Artist')
+    expect(w.text()).not.toContain('Snapshot Album')
+  })
+})
+
 describe('TrackInfoDrawer artwork', () => {
   beforeEach(() => {
     setActivePinia(createPinia())

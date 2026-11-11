@@ -39,6 +39,23 @@ export function getTrackDisplayTitle(track: { title?: string; path?: string }): 
   return ''
 }
 
+/**
+ * getTrackDisplayArtist prefers the linked artist entities, then the raw text
+ * snapshot stored on a remote row (which has no entities until it is imported),
+ * and returns '' when neither is present.
+ */
+export function getTrackDisplayArtist(track: {
+  artists?: Array<{ name?: string } | null> | null
+  raw_artist_names?: string | null
+}): string {
+  const names = (track.artists ?? [])
+    .filter((artist): artist is { name?: string } => !!artist)
+    .map((artist) => (artist.name ?? '').trim())
+    .filter(Boolean)
+  if (names.length > 0) return names.join(', ')
+  return (track.raw_artist_names ?? '').trim()
+}
+
 export function formatTotalDuration(totalSeconds: number, t: (key: string) => string): string {
 	if (!isFinite(totalSeconds) || totalSeconds < 0) return `0 ${t('common.sec')}`
 	const days = Math.floor(totalSeconds / 86400)

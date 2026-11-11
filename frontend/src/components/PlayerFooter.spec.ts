@@ -259,6 +259,21 @@ describe('PlayerFooter', () => {
     expect(wrapper.text()).toContain('Not Playing')
   })
 
+  it('shows the raw artist snapshot for a remote row', () => {
+    const wrapper = mountFooter({
+      currentTrack: new TrackDTO({
+        id: 'remote-1',
+        artists: [],
+        raw_artist_names: 'かめりあ; 重音テト',
+        availability: 'remote',
+      }),
+    })
+
+    expect(wrapper.text()).toContain('かめりあ; 重音テト')
+    expect(wrapper.text()).not.toContain('Select Track')
+    wrapper.unmount()
+  })
+
   it('enables overflow fade for the track title and artist', () => {
     const wrapper = mountFooter()
     expect(wrapper.findAllComponents({ name: 'MarqueeText' }).map(component => component.props('fade')))

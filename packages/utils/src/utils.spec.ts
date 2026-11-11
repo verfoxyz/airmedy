@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeHTMLEntities, foldUnicode, formatTime, hexToRgba, getTrackDisplayTitle, formatTotalDuration } from './utils'
+import { decodeHTMLEntities, foldUnicode, formatTime, hexToRgba, getTrackDisplayArtist, getTrackDisplayTitle, formatTotalDuration } from './utils'
 
 describe('utils', () => {
   describe('decodeHTMLEntities', () => {
@@ -73,6 +73,26 @@ describe('utils', () => {
 
     it('returns empty string if both title and path are missing', () => {
       expect(getTrackDisplayTitle({})).toBe('')
+    })
+  })
+
+  describe('getTrackDisplayArtist', () => {
+    it('prefers the linked artist entities', () => {
+      expect(getTrackDisplayArtist({
+        artists: [{ name: 'A' }, { name: 'B' }],
+        raw_artist_names: 'Snapshot',
+      })).toBe('A, B')
+    })
+
+    it('falls back to the raw snapshot on a remote row', () => {
+      expect(getTrackDisplayArtist({ artists: [], raw_artist_names: 'かめりあ; 重音テト' }))
+        .toBe('かめりあ; 重音テト')
+      expect(getTrackDisplayArtist({ artists: null, raw_artist_names: '  X  ' })).toBe('X')
+    })
+
+    it('returns empty when neither exists', () => {
+      expect(getTrackDisplayArtist({})).toBe('')
+      expect(getTrackDisplayArtist({ artists: [null], raw_artist_names: '   ' })).toBe('')
     })
   })
 

@@ -445,6 +445,15 @@ Virtualized list of tracks supporting reordering, sorting, and horizontal scroll
   - `context_menu`: Sticky right (`z-10`).
   - Sticky cells use opaque backgrounds to prevent overlapping content from being visible during scroll.
 
+**Remote rows.** A row that is not in the library yet has no `artists` / `album`
+entities, only the `raw_artist_names` / `raw_album_name` snapshots captured from
+search. Every display prefers entities and falls back to the snapshot
+(`getTrackDisplayArtist` in `@airmedy/utils`): the footer, full-screen player,
+mini player, track table artist cell and info drawer. A row with neither shows
+`library.unknown_artist`. The album cell and drawer render the snapshot as plain
+text and become a link only when `album.id` exists, so a remote row can never
+produce a dead `/albums/…` link.
+
 **Columns (configurable):**
 
 | Key            | Label        | Default visible    | Sortable | Sticky |

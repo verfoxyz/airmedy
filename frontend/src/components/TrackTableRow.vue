@@ -149,10 +149,12 @@ const isCurrentTrack = (trackId: string) => playerStore.currentTrack?.id === tra
         class="text-foreground opacity-80 truncate flex items-center min-w-0 px-2"
       >
         <span
-          class="truncate hover:text-primary transition-colors cursor-pointer"
+          class="truncate transition-colors"
+          :class="track.album?.id ? 'hover:text-primary cursor-pointer' : ''"
+          :title="track.album?.id ? undefined : $t('library.unknown_album')"
           @click.stop="track.album?.id && emit('navigate-album', track.album.id)"
         >
-          {{ track.album?.title || $t('library.unknown_album') }}
+          {{ track.album?.title || track.raw_album_name || $t('library.unknown_album') }}
         </span>
       </div>
 
