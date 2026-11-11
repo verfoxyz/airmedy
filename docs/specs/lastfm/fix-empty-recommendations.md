@@ -2,6 +2,7 @@
 
 > 状态：待开工
 > 现象：Last.fm 页面只显示相似艺人；综合/最近/收藏/常听四份推荐全空；相似艺人也没有头像
+> **优先级：推荐歌曲是主要目标**；艺人头像只是附带
 > 结论：不是解析 bug，是 Last.fm 数据不足 + 实现缺少兜底
 
 ---
@@ -42,7 +43,11 @@ https://lastfm-img.freetls.fastly.net/i/u/.../2a96cbd8b46e442fc41c2b86b821562f.p
 2. 若为空 → `artist.getSimilar(seed.artist, limit 3)`，取相似艺人；
 3. 对每个相似艺人 → `artist.getTopTracks(artist, limit 5)`；
 4. 汇总后按“出现次数”排序，排除种子本身；
-5. 若仍为空 → 该种子放弃（记 debug 日志，不计入失败）。
+5. 若仍为空 → 该种子放弃（记 debug 日志，不计入失败）；
+6. **全部种子都为空时**（冷门账号兜底，保证页面至少有一份歌曲推荐）：
+   - `user.getTopTags`（取前 5 个标签）→ `tag.getTopTracks`（每个标签 10 首）；
+   - 仍为空 → `chart.getTopTracks`（全站榜 20 首）；
+   - 兜底结果单独标记 `source=fallback`，在页面上仍按普通推荐展示。
 
 限制：
 
@@ -61,7 +66,7 @@ https://lastfm-img.freetls.fastly.net/i/u/.../2a96cbd8b46e442fc41c2b86b821562f.p
 
 ### 2.3 空状态
 
-- 四份推荐都为空时，页面显示「Last.fm 数据不足，暂时没有推荐」而不是空列表；
+- 四份推荐都为空时，先走 §2.1 第 6 步的全局兜底（tag / chart）；仍为空才显示「Last.fm 数据不足，暂时没有推荐」；
 - 相似艺人仍正常显示。
 
 ## 3. 测试
@@ -72,6 +77,8 @@ https://lastfm-img.freetls.fastly.net/i/u/.../2a96cbd8b46e442fc41c2b86b821562f.p
 - 兜底结果排除种子自身、去重、按出现次数排序；
 - 兜底只对前 10 个种子执行，请求数符合上限；
 - 全部为空 → 该种子无结果，不报错；
+- 所有种子为空 → 触发 `user.getTopTags` + `tag.getTopTracks`，再空则 `chart.getTopTracks`；
+- 兜底结果标记 `source=fallback`；
 - 默认占位图被识别为“无头像”；
 - 缓存命中时不重复请求。
 
