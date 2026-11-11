@@ -915,6 +915,8 @@
     "search_artist": "Search {artist}",
     "listeners": "{count} listeners",
     "matching": "Matching…",
-    "no_source": "No playable source"
+    "no_source": "No playable source",
+    "no_match": "No match",
+    "matched_from": "from {source}"
   }
 }

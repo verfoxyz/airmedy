@@ -915,6 +915,8 @@
     "search_artist": "Buscar {artist}",
     "listeners": "{count} oyentes",
     "matching": "Buscando coincidencias…",
-    "no_source": "No se encontró una fuente reproducible"
+    "no_source": "No se encontró una fuente reproducible",
+    "no_match": "Sin coincidencia",
+    "matched_from": "desde {source}"
   }
 }

@@ -915,6 +915,8 @@
     "search_artist": "搜索 {artist}",
     "listeners": "{count} 位听众",
     "matching": "匹配中…",
-    "no_source": "未找到可播放源"
+    "no_source": "未找到可播放源",
+    "no_match": "无匹配",
+    "matched_from": "来自 {source}"
   }
 }

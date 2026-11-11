@@ -44,6 +44,7 @@ type fakeTrackSource struct {
 	similarTrackCalls  int
 	similarArtistCalls int
 	seedCalls          int
+	topCalls           int
 	// Fallback call counters, kept separate from similarArtistCalls so a test
 	// can assert the fallback budget without the similar-artists grid noise.
 	artistTopTracksCalls int
@@ -72,6 +73,7 @@ func (f *fakeTrackSource) GetTopTracks(_ context.Context, period string, _ int) 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.seedCalls++
+	f.topCalls++
 	if err := f.topErr[period]; err != nil {
 		return nil, err
 	}

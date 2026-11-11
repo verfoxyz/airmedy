@@ -915,6 +915,8 @@
     "search_artist": "Pesquisar {artist}",
     "listeners": "{count} ouvintes",
     "matching": "Procurando correspondência…",
-    "no_source": "Nenhuma fonte reproduzível encontrada"
+    "no_source": "Nenhuma fonte reproduzível encontrada",
+    "no_match": "Sem correspondência",
+    "matched_from": "de {source}"
   }
 }

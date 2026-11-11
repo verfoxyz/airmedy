@@ -190,45 +190,30 @@ Page-level failures travel as machine kinds in `error_kind` (`no_sources`,
 
 ## Last.fm Page (`/lastfm`)
 
-`views/LastFmView.vue` is the sidebar entry directly below Search. It renders the
-page `LastFmService.GetRecommendations(force)` returns and owns no recommendation
-logic: seeding, scoring, rate limiting, matching and the 30-minute cache live in
-`app/lastfm/recommend.go`.
+`views/LastFmView.vue` is the sidebar entry directly below Search. It renders a
+single "top tracks" list from `LastFmService.GetTopTrackRecommendations()`, which
+makes one Last.fm request (`user.getTopTracks`, `7day`, limit 50) and returns every
+row immediately.
 
-| Section | Source |
-|---|---|
-| Combined | weighted merge of the three seed sources |
-| From your recent plays | `user.getRecentTracks` seeds → `track.getSimilar` |
-| From your loved tracks | `user.getLovedTracks` seeds → `track.getSimilar` |
-| From your most played | `user.getTopTracks` (7day + 1month) → `track.getSimilar` |
-| Similar artists | `artist.getSimilar`, clicking opens `/search?q=<artist>` |
+Matching runs five workers, one per source (`wy`, `kg`, `tx`, `kw`, `mg` in
+priority order). A worker searches only its own source; a miss puts the row back
+for the other workers, and a per-row tried set guarantees each row/source pair is
+searched once. A row becomes `no_source` only after every source failed. Source
+outcomes are cached for 30 minutes per (artist+title, source), so a refresh shows
+the previous matches immediately and searches only the missing pairs.
 
-Every row is a catalogue row: `RecommendationTrackDTO` carries the same provider,
-identity, cover, state and `local_track_id` fields as `CatalogRowDTO`, so the card
-calls the shared `catalog` store (`preparePlayback` / `save`) and a local file plays
-from disk without a download.
+Rows are updated through `lastfm:recommendations-matched` with `{items, done}`,
+batched every 300–500 ms. The page replaces rows by `match_key` (artist + `\0` +
+title); a row is `matching` until a source hits, then shows its provider and the
+shared play/save actions. `done` is authoritative: no row stays `matching`, and
+unresolved rows read "no match". Local files are not filtered out — a matched
+local row is immediately playable.
 
-`GetRecommendations` is two-phase. The first response is the Last.fm-side page:
-rows carry `matching=true` and `match_key`, with no provider yet. Source matching
-then runs in the background (one source at a time in `wy → kg → tx → kw → mg`
-order, two sources at most, four concurrent) and emits
-`lastfm:recommendations-matched` with `{username, items, done}` in batches of 1–3
-or every 500 ms. The page replaces rows by `match_key`; a row that finishes
-without a provider renders "no playable source" once `done` arrives. Match
-outcomes are cached for 30 minutes, so reopening or refreshing the page reuses
-them without another search. The page status is still `ok`, `partial` (a Last.fm
-request failed) or `not_connected`; matching failures never blank the page.
+Status is `ok` or `not_connected`; an unconnected page routes to
+`/settings/integrations`.
 
-When `track.getSimilar` has nothing for a seed, the backend falls back to the seed's
-similar artists and their top tracks (first ten seeds only). If every seed is empty,
-it aggregates tags from the user and the seed artists, then `tag.getTopTracks`, and
-finally `chart.getTopTracks`; those rows carry `source=fallback` but render like any
-other recommendation. The four track lists decide the empty state; similar artists
-stay visible even when no track could be resolved, and an artist without a real
-Last.fm image renders its initial instead of the default star placeholder.
-
-`SearchView` consumes `/search?q=` on mount and activation, so the Last.fm similar
-artist jump prefills the box and then replaces the URL without the parameter.
+`SearchView` still consumes `/search?q=` on mount and activation for the search
+shortcut.
 
 ## Downloads & Tasks Page
 

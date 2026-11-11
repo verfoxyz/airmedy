@@ -915,6 +915,8 @@
     "search_artist": "ค้นหา {artist}",
     "listeners": "ผู้ฟัง {count} คน",
     "matching": "กำลังจับคู่…",
-    "no_source": "ไม่พบแหล่งที่เล่นได้"
+    "no_source": "ไม่พบแหล่งที่เล่นได้",
+    "no_match": "ไม่พบที่ตรงกัน",
+    "matched_from": "จาก {source}"
   }
 }

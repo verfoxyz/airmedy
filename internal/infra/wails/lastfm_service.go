@@ -164,3 +164,75 @@ func toRecommendationTrackDTOs(tracks []lastfm.RecommendedTrack) []Recommendatio
 	}
 	return result
 }
+
+// TopTrackItemDTO is one row of the MVP top-tracks page.
+type TopTrackItemDTO struct {
+	Title    string `json:"title"`
+	Artist   string `json:"artist"`
+	Album    string `json:"album"`
+	Duration int    `json:"duration"`
+	// Artists is the credit list the playback action uses.
+	Artists       []string `json:"artists"`
+	CoverURL      string   `json:"cover_url"`
+	CoverURLLarge string   `json:"cover_url_large"`
+
+	Matching      bool     `json:"matching"`
+	Matched       bool     `json:"matched"`
+	NoSource      bool     `json:"no_source"`
+	Provider      string   `json:"provider"`
+	ExternalID    string   `json:"external_id"`
+	State         string   `json:"state"`
+	LocalTrackID  string   `json:"local_track_id"`
+	BlockedReason string   `json:"blocked_reason"`
+	Sources       []string `json:"sources"`
+	Downloadable  bool     `json:"downloadable"`
+	// MatchKey is artist + "\x00" + title; the frontend replaces rows by it.
+	MatchKey string `json:"match_key"`
+}
+
+// TopTrackPageDTO is the immediate top-tracks response.
+type TopTrackPageDTO struct {
+	Status string            `json:"status"`
+	Items  []TopTrackItemDTO `json:"items"`
+}
+
+// GetTopTrackRecommendations returns the user's 7-day top tracks and starts the
+// five-source background matcher. Every row is returned before any source
+// search; match updates arrive through lastfm:recommendations-matched.
+func (s *LastFmService) GetTopTrackRecommendations() (TopTrackPageDTO, error) {
+	page, err := s.recommender.GetTopTrackRecommendations(context.Background())
+	if err != nil {
+		return TopTrackPageDTO{}, err
+	}
+	return toTopTrackPageDTO(page), nil
+}
+
+func toTopTrackPageDTO(page lastfm.TopTrackPage) TopTrackPageDTO {
+	result := TopTrackPageDTO{
+		Status: page.Status,
+		Items:  make([]TopTrackItemDTO, 0, len(page.Items)),
+	}
+	for _, item := range page.Items {
+		result.Items = append(result.Items, TopTrackItemDTO{
+			Title:         item.Title,
+			Artist:        item.Artist,
+			Album:         item.Album,
+			Duration:      item.Duration,
+			Artists:       append([]string{}, item.Artists...),
+			CoverURL:      item.CoverURL,
+			CoverURLLarge: item.CoverURLLarge,
+			Matching:      item.Matching,
+			Matched:       item.Matched,
+			NoSource:      item.NoSource,
+			Provider:      item.Provider,
+			ExternalID:    item.ExternalID,
+			State:         item.State,
+			LocalTrackID:  item.LocalTrackID,
+			BlockedReason: item.BlockedReason,
+			Sources:       append([]string{}, item.Sources...),
+			Downloadable:  item.Downloadable,
+			MatchKey:      item.MatchKey,
+		})
+	}
+	return result
+}

@@ -915,6 +915,8 @@
     "search_artist": "Nach {artist} suchen",
     "listeners": "{count} Hörer",
     "matching": "Wird abgeglichen…",
-    "no_source": "Keine abspielbare Quelle gefunden"
+    "no_source": "Keine abspielbare Quelle gefunden",
+    "no_match": "Kein Treffer",
+    "matched_from": "von {source}"
   }
 }

@@ -240,6 +240,10 @@ type Recommender struct {
 	matches      map[string]cachedMatch
 	inflight     map[string]*inflightBuild
 	matchRunning map[string]bool
+	// sourceMatches is the MVP per (artist+title, source) cache; topRunning
+	// keeps one worker queue per account.
+	sourceMatches map[string]cachedSourceMatch
+	topRunning    map[string]bool
 }
 
 type cachedPage struct {
@@ -269,16 +273,18 @@ func NewRecommender(
 		logger = slog.Default()
 	}
 	return &Recommender{
-		client:       client,
-		matcher:      matcher,
-		streams:      streams,
-		logger:       logger,
-		now:          time.Now,
-		emitter:      emitToWails,
-		pages:        make(map[string]cachedPage),
-		matches:      make(map[string]cachedMatch),
-		inflight:     make(map[string]*inflightBuild),
-		matchRunning: make(map[string]bool),
+		client:        client,
+		matcher:       matcher,
+		streams:       streams,
+		logger:        logger,
+		now:           time.Now,
+		emitter:       emitToWails,
+		pages:         make(map[string]cachedPage),
+		matches:       make(map[string]cachedMatch),
+		inflight:      make(map[string]*inflightBuild),
+		matchRunning:  make(map[string]bool),
+		sourceMatches: make(map[string]cachedSourceMatch),
+		topRunning:    make(map[string]bool),
 	}
 }
 
@@ -1037,9 +1043,18 @@ func (r *Recommender) collectSimilarArtists(ctx context.Context, seeds seedSet) 
 // --- Catalogue matching ------------------------------------------------------
 
 // matchSources returns the sources in matching order, capped at the two a
-// candidate may try. Fast sources come first; any other plugin keeps an
-// alphabetical order after the known ones.
+// candidate may try.
 func (r *Recommender) matchSources(ctx context.Context) []string {
+	sources := r.allSources(ctx)
+	if len(sources) > 2 {
+		sources = sources[:2]
+	}
+	return sources
+}
+
+// allSources returns every available source in the priority order. Fast sources
+// come first; any other plugin keeps an alphabetical order after the known ones.
+func (r *Recommender) allSources(ctx context.Context) []string {
 	if r.matcher == nil {
 		return nil
 	}
@@ -1068,9 +1083,6 @@ func (r *Recommender) matchSources(ctx context.Context) []string {
 		}
 		return ids[i] < ids[j]
 	})
-	if len(ids) > 2 {
-		ids = ids[:2]
-	}
 	return ids
 }
 
