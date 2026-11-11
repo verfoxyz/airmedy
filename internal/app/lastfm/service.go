@@ -47,6 +47,15 @@ type LastFmService struct {
 	http    *http.Client
 	limiter *rateLimiter
 
+	// scrobbles is the durable queue. A qualified play is written here before
+	// the request, so a failed send is retried instead of lost.
+	scrobbles    domain.PendingScrobbleRepository
+	scrobbleWake chan struct{}
+	flushMu      sync.Mutex
+	flushCancel  context.CancelFunc
+	// now is a seam for the retry schedule in tests.
+	now func() time.Time
+
 	// Loopback login. openURL, callbackPort, callbackPath and authTimeout are
 	// fields rather than hard-coded calls so a test can bind a random port and a
 	// short timeout; production uses the registered callback string.
@@ -62,6 +71,7 @@ type LastFmService struct {
 func NewLastFmService(
 	settings *appsettings.SettingsService,
 	player *player.PlayerService,
+	scrobbles domain.PendingScrobbleRepository,
 	logger *slog.Logger,
 ) *LastFmService {
 	s := &LastFmService{
@@ -72,6 +82,9 @@ func NewLastFmService(
 		apiSecret:    config.LastFmAPISecret,
 		http:         &http.Client{Timeout: requestTimeout},
 		limiter:      newRateLimiter(maxConcurrentRequests, minRequestGap),
+		scrobbles:    scrobbles,
+		scrobbleWake: make(chan struct{}, 1),
+		now:          time.Now,
 		openURL:      browser.OpenURL,
 		callbackPort: lastFmCallbackPort,
 		callbackPath: lastFmCallbackPath,
@@ -328,47 +341,6 @@ func (s *LastFmService) updateNowPlaying(track *domain.TrackDTO) {
 	go s.postParams(params)
 }
 
-func (s *LastFmService) scrobble(track *domain.TrackDTO, timestamp int64) {
-	s.mu.RLock()
-	sk := s.sessionKey
-	s.mu.RUnlock()
-	if sk == "" {
-		return
-	}
-
-	artist := ""
-	if len(track.Artists) > 0 {
-		artist = track.Artists[0].Name
-	}
-
-	params := map[string]string{
-		"method":    "track.scrobble",
-		"api_key":   s.apiKey,
-		"sk":        sk,
-		"artist":    artist,
-		"track":     track.Title,
-		"timestamp": fmt.Sprintf("%d", timestamp),
-		"format":    "json",
-	}
-
-	if track.Album != nil && track.Album.Title != "" && track.Album.Title != "Unknown Album" {
-		params["album"] = track.Album.Title
-	}
-	if len(track.AlbumArtists) > 0 {
-		params["albumArtist"] = track.AlbumArtists[0].Name
-	}
-	if track.TrackNumber > 0 {
-		params["trackNumber"] = fmt.Sprintf("%d", track.TrackNumber)
-	}
-	if track.Duration > 0 {
-		params["duration"] = fmt.Sprintf("%d", track.Duration)
-	}
-
-	params["api_sig"] = s.generateSignature(params)
-
-	go s.postParams(params)
-}
-
 func (s *LastFmService) SetLoveStatus(track *domain.TrackDTO, loved bool) {
 	s.mu.RLock()
 	sk := s.sessionKey
@@ -454,15 +426,30 @@ func (s *LastFmService) toUrlValues(params map[string]string) url.Values {
 }
 
 func (s *LastFmService) handleScrobble(track *domain.TrackDTO, startTime time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.sessionKey == "" {
+	s.mu.RLock()
+	sk := s.sessionKey
+	s.mu.RUnlock()
+	if sk == "" {
 		return
 	}
 
-	go s.scrobble(track, startTime.Unix())
-	s.logger.Debug("lastfm scrobble submitted", "title", track.Title)
+	entry, ok := pendingScrobbleFromTrack(track, startTime)
+	if !ok {
+		return
+	}
+
+	if s.scrobbles == nil {
+		// A deployment without the queue keeps the old best-effort send.
+		go s.postOneScrobble(entry)
+		return
+	}
+	if err := s.scrobbles.Enqueue(context.Background(), &entry); err != nil {
+		s.logger.Warn("lastfm scrobble could not be queued", "title", track.Title, "error", err)
+		go s.postOneScrobble(entry)
+		return
+	}
+	s.logger.Debug("lastfm scrobble queued", "title", track.Title)
+	s.wakeScrobbleQueue()
 }
 
 func (s *LastFmService) handleNowPlaying(track *domain.TrackDTO) {

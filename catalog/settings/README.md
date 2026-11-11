@@ -238,7 +238,7 @@ permanent session key and the listener closes on success, failure, timeout or
 cancellation. The legacy `airmedy://auth` deep link is still handled by
 `main.go` but is no longer used by this flow.
 
-- **Scrobbling**: Automatic when a track playback exceeds 50% duration or 4 minutes.
+- **Scrobbling**: Automatic when a track playback exceeds 50% duration or 4 minutes. A qualified play is written to the durable `lastfm_pending_scrobbles` queue before the request; failed sends retry with backoff (1m, 5m, 30m, 2h, 6h; max 20 attempts; HTTP 429 honours `Retry-After`), in batches of at most 50 oldest-first, at startup, every five minutes and after a successful send. Rows expire after 30 days or when the queue exceeds 5000; Last.fm's ignored list stops retrying a refused scrobble.
 - **Now Playing**: Updated immediately on track start.
 - **Love Sync**: Favoriting a track in Airmedy automatically "Loves" it on Last.fm.
 - **Secure Storage**: Session keys never touch the database or disk in plain text; they are stored in the OS-native keyring.
