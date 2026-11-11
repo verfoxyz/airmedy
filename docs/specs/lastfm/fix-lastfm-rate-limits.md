@@ -51,13 +51,22 @@ WARN "last.fm seed request failed" error="last.fm user.getLovedTracks: Get \"htt
 - 429 时按 `Retry-After`（若存在）或固定 5s 等待一次；
 - 重试仍失败才计为 partial。
 
-### 3.3 种子缓存
+### 3.3 请求数量收缩（同时按新方案）
+
+- **种子固定为 3 个请求**：`user.getRecentTracks`、`user.getTopTracks`（只取 `7day`）、`user.getLovedTracks`（不再同时查 7day 与 1month）；
+- **取消每个种子的 `track.getSimilar`**（原来最多 10 个请求，是主要的限流来源）；
+- 推荐改为：种子艺人去重 → 取前 5 个艺人 → `artist.getSimilar`（5 个请求）→ 相似艺人去重取前 5 → `artist.getTopTracks`（5 个请求）；
+- 任一步为空走全局兜底：种子艺人标签 → `tag.getTopTracks`，再空 → `chart.getTopTracks`（约 2 个请求）。
+
+一页请求量从“几十个”降到约 **15 个以内**，配合限流与缓存即可稳定。
+
+### 3.4 种子缓存
 
 - 三路种子结果缓存 **10 分钟**（按 username + 来源）；
 - 页面刷新/重进优先用缓存，减少重复请求；
 - 手动「强制刷新」跳过缓存。
 
-### 3.4 部分失败时的 UI
+### 3.5 部分失败时的 UI
 
 - 只要有一份列表有数据，就正常显示（不要因为某个种子失败把四份都标成空）；
 - 顶部提示改为「部分数据加载失败，稍后会自动重试」。

@@ -22,7 +22,7 @@
 已用当前 key 实际请求验证：
 
 - 种子接口正常：`user.getRecentTracks` / `user.getTopTracks` / `user.getLovedTracks` 都有数据；
-- `track.getSimilar` 对热门曲目能返回结果（如 `Daft Punk - One More Time`）；
+- `track.getSimilar` 对热门曲目能返回结果，但**每种子一次请求，配额消耗大，本方案不再使用**；
 - 但对当前用户的实际种子（`指尖笑 - 新·与天齐`、`Hyun - Grin`、`Kobaryo - Bookmaker` 等）返回：
 
 ```json
