@@ -29,9 +29,27 @@ type fakeTrackSource struct {
 	similarArtists  map[string][]LastFmArtist
 	similarTrackErr map[string]error
 
+	artistTopTracks    map[string][]LastFmTrack
+	artistTopTracksErr map[string]error
+	userTopTags        []LastFmTag
+	userTopTagsErr     error
+	artistTopTags      map[string][]LastFmTag
+	artistTopTagsErr   map[string]error
+	tagTopTracks       map[string][]LastFmTrack
+	tagTopTracksErr    map[string]error
+	chartTopTracks     []LastFmTrack
+	chartTopTracksErr  error
+
 	similarTrackCalls  int
 	similarArtistCalls int
 	seedCalls          int
+	// Fallback call counters, kept separate from similarArtistCalls so a test
+	// can assert the fallback budget without the similar-artists grid noise.
+	artistTopTracksCalls int
+	userTopTagsCalls     int
+	artistTopTagsCalls   int
+	tagTopTracksCalls    int
+	chartTopTracksCalls  int
 
 	lovedErr error
 }
@@ -87,6 +105,56 @@ func (f *fakeTrackSource) GetSimilarArtists(_ context.Context, artist string, _ 
 	return append([]LastFmArtist{}, f.similarArtists[artist]...), nil
 }
 
+func (f *fakeTrackSource) GetArtistTopTracks(_ context.Context, artist string, _ int) ([]LastFmTrack, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.artistTopTracksCalls++
+	if err := f.artistTopTracksErr[artist]; err != nil {
+		return nil, err
+	}
+	return append([]LastFmTrack{}, f.artistTopTracks[artist]...), nil
+}
+
+func (f *fakeTrackSource) GetUserTopTags(_ context.Context, _ int) ([]LastFmTag, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.userTopTagsCalls++
+	if f.userTopTagsErr != nil {
+		return nil, f.userTopTagsErr
+	}
+	return append([]LastFmTag{}, f.userTopTags...), nil
+}
+
+func (f *fakeTrackSource) GetArtistTopTags(_ context.Context, artist string, _ int) ([]LastFmTag, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.artistTopTagsCalls++
+	if err := f.artistTopTagsErr[artist]; err != nil {
+		return nil, err
+	}
+	return append([]LastFmTag{}, f.artistTopTags[artist]...), nil
+}
+
+func (f *fakeTrackSource) GetTagTopTracks(_ context.Context, tag string, _ int) ([]LastFmTrack, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tagTopTracksCalls++
+	if err := f.tagTopTracksErr[tag]; err != nil {
+		return nil, err
+	}
+	return append([]LastFmTrack{}, f.tagTopTracks[tag]...), nil
+}
+
+func (f *fakeTrackSource) GetChartTopTracks(_ context.Context, _ int) ([]LastFmTrack, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.chartTopTracksCalls++
+	if f.chartTopTracksErr != nil {
+		return nil, f.chartTopTracksErr
+	}
+	return append([]LastFmTrack{}, f.chartTopTracks...), nil
+}
+
 type fakeMatcher struct {
 	mu sync.Mutex
 
@@ -140,13 +208,21 @@ func track(artist, title string) LastFmTrack {
 
 func connectedSource(recent []LastFmTrack) *fakeTrackSource {
 	return &fakeTrackSource{
-		connected:      true,
-		username:       "listener",
-		avatar:         "https://example.test/avatar.png",
-		recent:         recent,
-		top:            map[string][]LastFmTrack{},
-		similarTracks:  map[string][]LastFmTrack{},
-		similarArtists: map[string][]LastFmArtist{},
+		connected:          true,
+		username:           "listener",
+		avatar:             "https://example.test/avatar.png",
+		recent:             recent,
+		top:                map[string][]LastFmTrack{},
+		topErr:             map[string]error{},
+		similarTracks:      map[string][]LastFmTrack{},
+		similarArtists:     map[string][]LastFmArtist{},
+		similarTrackErr:    map[string]error{},
+		artistTopTracks:    map[string][]LastFmTrack{},
+		artistTopTracksErr: map[string]error{},
+		artistTopTags:      map[string][]LastFmTag{},
+		artistTopTagsErr:   map[string]error{},
+		tagTopTracks:       map[string][]LastFmTrack{},
+		tagTopTracksErr:    map[string]error{},
 	}
 }
 
@@ -299,6 +375,165 @@ func TestCollectSimilarTracksSkipsSingleFailure(t *testing.T) {
 	}
 	if len(candidates) != 1 {
 		t.Fatalf("candidates = %d, want the one the other seed produced", len(candidates))
+	}
+}
+
+// --- Fallback ----------------------------------------------------------------
+
+func TestNeighbourFallbackReplacesEmptySimilarTracks(t *testing.T) {
+	source := connectedSource([]LastFmTrack{track("Seed Artist", "Obscure")})
+	// No similarTracks entry: Last.fm has nothing for this seed.
+	source.similarArtists["Seed Artist"] = []LastFmArtist{{Name: "Neighbour"}}
+	source.artistTopTracks["Neighbour"] = []LastFmTrack{track("Neighbour", "Fallback Hit")}
+
+	matcher := &fakeMatcher{
+		sources: []domain.CatalogSearchSource{{ID: "s1"}},
+		rows: map[string][]domain.CatalogSearchResult{
+			"Neighbour\x00Fallback Hit": {
+				{Provider: "s1", ExternalID: "1", Title: "Fallback Hit", Artists: []string{"Neighbour"}, Downloadable: true},
+			},
+		},
+	}
+	recommender := newTestRecommender(source, matcher, &fakeStreamRepo{})
+	page, err := recommender.GetRecommendations(context.Background(), false)
+	if err != nil {
+		t.Fatalf("GetRecommendations: %v", err)
+	}
+	if len(page.Tracks) != 1 {
+		t.Fatalf("tracks = %+v, want the neighbour fallback row", page.Tracks)
+	}
+	if page.Tracks[0].Title != "Fallback Hit" || page.Tracks[0].Source != "fallback" {
+		t.Fatalf("track = %+v, want a row marked as fallback", page.Tracks[0])
+	}
+	if source.artistTopTracksCalls != 1 {
+		t.Fatalf("artist top-track calls = %d, want 1", source.artistTopTracksCalls)
+	}
+}
+
+func TestNeighbourFallbackRunsForTheFirstTenSeedsOnly(t *testing.T) {
+	source := connectedSource(nil)
+	source.similarArtists = map[string][]LastFmArtist{}
+	source.artistTopTracks = map[string][]LastFmTrack{}
+	for index := 0; index < 15; index++ {
+		artist := "Seed Artist " + strconv.Itoa(index)
+		source.recent = append(source.recent, track(artist, "Song "+strconv.Itoa(index)))
+		neighbour := "Neighbour " + strconv.Itoa(index)
+		source.similarArtists[artist] = []LastFmArtist{{Name: neighbour}}
+		source.artistTopTracks[neighbour] = []LastFmTrack{track(neighbour, "Hit "+strconv.Itoa(index))}
+	}
+
+	recommender := newTestRecommender(source, &fakeMatcher{}, &fakeStreamRepo{})
+	if _, err := recommender.GetRecommendations(context.Background(), false); err != nil {
+		t.Fatalf("GetRecommendations: %v", err)
+	}
+	if source.artistTopTracksCalls != fallbackSeedLimit {
+		t.Fatalf("artist top-track calls = %d, want %d", source.artistTopTracksCalls, fallbackSeedLimit)
+	}
+}
+
+func TestNeighbourFallbackExcludesSeedsAndRanksByOccurrence(t *testing.T) {
+	source := connectedSource(nil)
+	seedTrack := track("Seed Artist", "Seed Song")
+	source.similarArtists["Seed Artist"] = []LastFmArtist{
+		{Name: "A"}, {Name: "B"}, {Name: "C"},
+	}
+	source.artistTopTracks["A"] = []LastFmTrack{track("Shared", "Hit"), track("A", "Only A"), seedTrack}
+	source.artistTopTracks["B"] = []LastFmTrack{track("Shared", "Hit"), track("B", "Only B")}
+	source.artistTopTracks["C"] = []LastFmTrack{track("Shared", "Hit")}
+
+	recommender := newTestRecommender(source, &fakeMatcher{}, &fakeStreamRepo{})
+	hits, failed := recommender.fallbackForSeed(context.Background(), seedTrack)
+	if failed {
+		t.Fatal("an empty answer is not a failure")
+	}
+	if len(hits) != 3 {
+		t.Fatalf("hits = %+v, want the seed excluded and three neighbours merged", hits)
+	}
+	if hits[0].track.Title != "Hit" || hits[0].count != 3 {
+		t.Fatalf("first hit = %+v, want the track all three neighbours listed", hits[0])
+	}
+	for _, hit := range hits {
+		if hit.track.Title == seedTrack.Title {
+			t.Fatal("a seed must not appear in its own fallback")
+		}
+	}
+
+	// The same rows flow through the candidate map with the occurrence count as
+	// the per-kind hit count.
+	seeds := seedSet{all: []seed{{track: seedTrack, kind: seedRecent}}}
+	candidates, _ := recommender.collectSimilarTracks(context.Background(), seeds)
+	shared := candidates[candidateKey("Shared", "Hit")]
+	if shared == nil || shared.hits[seedRecent] != 3 || shared.source() != "fallback" {
+		t.Fatalf("shared candidate = %+v, want three fallback hits", shared)
+	}
+}
+
+func TestAllSeedsEmptyIsNotAnError(t *testing.T) {
+	source := connectedSource([]LastFmTrack{track("Seed Artist", "Obscure")})
+	recommender := newTestRecommender(source, &fakeMatcher{}, &fakeStreamRepo{})
+
+	page, err := recommender.GetRecommendations(context.Background(), false)
+	if err != nil {
+		t.Fatalf("GetRecommendations: %v", err)
+	}
+	if len(page.Tracks) != 0 || len(page.RecentTracks) != 0 {
+		t.Fatalf("page = %+v, want empty lists rather than an error", page)
+	}
+}
+
+func TestGlobalFallbackUsesTagsThenChart(t *testing.T) {
+	source := connectedSource([]LastFmTrack{track("Seed Artist", "Obscure")})
+	source.userTopTags = []LastFmTag{{Name: "rock", Count: 10}}
+	source.tagTopTracks = map[string][]LastFmTrack{
+		"rock": {track("Tag Artist", "Tag Hit")},
+	}
+
+	matcher := &fakeMatcher{
+		sources: []domain.CatalogSearchSource{{ID: "s1"}},
+		rows: map[string][]domain.CatalogSearchResult{
+			"Tag Artist\x00Tag Hit": {
+				{Provider: "s1", ExternalID: "1", Title: "Tag Hit", Artists: []string{"Tag Artist"}, Downloadable: true},
+			},
+		},
+	}
+	recommender := newTestRecommender(source, matcher, &fakeStreamRepo{})
+	page, err := recommender.GetRecommendations(context.Background(), false)
+	if err != nil {
+		t.Fatalf("GetRecommendations: %v", err)
+	}
+	if len(page.Tracks) != 1 || page.Tracks[0].Source != "fallback" {
+		t.Fatalf("tracks = %+v, want the tag fallback row", page.Tracks)
+	}
+	if source.tagTopTracksCalls == 0 {
+		t.Fatal("the tag fallback must query tag.getTopTracks")
+	}
+	if source.chartTopTracksCalls != 0 {
+		t.Fatal("the chart is only a last resort")
+	}
+}
+
+func TestGlobalFallbackFallsBackToTheChart(t *testing.T) {
+	source := connectedSource([]LastFmTrack{track("Seed Artist", "Obscure")})
+	source.chartTopTracks = []LastFmTrack{track("Chart Artist", "Chart Hit")}
+
+	matcher := &fakeMatcher{
+		sources: []domain.CatalogSearchSource{{ID: "s1"}},
+		rows: map[string][]domain.CatalogSearchResult{
+			"Chart Artist\x00Chart Hit": {
+				{Provider: "s1", ExternalID: "1", Title: "Chart Hit", Artists: []string{"Chart Artist"}, Downloadable: true},
+			},
+		},
+	}
+	recommender := newTestRecommender(source, matcher, &fakeStreamRepo{})
+	page, err := recommender.GetRecommendations(context.Background(), false)
+	if err != nil {
+		t.Fatalf("GetRecommendations: %v", err)
+	}
+	if len(page.Tracks) != 1 || page.Tracks[0].Title != "Chart Hit" || page.Tracks[0].Source != "fallback" {
+		t.Fatalf("tracks = %+v, want the chart fallback row", page.Tracks)
+	}
+	if source.chartTopTracksCalls != 1 {
+		t.Fatalf("chart calls = %d, want 1", source.chartTopTracksCalls)
 	}
 }
 

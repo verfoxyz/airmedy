@@ -57,15 +57,20 @@ const racks = computed(() => {
 })
 
 const similarArtists = computed(() => page.value?.similar_artists ?? [])
+// Only the four track lists decide the empty state; similar artists can still
+// be useful when Last.fm has no playable recommendation at all.
 const isEmpty = computed(() => {
   const current = page.value
   if (!current) return false
-  return (
-    (current.tracks ?? []).length === 0 &&
-    racks.value.length === 0 &&
-    similarArtists.value.length === 0
-  )
+  return (current.tracks ?? []).length === 0 && racks.value.length === 0
 })
+
+/** artistInitial is the avatar fallback when Last.fm has no real image. */
+function artistInitial(name: string): string {
+  const trimmed = name.trim()
+  if (!trimmed) return '?'
+  return Array.from(trimmed)[0]!.toUpperCase()
+}
 
 async function load(force: boolean) {
   if (loading.value) return
@@ -282,47 +287,52 @@ onActivated(() => {
             </div>
           </div>
         </section>
-
-        <!-- Similar artists -->
-        <section v-if="similarArtists.length > 0" class="mt-12" data-test="lastfm-similar-artists">
-          <div class="mb-6 flex items-center gap-3">
-            <div class="rounded-lg bg-foreground/[0.06] p-2 text-dim">
-              <Users class="h-5 w-5" aria-hidden="true" />
-            </div>
-            <h2 class="text-2xl font-bold tracking-tight">{{ $t('lastfm.similar_artists') }}</h2>
-          </div>
-          <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-            <button
-              v-for="artist in similarArtists"
-              :key="artist.name"
-              type="button"
-              class="flex min-w-0 items-center gap-3 rounded-xl p-2 text-left transition-colors hover:bg-foreground/[0.04]"
-              data-test="lastfm-similar-artist"
-              :title="$t('lastfm.search_artist', { artist: artist.name })"
-              @click="searchArtist(artist)"
-            >
-              <div class="h-12 w-12 shrink-0 overflow-hidden rounded-full bg-foreground/[0.06] ring-1 ring-foreground/[0.06]">
-                <img
-                  v-if="artist.image_url"
-                  :src="artist.image_url"
-                  :alt="artist.name"
-                  class="h-full w-full object-cover"
-                  loading="lazy"
-                />
-                <div v-else class="flex h-full w-full items-center justify-center text-dimmer">
-                  <Users class="h-5 w-5" aria-hidden="true" />
-                </div>
-              </div>
-              <div class="min-w-0">
-                <p class="truncate text-sm font-semibold text-foreground">{{ artist.name }}</p>
-                <p v-if="artist.listeners" class="truncate text-xs text-dimmer">
-                  {{ $t('lastfm.listeners', { count: listenersLabel(artist.listeners) }) }}
-                </p>
-              </div>
-            </button>
-          </div>
-        </section>
       </template>
+
+      <!-- Similar artists stay visible even when no recommendation could be
+           resolved, so the page never looks broken. -->
+      <section v-if="similarArtists.length > 0" class="mt-12" data-test="lastfm-similar-artists">
+        <div class="mb-6 flex items-center gap-3">
+          <div class="rounded-lg bg-foreground/[0.06] p-2 text-dim">
+            <Users class="h-5 w-5" aria-hidden="true" />
+          </div>
+          <h2 class="text-2xl font-bold tracking-tight">{{ $t('lastfm.similar_artists') }}</h2>
+        </div>
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+          <button
+            v-for="artist in similarArtists"
+            :key="artist.name"
+            type="button"
+            class="flex min-w-0 items-center gap-3 rounded-xl p-2 text-left transition-colors hover:bg-foreground/[0.04]"
+            data-test="lastfm-similar-artist"
+            :title="$t('lastfm.search_artist', { artist: artist.name })"
+            @click="searchArtist(artist)"
+          >
+            <div class="h-12 w-12 shrink-0 overflow-hidden rounded-full bg-foreground/[0.06] ring-1 ring-foreground/[0.06]">
+              <img
+                v-if="artist.image_url"
+                :src="artist.image_url"
+                :alt="artist.name"
+                class="h-full w-full object-cover"
+                loading="lazy"
+              />
+              <div
+                v-else
+                class="flex h-full w-full items-center justify-center bg-primary/10 text-sm font-semibold text-primary"
+                data-test="lastfm-artist-initial"
+              >
+                {{ artistInitial(artist.name) }}
+              </div>
+            </div>
+            <div class="min-w-0">
+              <p class="truncate text-sm font-semibold text-foreground">{{ artist.name }}</p>
+              <p v-if="artist.listeners" class="truncate text-xs text-dimmer">
+                {{ $t('lastfm.listeners', { count: listenersLabel(artist.listeners) }) }}
+              </p>
+            </div>
+          </button>
+        </div>
+      </section>
     </template>
   </div>
 </template>

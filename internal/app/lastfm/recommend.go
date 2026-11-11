@@ -62,6 +62,20 @@ const (
 	maxMatchCandidates = 120
 	// matchConcurrency is the number of catalogue searches in flight.
 	matchConcurrency = 2
+	// fallbackSeedLimit bounds how many seeds run the neighbour fallback. A cold
+	// account's seeds all miss track.getSimilar, and the fallback costs four
+	// requests per seed.
+	fallbackSeedLimit = 10
+	// fallbackSimilarArtistLimit is how many neighbours one seed may inspect.
+	fallbackSimilarArtistLimit = 3
+	// fallbackArtistTrackLimit is the per-neighbour track window.
+	fallbackArtistTrackLimit = 5
+	// fallbackTagLimit bounds the aggregated tags used by the global fallback.
+	fallbackTagLimit = 5
+	// fallbackTagTrackLimit is the per-tag track window.
+	fallbackTagTrackLimit = 10
+	// fallbackChartLimit is the global chart window of the last resort.
+	fallbackChartLimit = 20
 )
 
 // Source weights for the combined list. A recent seed is the strongest signal,
@@ -91,6 +105,11 @@ type TrackSource interface {
 	GetLovedTracks(ctx context.Context, limit int) ([]LastFmTrack, error)
 	GetSimilarTracks(ctx context.Context, artist, title string, limit int) ([]LastFmTrack, error)
 	GetSimilarArtists(ctx context.Context, artist string, limit int) ([]LastFmArtist, error)
+	GetArtistTopTracks(ctx context.Context, artist string, limit int) ([]LastFmTrack, error)
+	GetUserTopTags(ctx context.Context, limit int) ([]LastFmTag, error)
+	GetArtistTopTags(ctx context.Context, artist string, limit int) ([]LastFmTag, error)
+	GetTagTopTracks(ctx context.Context, tag string, limit int) ([]LastFmTrack, error)
+	GetChartTopTracks(ctx context.Context, limit int) ([]LastFmTrack, error)
 	// GetStatus reports whether an account is connected, its username and avatar.
 	GetStatus() (connected bool, username string, avatarURL string)
 }
@@ -131,6 +150,10 @@ type RecommendedTrack struct {
 	Sources      []string
 	// Score is the recommendation score within the list that contains it.
 	Score float64
+	// Source is "similar" for a direct track.getSimilar hit and "fallback" for a
+	// row produced by the neighbour/tag/chart fallback chain. The page renders
+	// both as ordinary recommendations.
+	Source string
 }
 
 // SimilarArtist is one artist from artist.getSimilar.
@@ -400,13 +423,34 @@ func (r *Recommender) build(
 	lovedList := rankKind(candidates, seedLoved, perKindLimit)
 	topList := rankKind(candidates, seedTop, perKindLimit)
 
+	// A cold account can produce no candidate at all. The global fallback keeps
+	// the page useful by deriving tags from the seed artists and, as a last
+	// resort, the site-wide chart.
+	var globalFallback []*candidate
+	if len(combined) == 0 && len(recentList) == 0 && len(lovedList) == 0 && len(topList) == 0 {
+		fallback, fallbackFailed := r.collectGlobalFallback(ctx, seeds)
+		globalFallback = fallback
+		if fallbackFailed {
+			partial = true
+		}
+	}
+
 	sources := r.searchSources(ctx)
-	matches, matchFailed := r.matchCandidates(ctx, orderedCandidates(combined, recentList, lovedList, topList), sources)
+	matchInput := orderedCandidates(combined, recentList, lovedList, topList)
+	if len(matchInput) == 0 {
+		matchInput = orderedCandidates(globalFallback)
+	}
+	matches, matchFailed := r.matchCandidates(ctx, matchInput, sources)
 	if matchFailed {
 		partial = true
 	}
 
 	page.Tracks = renderList(combined, matches, maxPlayable, combinedScore)
+	if len(page.Tracks) == 0 && len(globalFallback) > 0 {
+		page.Tracks = renderList(globalFallback, matches, maxPlayable, func(entry *candidate) float64 {
+			return entry.score
+		})
+	}
 	page.RecentTracks = renderList(recentList, matches, perKindLimit, func(entry *candidate) float64 {
 		return float64(entry.hits[seedRecent])
 	})
@@ -428,6 +472,28 @@ func (r *Recommender) build(
 type candidate struct {
 	track LastFmTrack
 	hits  map[seedKind]int
+	// fromSimilar / fromFallback record how the row was found. A row seen by
+	// both keeps fromSimilar, so the source says "fallback" only when nothing
+	// else produced it.
+	fromSimilar  bool
+	fromFallback bool
+	// score orders global-fallback rows; normal rows rank by their weighted hits.
+	score float64
+}
+
+// source is the value the page shows for how the row was found.
+func (c *candidate) source() string {
+	if c.fromFallback && !c.fromSimilar {
+		return "fallback"
+	}
+	return "similar"
+}
+
+// fallbackHit is one track a seed's neighbour artists produced, with how many
+// neighbours listed it.
+type fallbackHit struct {
+	track LastFmTrack
+	count int
 }
 
 func candidateKey(artist, title string) string {
@@ -441,6 +507,11 @@ func usableTrack(track LastFmTrack) bool {
 
 // collectSimilarTracks asks Last.fm for every seed's neighbours and aggregates
 // them by kind. It returns whether any request failed.
+//
+// A seed whose similar list is empty gets one neighbour fallback (only the
+// first fallbackSeedLimit seeds, to bound the request burst): similar artists,
+// then their top tracks. The result keeps the same per-kind hit accounting, so
+// the four lists continue to rank by how many seeds support a row.
 func (r *Recommender) collectSimilarTracks(ctx context.Context, seeds seedSet) (map[string]*candidate, bool) {
 	candidates := make(map[string]*candidate)
 	seedKeys := make(map[string]struct{}, len(seeds.all))
@@ -453,12 +524,21 @@ func (r *Recommender) collectSimilarTracks(ctx context.Context, seeds seedSet) (
 		wg       sync.WaitGroup
 		failures int
 	)
-	for _, item := range seeds.all {
-		item := item
+	for index, item := range seeds.all {
+		index, item := index, item
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			tracks, err := r.client.GetSimilarTracks(ctx, item.track.Artist, item.track.Title, similarTrackLimit)
+
+			var (
+				fallback       []fallbackHit
+				fallbackFailed bool
+			)
+			if err == nil && len(tracks) == 0 && index < fallbackSeedLimit {
+				fallback, fallbackFailed = r.fallbackForSeed(ctx, item.track)
+			}
+
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -468,6 +548,30 @@ func (r *Recommender) collectSimilarTracks(ctx context.Context, seeds seedSet) (
 				// A single failed seed is skipped, never fatal.
 				return
 			}
+			if fallbackFailed {
+				failures++
+			}
+
+			if len(fallback) > 0 {
+				for _, hit := range fallback {
+					if !usableTrack(hit.track) {
+						continue
+					}
+					key := candidateKey(hit.track.Artist, hit.track.Title)
+					if _, isSeed := seedKeys[key]; isSeed {
+						continue
+					}
+					entry := candidates[key]
+					if entry == nil {
+						entry = &candidate{track: hit.track, hits: make(map[seedKind]int)}
+						candidates[key] = entry
+					}
+					entry.fromFallback = true
+					entry.hits[item.kind] += hit.count
+				}
+				return
+			}
+
 			seen := make(map[string]struct{}, len(tracks))
 			for _, track := range tracks {
 				if !usableTrack(track) {
@@ -488,12 +592,217 @@ func (r *Recommender) collectSimilarTracks(ctx context.Context, seeds seedSet) (
 					candidates[key] = entry
 				}
 				// One seed counts once, even if Last.fm listed it twice.
+				entry.fromSimilar = true
 				entry.hits[item.kind]++
 			}
 		}()
 	}
 	wg.Wait()
 	return candidates, failures > 0
+}
+
+// fallbackForSeed replaces one empty track.getSimilar answer with the top tracks
+// of its similar artists.
+//
+// Budget: one artist.getSimilar plus at most fallbackSimilarArtistLimit
+// artist.getTopTracks calls. The caller only invokes it for the first
+// fallbackSeedLimit seeds. Request errors are reported to the caller; an empty
+// answer is simply "this seed has nothing".
+func (r *Recommender) fallbackForSeed(ctx context.Context, seed LastFmTrack) ([]fallbackHit, bool) {
+	artists, err := r.client.GetSimilarArtists(ctx, seed.Artist, fallbackSimilarArtistLimit)
+	if err != nil {
+		r.logger.Debug("last.fm fallback: similar artists failed",
+			"artist", seed.Artist, "error", err)
+		return nil, true
+	}
+	if len(artists) > fallbackSimilarArtistLimit {
+		artists = artists[:fallbackSimilarArtistLimit]
+	}
+
+	seedKey := candidateKey(seed.Artist, seed.Title)
+	counts := make(map[string]int)
+	tracks := make(map[string]LastFmTrack)
+	failed := false
+	for _, artist := range artists {
+		name := strings.TrimSpace(artist.Name)
+		if name == "" {
+			continue
+		}
+		items, err := r.client.GetArtistTopTracks(ctx, name, fallbackArtistTrackLimit)
+		if err != nil {
+			failed = true
+			r.logger.Debug("last.fm fallback: artist top tracks failed",
+				"artist", name, "error", err)
+			continue
+		}
+		for _, track := range items {
+			if !usableTrack(track) {
+				continue
+			}
+			key := candidateKey(track.Artist, track.Title)
+			if key == seedKey {
+				continue
+			}
+			counts[key]++
+			if _, exists := tracks[key]; !exists {
+				tracks[key] = track
+			}
+		}
+	}
+
+	hits := make([]fallbackHit, 0, len(counts))
+	for key, count := range counts {
+		hits = append(hits, fallbackHit{track: tracks[key], count: count})
+	}
+	// Order by how many neighbours listed the track, then by title so the page
+	// is stable across builds.
+	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].count != hits[j].count {
+			return hits[i].count > hits[j].count
+		}
+		return strings.ToLower(hits[i].track.Title) < strings.ToLower(hits[j].track.Title)
+	})
+	return hits, failed
+}
+
+// collectGlobalFallback guarantees a cold account still sees some music.
+//
+// Tags come from the user's own top tags plus every seed artist's tags (a user
+// with no scrobble weight has no tags of their own). The site-wide chart is the
+// last resort. Every row is marked as a fallback recommendation.
+func (r *Recommender) collectGlobalFallback(ctx context.Context, seeds seedSet) ([]*candidate, bool) {
+	failed := false
+	tags := r.collectTags(ctx, seeds, &failed)
+
+	var tracks []LastFmTrack
+	for _, tag := range tags {
+		items, err := r.client.GetTagTopTracks(ctx, tag, fallbackTagTrackLimit)
+		if err != nil {
+			failed = true
+			r.logger.Debug("last.fm fallback: tag top tracks failed", "tag", tag, "error", err)
+			continue
+		}
+		tracks = append(tracks, items...)
+	}
+	if len(tracks) == 0 {
+		items, err := r.client.GetChartTopTracks(ctx, fallbackChartLimit)
+		if err != nil {
+			failed = true
+			r.logger.Debug("last.fm fallback: chart failed", "error", err)
+		} else {
+			tracks = items
+		}
+	}
+
+	seedKeys := make(map[string]struct{}, len(seeds.all))
+	for _, item := range seeds.all {
+		seedKeys[candidateKey(item.track.Artist, item.track.Title)] = struct{}{}
+	}
+
+	candidates := make([]*candidate, 0, len(tracks))
+	seen := make(map[string]struct{}, len(tracks))
+	score := float64(len(tracks))
+	for _, track := range tracks {
+		if !usableTrack(track) {
+			continue
+		}
+		key := candidateKey(track.Artist, track.Title)
+		if _, isSeed := seedKeys[key]; isSeed {
+			continue
+		}
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
+		candidates = append(candidates, &candidate{
+			track:        track,
+			hits:         make(map[seedKind]int),
+			fromFallback: true,
+			score:        score,
+		})
+		score--
+	}
+	if len(candidates) > combinedLimit {
+		candidates = candidates[:combinedLimit]
+	}
+	return candidates, failed
+}
+
+// collectTags merges the user's top tags with the seed artists' tags.
+func (r *Recommender) collectTags(ctx context.Context, seeds seedSet, failed *bool) []string {
+	counts := make(map[string]int)
+	names := make(map[string]string)
+	add := func(tags []LastFmTag) {
+		for _, tag := range tags {
+			name := strings.TrimSpace(tag.Name)
+			if name == "" {
+				continue
+			}
+			key := domain.NormalizationKey(name)
+			if key == "" {
+				continue
+			}
+			counts[key]++
+			if _, exists := names[key]; !exists {
+				names[key] = name
+			}
+		}
+	}
+
+	userTags, err := r.client.GetUserTopTags(ctx, fallbackTagLimit*2)
+	if err != nil {
+		*failed = true
+		r.logger.Debug("last.fm fallback: user top tags failed", "error", err)
+	} else {
+		add(userTags)
+	}
+
+	seenArtists := make(map[string]struct{})
+	for _, item := range seeds.all {
+		artist := strings.TrimSpace(item.track.Artist)
+		if artist == "" {
+			continue
+		}
+		key := domain.NormalizationKey(artist)
+		if _, duplicate := seenArtists[key]; duplicate {
+			continue
+		}
+		seenArtists[key] = struct{}{}
+		tags, err := r.client.GetArtistTopTags(ctx, artist, 5)
+		if err != nil {
+			*failed = true
+			r.logger.Debug("last.fm fallback: artist top tags failed", "artist", artist, "error", err)
+			continue
+		}
+		add(tags)
+		if len(seenArtists) >= fallbackSeedLimit {
+			break
+		}
+	}
+
+	type tagScore struct {
+		name  string
+		count int
+	}
+	list := make([]tagScore, 0, len(counts))
+	for key, count := range counts {
+		list = append(list, tagScore{name: names[key], count: count})
+	}
+	sort.SliceStable(list, func(i, j int) bool {
+		if list[i].count != list[j].count {
+			return list[i].count > list[j].count
+		}
+		return strings.ToLower(list[i].name) < strings.ToLower(list[j].name)
+	})
+	if len(list) > fallbackTagLimit {
+		list = list[:fallbackTagLimit]
+	}
+
+	result := make([]string, 0, len(list))
+	for _, item := range list {
+		result = append(result, item.name)
+	}
+	return result
 }
 
 // rankKind returns one source-specific list: hit count descending, then the
@@ -844,7 +1153,7 @@ func renderList(
 		if row == nil {
 			continue
 		}
-		result = append(result, toRecommended(row, score(entry)))
+		result = append(result, toRecommended(row, score(entry), entry.source()))
 		if len(result) >= limit {
 			break
 		}
@@ -852,7 +1161,7 @@ func renderList(
 	return result
 }
 
-func toRecommended(row *domain.CatalogSearchResult, score float64) RecommendedTrack {
+func toRecommended(row *domain.CatalogSearchResult, score float64, source string) RecommendedTrack {
 	return RecommendedTrack{
 		Provider:              row.Provider,
 		ExternalID:            row.ExternalID,
@@ -868,6 +1177,7 @@ func toRecommended(row *domain.CatalogSearchResult, score float64) RecommendedTr
 		LocalTrackID:          row.LocalTrackID,
 		Sources:               append([]string{}, row.Sources...),
 		Score:                 score,
+		Source:                source,
 	}
 }
 

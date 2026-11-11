@@ -61,6 +61,7 @@ function track(title: string, provider = 'wy') {
     local_track_id: '',
     sources: [provider],
     score: 1,
+    source: 'similar',
   }
 }
 
@@ -169,6 +170,22 @@ describe('LastFmView', () => {
     await empty.find('button').trigger('click')
     await flushPromises()
     expect(mocks.getRecommendations).toHaveBeenLastCalledWith(true)
+  })
+
+  it('shows the empty state while keeping similar artists visible', async () => {
+    mocks.getRecommendations.mockResolvedValue(page({
+      tracks: [],
+      recent_tracks: [],
+      loved_tracks: [],
+      top_tracks: [],
+      similar_artists: [{ name: 'Alpha', image_url: '', listeners: 10, url: '' }],
+    }))
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="lastfm-empty"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="lastfm-similar-artists"]').exists()).toBe(true)
+    // A missing Last.fm avatar renders the artist's initial, not a broken image.
+    expect(wrapper.find('[data-test="lastfm-artist-initial"]').text()).toBe('A')
   })
 
   it('reports a partial build without hiding the rows', async () => {

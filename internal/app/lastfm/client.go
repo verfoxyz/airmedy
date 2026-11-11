@@ -55,6 +55,12 @@ type LastFmArtist struct {
 	URL       string
 }
 
+// LastFmTag is one tag and how strongly a user or artist is associated with it.
+type LastFmTag struct {
+	Name  string
+	Count int
+}
+
 // rateLimiter caps in-flight requests and spaces them by a minimum gap.
 //
 // Both bounds are needed: the concurrency slot alone still allows a burst of
@@ -301,12 +307,179 @@ func (s *LastFmService) GetSimilarArtists(ctx context.Context, artist string, li
 		}
 		artists = append(artists, LastFmArtist{
 			Name:      name,
-			ImageURL:  largestImage(wire.Image),
+			ImageURL:  usableArtistImage(largestImage(wire.Image)),
 			Listeners: int(wire.Listeners),
 			URL:       strings.TrimSpace(wire.URL),
 		})
 	}
 	return artists, nil
+}
+
+// GetArtistTopTracks returns one artist's most popular tracks.
+//
+// The recommendation fallback uses it after track.getSimilar answers with an
+// empty list: the seed has no neighbour data, but its similar artists usually do.
+func (s *LastFmService) GetArtistTopTracks(ctx context.Context, artist string, limit int) ([]LastFmTrack, error) {
+	if _, err := s.requireUser(); err != nil {
+		return nil, err
+	}
+	artist = strings.TrimSpace(artist)
+	if artist == "" {
+		return nil, fmt.Errorf("last.fm artist top tracks: artist is required")
+	}
+
+	var response struct {
+		TopTracks struct {
+			Track flexList[lastFmTrackWire] `json:"track"`
+		} `json:"toptracks"`
+	}
+	err := s.callRead(ctx, map[string]string{
+		"method": "artist.getTopTracks",
+		"artist": artist,
+		"limit":  strconv.Itoa(clampLimit(limit, 5)),
+	}, &response)
+	if err != nil {
+		return nil, err
+	}
+	return parseTrackList(response.TopTracks.Track), nil
+}
+
+// GetUserTopTags returns the tags the connected user listens to most.
+//
+// It is only one half of the global fallback: many accounts have no top tags at
+// all, so the recommender also aggregates every seed artist's tags.
+func (s *LastFmService) GetUserTopTags(ctx context.Context, limit int) ([]LastFmTag, error) {
+	user, err := s.requireUser()
+	if err != nil {
+		return nil, err
+	}
+
+	var response struct {
+		TopTags struct {
+			Tag flexList[lastFmTagWire] `json:"tag"`
+		} `json:"toptags"`
+	}
+	err = s.callRead(ctx, map[string]string{
+		"method": "user.getTopTags",
+		"user":   user,
+		"limit":  strconv.Itoa(clampLimit(limit, 10)),
+	}, &response)
+	if err != nil {
+		return nil, err
+	}
+	return parseTagList(response.TopTags.Tag), nil
+}
+
+// GetArtistTopTags returns the tags Last.fm associates with one artist.
+func (s *LastFmService) GetArtistTopTags(ctx context.Context, artist string, limit int) ([]LastFmTag, error) {
+	if _, err := s.requireUser(); err != nil {
+		return nil, err
+	}
+	artist = strings.TrimSpace(artist)
+	if artist == "" {
+		return nil, fmt.Errorf("last.fm artist top tags: artist is required")
+	}
+
+	var response struct {
+		TopTags struct {
+			Tag flexList[lastFmTagWire] `json:"tag"`
+		} `json:"toptags"`
+	}
+	err := s.callRead(ctx, map[string]string{
+		"method": "artist.getTopTags",
+		"artist": artist,
+		"limit":  strconv.Itoa(clampLimit(limit, 5)),
+	}, &response)
+	if err != nil {
+		return nil, err
+	}
+	return parseTagList(response.TopTags.Tag), nil
+}
+
+// GetTagTopTracks returns the globally popular tracks under one tag.
+func (s *LastFmService) GetTagTopTracks(ctx context.Context, tag string, limit int) ([]LastFmTrack, error) {
+	if _, err := s.requireUser(); err != nil {
+		return nil, err
+	}
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		return nil, fmt.Errorf("last.fm tag top tracks: tag is required")
+	}
+
+	var response struct {
+		Tracks struct {
+			Track flexList[lastFmTrackWire] `json:"track"`
+		} `json:"tracks"`
+	}
+	err := s.callRead(ctx, map[string]string{
+		"method": "tag.getTopTracks",
+		"tag":    tag,
+		"limit":  strconv.Itoa(clampLimit(limit, 10)),
+	}, &response)
+	if err != nil {
+		return nil, err
+	}
+	return parseTrackList(response.Tracks.Track), nil
+}
+
+// GetChartTopTracks is the last-resort global chart used when a cold account
+// produces no seeds at all.
+func (s *LastFmService) GetChartTopTracks(ctx context.Context, limit int) ([]LastFmTrack, error) {
+	if _, err := s.requireUser(); err != nil {
+		return nil, err
+	}
+
+	var response struct {
+		Tracks struct {
+			Track flexList[lastFmTrackWire] `json:"track"`
+		} `json:"tracks"`
+	}
+	err := s.callRead(ctx, map[string]string{
+		"method": "chart.getTopTracks",
+		"limit":  strconv.Itoa(clampLimit(limit, 20)),
+	}, &response)
+	if err != nil {
+		return nil, err
+	}
+	return parseTrackList(response.Tracks.Track), nil
+}
+
+// parseTrackList drops unusable rows from a wire list.
+func parseTrackList(wireTracks flexList[lastFmTrackWire]) []LastFmTrack {
+	tracks := make([]LastFmTrack, 0, len(wireTracks))
+	for _, wire := range wireTracks {
+		track := wire.toTrack()
+		if track.Title == "" || track.Artist == "" {
+			continue
+		}
+		tracks = append(tracks, track)
+	}
+	return tracks
+}
+
+func parseTagList(wireTags flexList[lastFmTagWire]) []LastFmTag {
+	tags := make([]LastFmTag, 0, len(wireTags))
+	for _, wire := range wireTags {
+		name := strings.TrimSpace(wire.Name)
+		if name == "" {
+			continue
+		}
+		tags = append(tags, LastFmTag{Name: name, Count: int(wire.Count)})
+	}
+	return tags
+}
+
+// lastFmPlaceholderImageMarker identifies Last.fm's default artist star image.
+// The API returns it for artists without artwork, and the browser renders it as
+// a broken or blank avatar if the URL is used directly.
+const lastFmPlaceholderImageMarker = "2a96cbd8b46e442fc41c2b86b821562f"
+
+func usableArtistImage(url string) string {
+	trimmed := strings.TrimSpace(url)
+	if trimmed == "" || strings.Contains(trimmed, lastFmPlaceholderImageMarker) {
+		return ""
+	}
+	return trimmed
 }
 
 // requireUser is the single connection check for the read-only endpoints.
@@ -430,6 +603,11 @@ type lastFmSimilarArtistWire struct {
 	Image     []lastFmImage `json:"image"`
 	Listeners flexInt       `json:"listeners"`
 	URL       string        `json:"url"`
+}
+
+type lastFmTagWire struct {
+	Name  string  `json:"name"`
+	Count flexInt `json:"count"`
 }
 
 // largestImage picks the biggest rendition Last.fm reported.

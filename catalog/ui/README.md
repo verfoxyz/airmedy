@@ -213,6 +213,14 @@ Status is `ok`, `partial` (a banner above the lists) or `not_connected` (a card 
 routes to `/settings/integrations`). The page loads once on mount/activation; the
 refresh button is the only path that passes `force=true`.
 
+When `track.getSimilar` has nothing for a seed, the backend falls back to the seed's
+similar artists and their top tracks (first ten seeds only). If every seed is empty,
+it aggregates tags from the user and the seed artists, then `tag.getTopTracks`, and
+finally `chart.getTopTracks`; those rows carry `source=fallback` but render like any
+other recommendation. The four track lists decide the empty state; similar artists
+stay visible even when no track could be resolved, and an artist without a real
+Last.fm image renders its initial instead of the default star placeholder.
+
 `SearchView` consumes `/search?q=` on mount and activation, so the Last.fm similar
 artist jump prefills the box and then replaces the URL without the parameter.
 

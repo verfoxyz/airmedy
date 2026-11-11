@@ -119,3 +119,30 @@ func TestLargestImageSkipsEmptyRenditions(t *testing.T) {
 		t.Fatalf("largestImage(nil) = %q, want empty", got)
 	}
 }
+
+func TestUsableArtistImageDropsTheLastFmPlaceholder(t *testing.T) {
+	placeholder := "https://lastfm-img.freetls.fastly.net/i/u/64s/" + lastFmPlaceholderImageMarker + ".png"
+	if got := usableArtistImage(placeholder); got != "" {
+		t.Fatalf("usableArtistImage(placeholder) = %q, want empty", got)
+	}
+	if got := usableArtistImage("  "); got != "" {
+		t.Fatalf("usableArtistImage(blank) = %q, want empty", got)
+	}
+	if got := usableArtistImage("https://img/artist.jpg"); got != "https://img/artist.jpg" {
+		t.Fatalf("usableArtistImage(real) = %q, want the URL", got)
+	}
+}
+
+func TestParseTagListDropsEmptyNames(t *testing.T) {
+	tags := parseTagList(flexList[lastFmTagWire]{
+		{Name: " rock ", Count: 10},
+		{Name: "  "},
+		{Name: "pop", Count: 3},
+	})
+	if len(tags) != 2 {
+		t.Fatalf("tags = %+v, want two usable entries", tags)
+	}
+	if tags[0].Name != "rock" || tags[0].Count != 10 {
+		t.Fatalf("first tag = %+v", tags[0])
+	}
+}

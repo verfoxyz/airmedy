@@ -68,6 +68,9 @@ type RecommendationTrackDTO struct {
 	Sources []string `json:"sources"`
 	// Score is the recommendation score within its list, highest first.
 	Score float64 `json:"score"`
+	// Source is "similar" for a direct track.getSimilar hit or "fallback" for a
+	// row produced by the cold-account fallback chain.
+	Source string `json:"source"`
 }
 
 // SimilarArtistDTO is one artist in the similar-artists grid.
@@ -146,6 +149,7 @@ func toRecommendationTrackDTOs(tracks []lastfm.RecommendedTrack) []Recommendatio
 			LocalTrackID:  track.LocalTrackID,
 			Sources:       append([]string{}, track.Sources...),
 			Score:         track.Score,
+			Source:        track.Source,
 		})
 	}
 	return result
