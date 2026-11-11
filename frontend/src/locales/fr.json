@@ -469,7 +469,8 @@
     "import_playlist": "Importer une liste de lecture",
     "import_playlist_title": "Importer une liste de lecture",
     "import": "Importer",
-    "all_playlists": "Toutes les playlists"
+    "all_playlists": "Toutes les playlists",
+    "lastfm": "Last.fm"
   },
   "player": {
     "not_playing": "Aucune lecture",
@@ -887,5 +888,28 @@
     "blocked_no_resolver": "Nécessite une source capable de le télécharger",
     "not_downloadable": "Non téléchargeable",
     "no_playlists": "Aucune playlist pour l'instant"
+  },
+  "lastfm": {
+    "title": "Last.fm",
+    "subtitle": "Des recommandations issues de votre historique d'écoute",
+    "subtitle_account": "Recommandations pour {username}",
+    "refresh": "Actualiser les recommandations",
+    "not_connected_title": "Connecter Last.fm",
+    "not_connected_description": "Connectez votre compte Last.fm dans Paramètres → Intégrations pour voir des recommandations basées sur vos écoutes.",
+    "open_settings": "Ouvrir les paramètres",
+    "partial": "Certaines requêtes ont échoué. Affichage de ce qui est arrivé.",
+    "empty_title": "Pas encore de recommandations",
+    "empty_description": "Écoutez quelques titres de plus et actualisez.",
+    "combined": "Pour vous",
+    "recent": "D'après vos écoutes récentes",
+    "loved": "D'après vos titres aimés",
+    "top": "D'après vos titres les plus écoutés",
+    "similar_artists": "Artistes similaires",
+    "play": "Lire",
+    "save": "Enregistrer",
+    "in_library": "Dans la bibliothèque",
+    "load_failed": "Impossible de charger les recommandations.",
+    "search_artist": "Rechercher {artist}",
+    "listeners": "{count} auditeurs"
   }
 }

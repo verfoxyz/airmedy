@@ -469,7 +469,8 @@
     "import_playlist": "Playlist importieren",
     "import_playlist_title": "Playlist importieren",
     "import": "Importieren",
-    "all_playlists": "Alle Playlists"
+    "all_playlists": "Alle Playlists",
+    "lastfm": "Last.fm"
   },
   "player": {
     "not_playing": "Keine Wiedergabe",
@@ -887,5 +888,28 @@
     "blocked_no_resolver": "Braucht eine Quelle, die herunterladen kann",
     "not_downloadable": "Nicht herunterladbar",
     "no_playlists": "Noch keine Playlist"
+  },
+  "lastfm": {
+    "title": "Last.fm",
+    "subtitle": "Empfehlungen aus deinem Hörverlauf",
+    "subtitle_account": "Empfehlungen für {username}",
+    "refresh": "Empfehlungen aktualisieren",
+    "not_connected_title": "Last.fm verbinden",
+    "not_connected_description": "Verbinde dein Last.fm-Konto unter Einstellungen → Integrationen, um Empfehlungen basierend auf deinem Hörverlauf zu sehen.",
+    "open_settings": "Einstellungen öffnen",
+    "partial": "Einige Anfragen sind fehlgeschlagen. Angezeigt wird, was angekommen ist.",
+    "empty_title": "Noch keine Empfehlungen",
+    "empty_description": "Höre ein paar weitere Titel und aktualisiere.",
+    "combined": "Für dich",
+    "recent": "Aus deinen letzten Titeln",
+    "loved": "Aus deinen Lieblingstiteln",
+    "top": "Aus deinen meistgehörten Titeln",
+    "similar_artists": "Ähnliche Künstler",
+    "play": "Abspielen",
+    "save": "Speichern",
+    "in_library": "In der Bibliothek",
+    "load_failed": "Empfehlungen konnten nicht geladen werden.",
+    "search_artist": "Nach {artist} suchen",
+    "listeners": "{count} Hörer"
   }
 }

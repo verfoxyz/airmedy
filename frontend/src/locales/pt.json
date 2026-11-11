@@ -469,7 +469,8 @@
     "import_playlist": "Importar lista de reprodução",
     "import_playlist_title": "Importar lista de reprodução",
     "import": "Importar",
-    "all_playlists": "Todas as playlists"
+    "all_playlists": "Todas as playlists",
+    "lastfm": "Last.fm"
   },
   "player": {
     "not_playing": "Não está reproduzindo",
@@ -887,5 +888,28 @@
     "blocked_no_resolver": "Precisa de uma fonte que consiga baixar",
     "not_downloadable": "Não baixável",
     "no_playlists": "Nenhuma playlist ainda"
+  },
+  "lastfm": {
+    "title": "Last.fm",
+    "subtitle": "Recomendações do seu histórico de reprodução",
+    "subtitle_account": "Recomendações para {username}",
+    "refresh": "Atualizar recomendações",
+    "not_connected_title": "Conectar o Last.fm",
+    "not_connected_description": "Conecte sua conta do Last.fm em Configurações → Integrações para ver recomendações baseadas no que você ouve.",
+    "open_settings": "Abrir configurações",
+    "partial": "Algumas solicitações falharam. Mostrando o que chegou.",
+    "empty_title": "Ainda não há recomendações",
+    "empty_description": "Ouça mais algumas faixas e atualize.",
+    "combined": "Para você",
+    "recent": "Das suas reproduções recentes",
+    "loved": "Das suas faixas favoritas",
+    "top": "Das suas mais ouvidas",
+    "similar_artists": "Artistas semelhantes",
+    "play": "Reproduzir",
+    "save": "Salvar",
+    "in_library": "Na biblioteca",
+    "load_failed": "Não foi possível carregar as recomendações.",
+    "search_artist": "Pesquisar {artist}",
+    "listeners": "{count} ouvintes"
   }
 }

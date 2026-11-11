@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onActivated } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Disc, Music, RefreshCw, Search, User, Library, PenTool } from '@lucide/vue'
 import LazyImg from '@/components/LazyImg.vue'
@@ -23,6 +23,7 @@ import type { AlbumDTO, TrackDTO } from '../../bindings/airmedy/internal/domain/
 import { buildArtworkUrl } from '@airmedy/utils'
 
 const router = useRouter()
+const route = useRoute()
 const { t } = useI18n()
 const store = useSearchStore()
 const catalogStore = useCatalogStore()
@@ -110,7 +111,22 @@ function refreshResults() {
   librarySync.refresh()
 }
 
+/**
+ * applyRouteQuery prefills the search box from /search?q=...
+ *
+ * The Last.fm page uses it to jump from a similar artist to the local search.
+ * The parameter is consumed immediately so re-activating this cached page does
+ * not overwrite what the user has typed since.
+ */
+function applyRouteQuery() {
+  const query = route.query.q
+  if (typeof query !== 'string' || !query.trim()) return
+  inputValue.value = query
+  void router.replace({ path: '/search' })
+}
+
 onMounted(() => {
+  applyRouteQuery()
   searchInput.value?.focus()
   // The source chips must exist before the first query; a failure leaves them
   // to the search response instead of blocking the page.
@@ -118,6 +134,7 @@ onMounted(() => {
 })
 
 onActivated(() => {
+  applyRouteQuery()
   searchInput.value?.focus()
   // Restoring a cached tab must not re-query an unchanged keyword. A stale
   // result set is refreshed silently; changed input goes through the normal path.

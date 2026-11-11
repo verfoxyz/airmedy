@@ -469,7 +469,8 @@
     "import_playlist": "재생목록 가져오기",
     "import_playlist_title": "재생목록 가져오기",
     "import": "가져오기",
-    "all_playlists": "모든 플레이리스트"
+    "all_playlists": "모든 플레이리스트",
+    "lastfm": "Last.fm"
   },
   "player": {
     "not_playing": "재생 중이 아님",
@@ -887,5 +888,28 @@
     "blocked_no_resolver": "다운로드할 수 있는 소스가 필요합니다",
     "not_downloadable": "다운로드 불가",
     "no_playlists": "재생목록이 없습니다"
+  },
+  "lastfm": {
+    "title": "Last.fm",
+    "subtitle": "청취 기록을 바탕으로 한 추천",
+    "subtitle_account": "{username}님을 위한 추천",
+    "refresh": "추천 새로고침",
+    "not_connected_title": "Last.fm 연결",
+    "not_connected_description": "설정 → 연동에서 Last.fm 계정을 연결하면 청취 기록을 바탕으로 한 추천을 볼 수 있습니다.",
+    "open_settings": "설정 열기",
+    "partial": "일부 요청이 실패했습니다. 도착한 결과만 표시합니다.",
+    "empty_title": "아직 추천이 없습니다",
+    "empty_description": "곡을 조금 더 듣고 새로고침하세요.",
+    "combined": "맞춤 추천",
+    "recent": "최근 재생에서",
+    "loved": "좋아하는 곡에서",
+    "top": "가장 많이 들은 곡에서",
+    "similar_artists": "비슷한 아티스트",
+    "play": "재생",
+    "save": "저장",
+    "in_library": "라이브러리에 있음",
+    "load_failed": "추천을 불러오지 못했습니다.",
+    "search_artist": "{artist} 검색",
+    "listeners": "청취자 {count}명"
   }
 }

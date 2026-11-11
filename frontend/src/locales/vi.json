@@ -469,7 +469,8 @@
     "import_playlist": "Nhập danh sách phát",
     "import_playlist_title": "Nhập danh sách phát",
     "import": "Nhập",
-    "all_playlists": "Tất cả danh sách phát"
+    "all_playlists": "Tất cả danh sách phát",
+    "lastfm": "Last.fm"
   },
   "player": {
     "not_playing": "Không phát",
@@ -887,5 +888,28 @@
     "blocked_no_resolver": "Cần nguồn có thể tải bài này",
     "not_downloadable": "Không tải được",
     "no_playlists": "Chưa có danh sách phát"
+  },
+  "lastfm": {
+    "title": "Last.fm",
+    "subtitle": "Gợi ý từ lịch sử nghe của bạn",
+    "subtitle_account": "Gợi ý cho {username}",
+    "refresh": "Làm mới gợi ý",
+    "not_connected_title": "Kết nối Last.fm",
+    "not_connected_description": "Kết nối tài khoản Last.fm trong Cài đặt → Tích hợp để xem gợi ý dựa trên những gì bạn nghe.",
+    "open_settings": "Mở cài đặt",
+    "partial": "Một số yêu cầu đã thất bại. Đang hiển thị những gì đã nhận được.",
+    "empty_title": "Chưa có gợi ý",
+    "empty_description": "Hãy nghe thêm vài bài và làm mới.",
+    "combined": "Dành cho bạn",
+    "recent": "Từ các bài nghe gần đây",
+    "loved": "Từ các bài bạn yêu thích",
+    "top": "Từ các bài nghe nhiều nhất",
+    "similar_artists": "Nghệ sĩ tương tự",
+    "play": "Phát",
+    "save": "Lưu",
+    "in_library": "Đã có trong thư viện",
+    "load_failed": "Không thể tải gợi ý.",
+    "search_artist": "Tìm {artist}",
+    "listeners": "{count} người nghe"
   }
 }

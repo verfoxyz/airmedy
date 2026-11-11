@@ -469,7 +469,8 @@
     "import_playlist": "นำเข้าเพลย์ลิสต์",
     "import_playlist_title": "นำเข้าเพลย์ลิสต์",
     "import": "นำเข้า",
-    "all_playlists": "เพลย์ลิสต์ทั้งหมด"
+    "all_playlists": "เพลย์ลิสต์ทั้งหมด",
+    "lastfm": "Last.fm"
   },
   "player": {
     "not_playing": "ไม่ได้เล่นอยู่",
@@ -887,5 +888,28 @@
     "blocked_no_resolver": "ต้องมีแหล่งที่ดาวน์โหลดได้",
     "not_downloadable": "ดาวน์โหลดไม่ได้",
     "no_playlists": "ยังไม่มีเพลย์ลิสต์"
+  },
+  "lastfm": {
+    "title": "Last.fm",
+    "subtitle": "คำแนะนำจากประวัติการฟังของคุณ",
+    "subtitle_account": "คำแนะนำสำหรับ {username}",
+    "refresh": "รีเฟรชคำแนะนำ",
+    "not_connected_title": "เชื่อมต่อ Last.fm",
+    "not_connected_description": "เชื่อมต่อบัญชี Last.fm ของคุณที่ การตั้งค่า → การเชื่อมต่อ เพื่อดูคำแนะนำจากสิ่งที่คุณฟัง",
+    "open_settings": "เปิดการตั้งค่า",
+    "partial": "บางคำขอล้มเหลว กำลังแสดงผลลัพธ์ที่ได้รับ",
+    "empty_title": "ยังไม่มีคำแนะนำ",
+    "empty_description": "ฟังเพลงเพิ่มอีกสักหน่อยแล้วรีเฟรช",
+    "combined": "สำหรับคุณ",
+    "recent": "จากการเล่นล่าสุด",
+    "loved": "จากเพลงที่คุณชอบ",
+    "top": "จากเพลงที่ฟังบ่อยที่สุด",
+    "similar_artists": "ศิลปินที่คล้ายกัน",
+    "play": "เล่น",
+    "save": "บันทึก",
+    "in_library": "มีในไลบรารีแล้ว",
+    "load_failed": "ไม่สามารถโหลดคำแนะนำได้",
+    "search_artist": "ค้นหา {artist}",
+    "listeners": "ผู้ฟัง {count} คน"
   }
 }

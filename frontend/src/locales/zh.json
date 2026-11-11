@@ -469,7 +469,8 @@
     "import_playlist": "导入播放列表",
     "import_playlist_title": "导入播放列表",
     "import": "导入",
-    "all_playlists": "所有播放列表"
+    "all_playlists": "所有播放列表",
+    "lastfm": "Last.fm"
   },
   "player": {
     "not_playing": "未在播放",
@@ -887,5 +888,28 @@
     "blocked_no_resolver": "需要能下载该源的解析插件",
     "not_downloadable": "不可下载",
     "no_playlists": "还没有歌单"
+  },
+  "lastfm": {
+    "title": "Last.fm",
+    "subtitle": "根据你的收听记录推荐",
+    "subtitle_account": "{username} 的推荐",
+    "refresh": "刷新推荐",
+    "not_connected_title": "连接 Last.fm",
+    "not_connected_description": "在设置 → 集成中连接你的 Last.fm 账号，即可看到基于收听记录的推荐。",
+    "open_settings": "打开设置",
+    "partial": "部分请求失败，仅显示已返回的结果。",
+    "empty_title": "还没有推荐",
+    "empty_description": "多听几首歌后再刷新试试。",
+    "combined": "为你推荐",
+    "recent": "来自最近播放",
+    "loved": "来自收藏曲目",
+    "top": "来自常听曲目",
+    "similar_artists": "相似艺人",
+    "play": "播放",
+    "save": "保存",
+    "in_library": "已在库中",
+    "load_failed": "无法加载推荐。",
+    "search_artist": "搜索 {artist}",
+    "listeners": "{count} 位听众"
   }
 }

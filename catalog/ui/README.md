@@ -6,6 +6,7 @@
 - [Tech Stack](#tech-stack)
 - [Routing](#routing)
 - [Search Page (`/search`)](#search-page-search)
+- [Last.fm Page (`/lastfm`)](#lastfm-page-lastfm)
 - [Mobile Pairing UI](#mobile-pairing-ui)
   - [Cached Route Data Refresh](#cached-route-data-refresh)
   - [Favorite-only invalidation](#favorite-only-invalidation)
@@ -106,6 +107,7 @@ Hash history mode (`createWebHashHistory`). All views lazy-loaded except HomeVie
 | `/composers`      | ComposersView        | Composer list                                  |
 | `/composers/:id`  | ComposerDetailView   | Composer tracks                                |
 | `/search`         | SearchView           | Local / cloud search, one mode at a time       |
+| `/lastfm`         | LastFmView           | Last.fm recommendations and similar artists    |
 | `/playlists/:id`  | PlaylistDetailView   | Playlist hero + tracks                         |
 | `/settings`       | SettingsView         | Tabbed settings (General/Library/EQ/About)     |
 | `/mini-player`    | MiniPlayerWindowView | Separate Wails window                          |
@@ -185,6 +187,34 @@ without a new search. Events for identities the page is not showing are ignored,
 Page-level failures travel as machine kinds in `error_kind` (`no_sources`,
 `source_unavailable`, `invalid`, `unavailable`) and are worded in the
 `cloud_search` locale namespace; the Go binding never returns a sentence for them.
+
+## Last.fm Page (`/lastfm`)
+
+`views/LastFmView.vue` is the sidebar entry directly below Search. It renders the
+page `LastFmService.GetRecommendations(force)` returns and owns no recommendation
+logic: seeding, scoring, rate limiting, matching and the 30-minute cache live in
+`app/lastfm/recommend.go`.
+
+| Section | Source |
+|---|---|
+| Combined | weighted merge of the three seed sources |
+| From your recent plays | `user.getRecentTracks` seeds → `track.getSimilar` |
+| From your loved tracks | `user.getLovedTracks` seeds → `track.getSimilar` |
+| From your most played | `user.getTopTracks` (7day + 1month) → `track.getSimilar` |
+| Similar artists | `artist.getSimilar`, clicking opens `/search?q=<artist>` |
+
+Every row is a catalogue row: `RecommendationTrackDTO` carries the same provider,
+identity, cover, state and `local_track_id` fields as `CatalogRowDTO`, so the card
+calls the shared `catalog` store (`preparePlayback` / `save`) and a local file plays
+from disk without a download. Rows the matcher cannot attach to a playable source
+are absent from the payload, not rendered disabled.
+
+Status is `ok`, `partial` (a banner above the lists) or `not_connected` (a card that
+routes to `/settings/integrations`). The page loads once on mount/activation; the
+refresh button is the only path that passes `force=true`.
+
+`SearchView` consumes `/search?q=` on mount and activation, so the Last.fm similar
+artist jump prefills the box and then replaces the URL without the parameter.
 
 ## Downloads & Tasks Page
 

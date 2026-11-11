@@ -469,7 +469,8 @@
     "delete_playlist_message": "Are you sure you want to delete this playlist? This action cannot be undone.",
     "import_playlist": "Import Playlist",
     "import_playlist_title": "Import Playlist",
-    "import": "Import"
+    "import": "Import",
+    "lastfm": "Last.fm"
   },
   "player": {
     "not_playing": "Not Playing",
@@ -887,5 +888,28 @@
     "blocked_no_resolver": "Needs a source that can download it",
     "not_downloadable": "Not downloadable",
     "no_playlists": "No playlist yet"
+  },
+  "lastfm": {
+    "title": "Last.fm",
+    "subtitle": "Recommendations from your listening history",
+    "subtitle_account": "Recommendations for {username}",
+    "refresh": "Refresh recommendations",
+    "not_connected_title": "Connect Last.fm",
+    "not_connected_description": "Connect your Last.fm account in Settings → Integrations to see recommendations based on what you listen to.",
+    "open_settings": "Open settings",
+    "partial": "Some requests failed. Showing what arrived.",
+    "empty_title": "No recommendations yet",
+    "empty_description": "Listen to a few more tracks and refresh.",
+    "combined": "For you",
+    "recent": "From your recent plays",
+    "loved": "From your loved tracks",
+    "top": "From your most played",
+    "similar_artists": "Similar artists",
+    "play": "Play",
+    "save": "Save",
+    "in_library": "In library",
+    "load_failed": "Could not load recommendations.",
+    "search_artist": "Search {artist}",
+    "listeners": "{count} listeners"
   }
 }

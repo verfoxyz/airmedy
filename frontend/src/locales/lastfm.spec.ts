@@ -1,0 +1,55 @@
+import { describe, expect, it } from 'vitest'
+import de from './de.json'
+import en from './en.json'
+import es from './es.json'
+import fr from './fr.json'
+import itLocale from './it.json'
+import ja from './ja.json'
+import ko from './ko.json'
+import pt from './pt.json'
+import ru from './ru.json'
+import th from './th.json'
+import vi from './vi.json'
+import zh from './zh.json'
+
+/**
+ * The Last.fm page ships in every locale in the same change.
+ *
+ * vue-i18n falls back silently, so a missing key renders the raw path instead
+ * of failing a build; this test is the guard that keeps the twelve files in
+ * lockstep.
+ */
+const locales = { de, en, es, fr, it: itLocale, ja, ko, pt, ru, th, vi, zh }
+
+const EXPECTED_KEYS = [
+  'combined',
+  'empty_description',
+  'empty_title',
+  'in_library',
+  'listeners',
+  'load_failed',
+  'loved',
+  'not_connected_description',
+  'not_connected_title',
+  'open_settings',
+  'partial',
+  'play',
+  'recent',
+  'refresh',
+  'save',
+  'search_artist',
+  'similar_artists',
+  'subtitle',
+  'subtitle_account',
+  'title',
+  'top',
+].sort()
+
+describe('Last.fm locale keys', () => {
+  it('every locale has the complete key set', () => {
+    for (const [name, messages] of Object.entries(locales)) {
+      expect(Object.keys(messages.lastfm).sort(), name).toEqual(EXPECTED_KEYS)
+      expect((messages as { sidebar: { lastfm?: string } }).sidebar.lastfm, name).toBe('Last.fm')
+    }
+  })
+})

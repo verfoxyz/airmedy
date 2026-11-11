@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
-import { Download, Search, Settings, Sparkles } from '@lucide/vue'
+import { Download, Radio, Search, Settings, Sparkles } from '@lucide/vue'
 import { useI18n } from 'vue-i18n'
 import SidebarNav from './SidebarNav.vue'
 import SidebarPlaylists from './SidebarPlaylists.vue'
@@ -34,8 +34,9 @@ function openUpdateDialog() {
 <template>
   <div class="flex flex-col h-full bg-background w-full">
     <!-- Search section -->
-    <div class="px-3 py-2">
+    <div class="px-3 py-2 space-y-0.5">
       <SidebarItem :to="'/search'" :icon="Search" :label="t('sidebar.search')" />
+      <SidebarItem :to="'/lastfm'" :icon="Radio" :label="t('sidebar.lastfm')" />
     </div>
 
     <!-- Divider -->

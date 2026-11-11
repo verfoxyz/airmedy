@@ -469,7 +469,8 @@
     "import_playlist": "Importa playlist",
     "import_playlist_title": "Importa playlist",
     "import": "Importa",
-    "all_playlists": "Tutte le playlist"
+    "all_playlists": "Tutte le playlist",
+    "lastfm": "Last.fm"
   },
   "player": {
     "not_playing": "Nessuna riproduzione",
@@ -887,5 +888,28 @@
     "blocked_no_resolver": "Serve una fonte in grado di scaricarlo",
     "not_downloadable": "Non scaricabile",
     "no_playlists": "Nessuna playlist"
+  },
+  "lastfm": {
+    "title": "Last.fm",
+    "subtitle": "Consigli dal tuo storico di ascolto",
+    "subtitle_account": "Consigli per {username}",
+    "refresh": "Aggiorna i consigli",
+    "not_connected_title": "Connetti Last.fm",
+    "not_connected_description": "Connetti il tuo account Last.fm in Impostazioni → Integrazioni per vedere consigli basati su ciò che ascolti.",
+    "open_settings": "Apri impostazioni",
+    "partial": "Alcune richieste non sono riuscite. Viene mostrato ciò che è arrivato.",
+    "empty_title": "Ancora nessun consiglio",
+    "empty_description": "Ascolta altri brani e aggiorna.",
+    "combined": "Per te",
+    "recent": "Dai tuoi ascolti recenti",
+    "loved": "Dai tuoi brani preferiti",
+    "top": "Dai tuoi brani più ascoltati",
+    "similar_artists": "Artisti simili",
+    "play": "Riproduci",
+    "save": "Salva",
+    "in_library": "Nella libreria",
+    "load_failed": "Impossibile caricare i consigli.",
+    "search_artist": "Cerca {artist}",
+    "listeners": "{count} ascoltatori"
   }
 }

@@ -469,7 +469,8 @@
     "import_playlist": "プレイリストをインポート",
     "import_playlist_title": "プレイリストをインポート",
     "import": "インポート",
-    "all_playlists": "すべてのプレイリスト"
+    "all_playlists": "すべてのプレイリスト",
+    "lastfm": "Last.fm"
   },
   "player": {
     "not_playing": "停止中",
@@ -887,5 +888,28 @@
     "blocked_no_resolver": "ダウンロードできる検索元が必要です",
     "not_downloadable": "ダウンロード不可",
     "no_playlists": "プレイリストがありません"
+  },
+  "lastfm": {
+    "title": "Last.fm",
+    "subtitle": "視聴履歴からのおすすめ",
+    "subtitle_account": "{username} さんへのおすすめ",
+    "refresh": "おすすめを更新",
+    "not_connected_title": "Last.fm に接続",
+    "not_connected_description": "設定 → 連携 で Last.fm アカウントを接続すると、視聴履歴に基づくおすすめが表示されます。",
+    "open_settings": "設定を開く",
+    "partial": "一部のリクエストに失敗しました。取得できた結果を表示しています。",
+    "empty_title": "まだおすすめがありません",
+    "empty_description": "もう少し曲を聴いてから更新してください。",
+    "combined": "あなたへのおすすめ",
+    "recent": "最近の再生から",
+    "loved": "お気に入りから",
+    "top": "よく聴く曲から",
+    "similar_artists": "似ているアーティスト",
+    "play": "再生",
+    "save": "保存",
+    "in_library": "ライブラリにあり",
+    "load_failed": "おすすめを読み込めませんでした。",
+    "search_artist": "{artist} を検索",
+    "listeners": "リスナー {count} 人"
   }
 }

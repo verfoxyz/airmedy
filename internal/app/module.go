@@ -147,6 +147,10 @@ var Module = fx.Module("app",
 		func(cache *stream.Cache) download.CachedAudio { return cache },
 		func(lib *library.LibraryService) download.LocalFileRemover { return lib },
 		func(st *appsettings.SettingsService) catalog.SettingsReader { return st },
+		// The Last.fm recommendation page matches its tracks through the same
+		// search pipeline the cloud search uses, so local files, stream cache and
+		// download availability behave identically.
+		func(svc *catalog.Service) lastfm.CatalogMatcher { return svc },
 		func(lib *library.LibraryService) catalog.FavoritesWriter { return lib },
 		func(pl *playlist.PlaylistService) catalog.PlaylistMembership { return pl },
 		func(logger *slog.Logger) domain.PairingBroker { return mqttinfra.NewPairingBroker(logger) },

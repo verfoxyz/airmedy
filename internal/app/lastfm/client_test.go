@@ -1,0 +1,121 @@
+package lastfm
+
+import (
+	"context"
+	"encoding/json"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func TestRateLimiterSpacesRequests(t *testing.T) {
+	limiter := newRateLimiter(3, 250*time.Millisecond)
+	now := time.Unix(0, 0)
+	limiter.now = func() time.Time { return now }
+
+	var delays []time.Duration
+	limiter.wait = func(_ context.Context, delay time.Duration) error {
+		delays = append(delays, delay)
+		return nil
+	}
+
+	for index := 0; index < 5; index++ {
+		release, err := limiter.acquire(context.Background())
+		if err != nil {
+			t.Fatalf("acquire %d: %v", index, err)
+		}
+		release()
+	}
+
+	want := []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, 750 * time.Millisecond, time.Second}
+	if len(delays) != len(want) {
+		t.Fatalf("delays = %v, want %v", delays, want)
+	}
+	for index := range want {
+		if delays[index] != want[index] {
+			t.Fatalf("delay %d = %s, want %s", index, delays[index], want[index])
+		}
+	}
+}
+
+func TestRateLimiterCapsConcurrency(t *testing.T) {
+	limiter := newRateLimiter(3, 0)
+
+	var active, maxActive int32
+	var wg sync.WaitGroup
+	for index := 0; index < 12; index++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			release, err := limiter.acquire(context.Background())
+			if err != nil {
+				return
+			}
+			current := atomic.AddInt32(&active, 1)
+			for {
+				peak := atomic.LoadInt32(&maxActive)
+				if current <= peak || atomic.CompareAndSwapInt32(&maxActive, peak, current) {
+					break
+				}
+			}
+			time.Sleep(5 * time.Millisecond)
+			atomic.AddInt32(&active, -1)
+			release()
+		}()
+	}
+	wg.Wait()
+
+	if peak := atomic.LoadInt32(&maxActive); peak > 3 {
+		t.Fatalf("peak concurrency = %d, want at most 3", peak)
+	}
+}
+
+func TestFlexListAcceptsSingleObject(t *testing.T) {
+	body := []byte(`{"name":"Song","artist":{"#text":"Artist"},"album":{"#text":"Album"},` +
+		`"duration":"180","playcount":"7","image":[{"#text":"","size":"small"},` +
+		`{"#text":"https://img/large.jpg","size":"extralarge"}]}`)
+
+	var list flexList[lastFmTrackWire]
+	if err := json.Unmarshal(body, &list); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("list = %d, want the single object wrapped in a list", len(list))
+	}
+
+	got := list[0].toTrack()
+	if got.Artist != "Artist" || got.Title != "Song" || got.Album != "Album" {
+		t.Fatalf("track = %+v", got)
+	}
+	if got.Duration != 180 || got.PlayCount != 7 {
+		t.Fatalf("duration/playcount = %d/%d, want 180/7", got.Duration, got.PlayCount)
+	}
+	if got.ImageURL != "https://img/large.jpg" {
+		t.Fatalf("image = %q, want the largest rendition", got.ImageURL)
+	}
+}
+
+func TestFlexListAcceptsArray(t *testing.T) {
+	var list flexList[lastFmTrackWire]
+	if err := json.Unmarshal([]byte(`[{"name":"One"},{"name":"Two"}]`), &list); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("list = %d, want 2", len(list))
+	}
+}
+
+func TestLargestImageSkipsEmptyRenditions(t *testing.T) {
+	images := []lastFmImage{
+		{Text: "", Size: "small"},
+		{Text: "https://img/medium.jpg", Size: "medium"},
+		{Text: "", Size: "extralarge"},
+	}
+	if got := largestImage(images); got != "https://img/medium.jpg" {
+		t.Fatalf("largestImage = %q, want the last non-empty rendition", got)
+	}
+	if got := largestImage(nil); got != "" {
+		t.Fatalf("largestImage(nil) = %q, want empty", got)
+	}
+}

@@ -41,6 +41,11 @@ type LastFmService struct {
 	sessionKey string
 	username   string
 	avatarURL  string
+	// http and limiter belong to the read-only recommendation path. Writes stay
+	// on the default client: they are fire-and-forget and must not queue behind a
+	// page's read burst.
+	http    *http.Client
+	limiter *rateLimiter
 }
 
 func NewLastFmService(
@@ -54,6 +59,8 @@ func NewLastFmService(
 		logger:    logger,
 		apiKey:    config.LastFmAPIKey,
 		apiSecret: config.LastFmAPISecret,
+		http:      &http.Client{Timeout: requestTimeout},
+		limiter:   newRateLimiter(maxConcurrentRequests, minRequestGap),
 	}
 
 	// Load session from keyring
