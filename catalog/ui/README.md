@@ -175,7 +175,11 @@ as the remote URL used for saving and debugging, never as an `<img>` source.
 
 After `download:done` the page re-reads the row by identity through
 `GetCatalogRowStates`, because the merge deletes the remote row that the event's
-track id pointed at.
+track id pointed at. `task:updated` (promotion history) and a matching
+`library:track-updated` schedule the same read for **all visible rows in one batch**,
+throttled by 350 ms, so a finished promotion turns "task created" into "in library"
+without a new search. Events for identities the page is not showing are ignored, and
+`dispose()` releases both listeners plus the pending timer.
 
 Page-level failures travel as machine kinds in `error_kind` (`no_sources`,
 `source_unavailable`, `invalid`, `unavailable`) and are worded in the

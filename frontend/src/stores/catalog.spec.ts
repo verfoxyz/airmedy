@@ -442,4 +442,77 @@ describe('catalog store', () => {
 
     expect(store.rows[0].state).toBe('')
   })
+
+  it('refreshes every visible row in one call when a promotion task updates', async () => {
+    api.SearchCatalog.mockResolvedValue(page([row('1'), row('2')], true))
+    api.GetCatalogRowStates.mockResolvedValue([
+      { provider: 'wy', external_id: '1', state: 'in_library' },
+      { provider: 'wy', external_id: '2', state: 'in_library' },
+    ])
+    const store = useCatalogStore()
+
+    store.search('周杰伦')
+    await vi.advanceTimersByTimeAsync(300)
+
+    api.handlers.get('task:updated')?.({ data: {} })
+    expect(api.GetCatalogRowStates).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(400)
+
+    expect(api.GetCatalogRowStates).toHaveBeenCalledTimes(1)
+    expect(api.GetCatalogRowStates).toHaveBeenCalledWith([
+      { provider: 'wy', external_id: '1' },
+      { provider: 'wy', external_id: '2' },
+    ])
+    expect(store.rows.map((entry) => entry.state)).toEqual(['in_library', 'in_library'])
+  })
+
+  it('coalesces a burst of task updates into one page read', async () => {
+    api.SearchCatalog.mockResolvedValue(page([row('1'), row('2')], true))
+    api.GetCatalogRowStates.mockResolvedValue([
+      { provider: 'wy', external_id: '1', state: 'in_library' },
+      { provider: 'wy', external_id: '2', state: 'in_library' },
+    ])
+    const store = useCatalogStore()
+
+    store.search('周杰伦')
+    await vi.advanceTimersByTimeAsync(300)
+
+    api.handlers.get('task:updated')?.({ data: {} })
+    api.handlers.get('task:updated')?.({ data: {} })
+    api.handlers.get('task:updated')?.({ data: {} })
+    await vi.advanceTimersByTimeAsync(400)
+
+    expect(api.GetCatalogRowStates).toHaveBeenCalledTimes(1)
+  })
+
+  it('refreshes a visible row when the library updates it by identity', async () => {
+    api.SearchCatalog.mockResolvedValue(page([row('1')]))
+    api.GetCatalogRowStates.mockResolvedValue([
+      { provider: 'wy', external_id: '1', state: 'in_library' },
+    ])
+    const store = useCatalogStore()
+
+    store.search('周杰伦')
+    await vi.advanceTimersByTimeAsync(300)
+
+    api.handlers.get('library:track-updated')?.({ data: { id: 'local-1', provider: 'wy', external_id: '1' } })
+    await vi.advanceTimersByTimeAsync(400)
+
+    expect(store.rows[0].state).toBe('in_library')
+  })
+
+  it('stops listening after dispose', async () => {
+    api.SearchCatalog.mockResolvedValue(page([row('1')]))
+    const store = useCatalogStore()
+
+    store.search('周杰伦')
+    await vi.advanceTimersByTimeAsync(300)
+
+    store.dispose()
+    expect(api.handlers.has('task:updated')).toBe(false)
+    expect(api.handlers.has('library:track-updated')).toBe(false)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(api.GetCatalogRowStates).not.toHaveBeenCalled()
+  })
 })

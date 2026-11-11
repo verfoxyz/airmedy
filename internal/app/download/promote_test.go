@@ -282,10 +282,13 @@ func TestPromoteOnSave_RecordsTheHistoryTransitions(t *testing.T) {
 	var state string
 	require.NoError(t, h.db.Get(&state, `SELECT state FROM promotion_tasks`))
 	assert.Equal(t, domain.PromotionStateQueued, state)
-	assert.Greater(t, h.sink.taskUpdates(), 0, "the tasks page is told about the request")
+	queuedUpdates := h.sink.taskUpdates()
+	assert.Greater(t, queuedUpdates, 0, "the tasks page is told about the request")
 
 	h.svc.RunCacheMaintenanceSweep(context.Background())
 
+	assert.Greater(t, h.sink.taskUpdates(), queuedUpdates,
+		"finishing the promotion must emit task:updated for the search page")
 	require.NoError(t, h.db.Get(&state, `SELECT state FROM promotion_tasks`))
 	assert.Equal(t, domain.PromotionStateDone, state)
 	var started, finished bool
@@ -310,6 +313,7 @@ func TestPromotionSweep_FailureKeepsTheRequestForARetry(t *testing.T) {
 	require.NoError(t, h.db.Get(&lastError, `SELECT error FROM promotion_tasks`))
 	assert.Equal(t, domain.PromotionStateFailed, state)
 	assert.Contains(t, lastError, "read-only")
+	assert.Greater(t, h.sink.taskUpdates(), 0, "a failed attempt must still emit task:updated")
 
 	h.cached.mu.Lock()
 	assert.Len(t, h.cached.pending, 1, "the entry stays pending so the next sweep retries")

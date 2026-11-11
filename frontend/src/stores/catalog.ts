@@ -25,6 +25,8 @@ import type {
 const PAGE_INITIAL = 5
 const PAGE_STEP = 10
 const SEARCH_DEBOUNCE_MS = 300
+/** Task/import events are coalesced: a promotion and a download may finish together. */
+const ROW_REFRESH_DEBOUNCE_MS = 350
 const ACTIVE_SOURCES_KEY = 'airmedy.catalog.sources'
 
 export type CatalogMode = 'local' | 'cloud'
@@ -87,6 +89,8 @@ export const useCatalogStore = defineStore('catalog', () => {
 
   let requestVersion = 0
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
+  let rowRefreshTimer: ReturnType<typeof setTimeout> | null = null
+  let rowRefreshRunning = false
 
   const hasQuery = computed(() => query.value.trim() !== '')
 
@@ -369,13 +373,98 @@ export const useCatalogStore = defineStore('catalog', () => {
     applyState(provider, rest.join('/'), 'failed')
   }
 
+  /**
+   * refreshVisibleRows re-reads every rendered row in one batch.
+   *
+   * A promotion merges the remote row into a local one, so the track id an event
+   * carries no longer identifies the search row; its (provider, externalId) does.
+   * Querying the page at once also keeps a burst of promotions to one request.
+   */
+  async function refreshVisibleRows() {
+    if (rowRefreshRunning) return
+    const identities = new Map<string, { provider: string; external_id: string }>()
+    for (const row of rows.value) {
+      if (!row?.provider || !row.external_id) continue
+      identities.set(identityKey(row.provider, row.external_id), {
+        provider: row.provider,
+        external_id: row.external_id,
+      })
+    }
+    if (identities.size === 0) return
+
+    rowRefreshRunning = true
+    try {
+      const states = ((await CatalogService.GetCatalogRowStates([...identities.values()])) ?? []) as Array<{
+        provider: string
+        external_id: string
+        state?: string
+      }>
+      const next = new Map(
+        states
+          .filter((entry) => entry?.provider && entry.external_id)
+          .map((entry) => [identityKey(entry.provider, entry.external_id), entry.state ?? '']),
+      )
+      rows.value = rows.value.map((row) => {
+        const state = next.get(identityKey(row.provider, row.external_id))
+        return state === undefined || state === row.state ? row : { ...row, state }
+      })
+    } catch (e) {
+      console.error('Catalog: cannot refresh the visible rows', e)
+    } finally {
+      rowRefreshRunning = false
+    }
+  }
+
+  /** scheduleRowRefresh coalesces task and import events into one page read. */
+  function scheduleRowRefresh() {
+    if (rows.value.length === 0 || rowRefreshTimer) return
+    rowRefreshTimer = setTimeout(() => {
+      rowRefreshTimer = null
+      void refreshVisibleRows()
+    }, ROW_REFRESH_DEBOUNCE_MS)
+  }
+
+  /**
+   * onTaskUpdated covers promotions: they finish without download:done, so
+   * without this the chip stayed "task created" after the file was in the
+   * library.
+   */
+  function onTaskUpdated() {
+    scheduleRowRefresh()
+  }
+
+  /**
+   * onLibraryTrackUpdated refreshes only a row this page is showing. The event is
+   * also emitted for imports and metadata edits elsewhere in the app, which must
+   * not trigger a cloud-page query.
+   */
+  function onLibraryTrackUpdated(event: Events.WailsEvent) {
+    const track = event.data as (TrackDTO & { provider?: string; external_id?: string }) | null
+    if (!track) return
+    const provider = track.provider ?? ''
+    const externalId = track.external_id ?? ''
+    if (provider && externalId && rows.value.some((row) => row.provider === provider && row.external_id === externalId)) {
+      scheduleRowRefresh()
+      return
+    }
+    if (track.id) void refreshRow(track.id)
+  }
+
   const _offDone = Events.On('download:done', onDownloadDone)
   const _offFailed = Events.On('download:failed', onDownloadFailed)
+  const _offTask = Events.On('task:updated', onTaskUpdated)
+  const _offTrackUpdated = Events.On('library:track-updated', onLibraryTrackUpdated)
 
   /** dispose releases the event listeners (call from onUnmounted or the app teardown). */
   function dispose() {
     _offDone()
     _offFailed()
+    _offTask()
+    _offTrackUpdated()
+    if (rowRefreshTimer) {
+      clearTimeout(rowRefreshTimer)
+      rowRefreshTimer = null
+    }
   }
 
   function clear() {

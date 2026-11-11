@@ -115,7 +115,8 @@ a worker.
 - **Request.** `download.Service.OnRemoteTrackSaved(ctx, domain.RemoteTrackSaved)` is the
   single decision point for a saved remote row. A stream-cache entry for the identity wins:
   it calls `PromoteOnSave`, which writes `stream_cache.pending_promote=1` and a `queued`
-  `promotion_tasks` row and wakes the worker — no download job is created. Without a cache
+  `promotion_tasks` row and wakes the worker — no download job is created, and the call
+  returns `downloading` (the search row's one task state). Without a cache
   an explicit save (search-row save, favorite) downloads, and a playlist add follows the
   "download when adding to a playlist" switch. A repeated request reuses the active history
   row, and an active download job wins: nothing is promoted then. The catalog action, the

@@ -84,7 +84,7 @@ func TestOnRemoteTrackSaved_ExplicitSaveIgnoresThePlaylistSwitch(t *testing.T) {
 
 // TestOnRemoteTrackSaved_PrefersPromotion: the audio is already on disk, so the
 // save must not queue a second download. It records a durable promotion request
-// instead, and the row is not reported as downloading.
+// instead and reports the unified task state.
 func TestOnRemoteTrackSaved_PrefersPromotion(t *testing.T) {
 	h := newHarnessSetting(t, true)
 	track := h.seedRemote(t, "t1")
@@ -93,7 +93,7 @@ func TestOnRemoteTrackSaved_PrefersPromotion(t *testing.T) {
 
 	state, err := h.svc.OnRemoteTrackSaved(context.Background(), domain.RemoteTrackSaved{Track: track, PlaylistID: "pl-1"})
 	require.NoError(t, err)
-	assert.Equal(t, domain.CatalogRowStateSaved, state)
+	assert.Equal(t, domain.CatalogRowStateDownloading, state)
 	assert.Nil(t, h.activeJob(t, track.ID), "a cached copy must not be downloaded again")
 	assert.Equal(t, 1, h.cached.marked, "the entry must be flagged for promotion")
 }
@@ -112,7 +112,7 @@ func TestOnRemoteTrackSaved_DoesNotQueueTwice(t *testing.T) {
 	// Adding the same track to a second playlist must not start a second job.
 	state, err := h.svc.OnRemoteTrackSaved(ctx, domain.RemoteTrackSaved{Track: track, PlaylistID: "pl-2"})
 	require.NoError(t, err)
-	assert.Equal(t, domain.CatalogRowStateSaved, state)
+	assert.Equal(t, domain.CatalogRowStateDownloading, state, "the existing job is still a task")
 	jobs, err := h.svc.List(ctx)
 	require.NoError(t, err)
 	assert.Len(t, jobs, 1)

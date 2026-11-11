@@ -31,7 +31,7 @@ func ShouldAutoDownload(settings *domain.AppSettings, track *domain.TrackDTO, ac
 // downloads, a playlist add follows the auto-download setting.
 //
 // It returns the row state to show immediately: "downloading" when a job was
-// queued, otherwise "saved" (the promotion chip is resolved by the state query).
+// queued or a promotion was requested, otherwise "saved" (no work in flight).
 // Failures are returned so a caller can log them; they never undo the save that
 // already happened.
 func (s *Service) OnRemoteTrackSaved(ctx context.Context, ev domain.RemoteTrackSaved) (string, error) {
@@ -40,14 +40,16 @@ func (s *Service) OnRemoteTrackSaved(ctx context.Context, ev domain.RemoteTrackS
 		return "", nil
 	}
 	if active, err := s.jobs.GetActiveByTrackID(ctx, track.ID); err == nil && active != nil {
-		return domain.CatalogRowStateSaved, nil
+		return domain.CatalogRowStateDownloading, nil
 	} else if err != nil {
 		return "", err
 	}
 
 	if s.hasCachedAudio(ctx, track) {
 		s.PromoteOnSave(ctx, track)
-		return domain.CatalogRowStateSaved, nil
+		// "downloading" is the UI's one task state: the search row does not
+		// distinguish a promotion from a download.
+		return domain.CatalogRowStateDownloading, nil
 	}
 
 	allowed := ev.Explicit
