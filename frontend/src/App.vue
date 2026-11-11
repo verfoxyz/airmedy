@@ -20,6 +20,7 @@ import { useMobilePairingStore } from './stores/mobilePairing'
 import { useDownloadStore } from './stores/download'
 import { useCatalogStore } from './stores/catalog'
 import { useLibrarySyncStore } from './stores/librarySync'
+import { useTasksStore } from './stores/tasks'
 import { useI18n } from 'vue-i18n'
 import { Events } from '@wailsio/runtime'
 import * as WindowService from '../bindings/airmedy/internal/infra/wails/windowservice'
@@ -37,6 +38,7 @@ const mobilePairingStore = useMobilePairingStore()
 const downloadStore = useDownloadStore()
 const catalogStore = useCatalogStore()
 const librarySyncStore = useLibrarySyncStore()
+const tasksStore = useTasksStore()
 const isDevelopment = import.meta.env.DEV
 
 const isRouterReady = ref(false)
@@ -173,6 +175,7 @@ onUnmounted(() => {
   mobilePairingStore.dispose()
   downloadStore.dispose()
   catalogStore.dispose()
+  tasksStore.dispose()
   librarySyncStore.dispose()
   appStore.dispose()
 })

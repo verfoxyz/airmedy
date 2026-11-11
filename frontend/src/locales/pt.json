@@ -436,7 +436,7 @@
     }
   },
   "sidebar": {
-    "download": "Downloads",
+    "download": "Downloads e tarefas",
     "home": "Início",
     "recently_added": "Adicionados Recentemente",
     "artists": "Artistas",
@@ -811,6 +811,23 @@
     "no_top_tracks": "Ainda não há faixas reproduzidas",
     "show_more": "Mostrar mais",
     "show_less": "Mostrar menos"
+  },
+  "tasks": {
+    "title": "Downloads e tarefas",
+    "tab_active": "Em andamento",
+    "tab_done": "Concluídas",
+    "tab_failed": "Erros",
+    "kind_download": "Download",
+    "kind_promote": "Promoção",
+    "empty_active": "Nenhuma tarefa em andamento",
+    "empty_done": "Nenhuma tarefa concluída ainda",
+    "empty_failed": "Nenhuma tarefa com erro",
+    "clear": "Limpar histórico",
+    "clear_title": "Limpar o histórico de tarefas?",
+    "clear_message": "Todos os registros concluídos e com falha serão excluídos. As tarefas em andamento não são afetadas.",
+    "clear_confirm": "Limpar",
+    "clear_cancel": "Cancelar",
+    "clear_done": "Histórico limpo"
   },
   "download": {
     "downloading": "Baixando…",

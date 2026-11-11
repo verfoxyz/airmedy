@@ -212,6 +212,29 @@ func (r *downloadRepository) DeleteByTrack(ctx context.Context, trackID string) 
 	return nil
 }
 
+// TrimFinished deletes terminal jobs, keeping the newest keep rows. The
+// subquery only selects terminal rows, so a queued/active job is never a
+// candidate even when keep is 0.
+func (r *downloadRepository) TrimFinished(ctx context.Context, keep int) (int64, error) {
+	res, err := r.db.Ext(ctx).ExecContext(ctx, `
+		DELETE FROM download_jobs
+		WHERE state IN (?, ?, ?)
+		  AND id NOT IN (
+		    SELECT id FROM download_jobs
+		    WHERE state IN (?, ?, ?)
+		    ORDER BY COALESCE(finished_at, created_at) DESC
+		    LIMIT ?
+		  )`,
+		domain.DownloadStateDone, domain.DownloadStateFailed, domain.DownloadStateCanceled,
+		domain.DownloadStateDone, domain.DownloadStateFailed, domain.DownloadStateCanceled,
+		keep,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to trim download history: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 func (r *downloadRepository) ResetActiveToQueued(ctx context.Context) (int64, error) {
 	res, err := r.db.Ext(ctx).ExecContext(ctx, `
 		UPDATE download_jobs SET state = ?, updated_at = ? WHERE state = ?`,

@@ -262,7 +262,7 @@ chooses "download anyway", which registers the remote identity and enqueues.
 | `download_dir` | absolute target directory; empty means "resolve the default (`<Music>/Airmedy`) at read time" |
 | `download_quality` | `128k` / `320k` / `flac`; copied onto the job so a later preference change does not alter a queued job |
 | `download_naming_order` | `title-artist` (default) or `artist-title`; only affects newly finalized files, existing files keep their names |
-| `auto_download_on_playlist_add` | when on, adding a remote track to a playlist enqueues it (default on). When off, the row is saved into the library as `saved` without a job; adding to favorites always enqueues |
+| `auto_download_on_playlist_add` | when on, adding a remote track to a playlist hands it to `OnRemoteTrackSaved` (default on). When off, the row is saved as `saved` without work; a cached stream copy is still promoted, and a favorite is always an explicit save (promotion or download) |
 | `download_with_lyrics` | fetch and store lyrics for the downloaded track (off by default: an extra request per track) |
 | `download_with_lyric_translation` | keep the translated lyric line; meaningless without `download_with_lyrics`, which `ResolveDownloadContent` enforces |
 | `download_with_cover` | embed the cover image into the file's tags (on by default: it is what makes a downloaded file look right, and a missing cover is already tolerated) |
@@ -272,7 +272,24 @@ chooses "download anyway", which registers the remote identity and enqueues.
 `download:progress`, `download:done`, `download:failed` — payload carries `job_id`,
 `track_id`, `playlist_id`, `state`, `bytes_done`, `bytes_total`, `percent`, `error`.
 The frontend keys its per-track state by `track_id` so a playlist row can ask "is this
-still downloading?" while rendering.
+still downloading?" while rendering. A download reaching `done` or a permanent
+`failed`, like every promotion history write, also emits `task:updated` so the tasks
+page reloads.
+
+## Tasks page
+
+`DownloadService.ListTasks()` merges `download_jobs` and `promotion_tasks` into one
+`domain.TaskRun` list: `kind` (`download`/`promote`), `state`
+(`active`/`done`/`failed`/`canceled`), track, title/artist, quality, error and
+timestamps, newest first. Download rows resolve titles with one batched track lookup;
+promotions carry their request-time snapshot, so a later rename does not backfill
+history. The page groups rows into in-progress / completed / errors and labels the
+kind.
+
+`ClearTaskHistory()` deletes terminal rows from both tables; queued/active work is
+never touched. Each table keeps at most 500 finished rows (trimmed after every
+completion), and clearing does not rewrite `tracks`: a cleared failed job simply stops
+producing the search row's `failed` chip, while an `in_library` row is unaffected.
 
 ## Failure handling worth remembering
 

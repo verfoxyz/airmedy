@@ -49,4 +49,9 @@ type PromotionTaskRepository interface {
 	// running promotion. The search-row resolver merges this with active
 	// downloads so the UI shows one task state.
 	ActivePromotions(ctx context.Context, identities []CatalogIdentity) (map[CatalogIdentity]bool, error)
+	// List returns every promotion run, newest first, for the tasks page.
+	List(ctx context.Context) ([]*PromotionTask, error)
+	// TrimFinished deletes done/failed rows, keeping the newest keep rows.
+	// keep == 0 deletes all history; queued/running rows are never touched.
+	TrimFinished(ctx context.Context, keep int) (int64, error)
 }

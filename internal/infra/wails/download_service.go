@@ -144,3 +144,15 @@ func (s *DownloadService) RedownloadTrack(trackID string) error {
 func (s *DownloadService) ListDownloads() ([]*domain.DownloadJob, error) {
 	return s.svc.List(context.Background())
 }
+
+// ListTasks returns downloads and promotions merged for the tasks page. Rows
+// are newest first; the page groups them by state.
+func (s *DownloadService) ListTasks() ([]domain.TaskRun, error) {
+	return s.svc.ListTasks(context.Background())
+}
+
+// ClearTaskHistory deletes finished downloads and promotions. Active work is
+// untouched; the tasks page reloads when task:updated arrives.
+func (s *DownloadService) ClearTaskHistory() error {
+	return s.svc.ClearTaskHistory(context.Background())
+}

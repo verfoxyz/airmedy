@@ -436,7 +436,7 @@
     }
   },
   "sidebar": {
-    "download": "Downloads",
+    "download": "Downloads & Tasks",
     "home": "Home",
     "recently_added": "Recently Added",
     "artists": "Artists",
@@ -811,6 +811,23 @@
     "no_top_tracks": "No played tracks yet",
     "show_more": "Show more",
     "show_less": "Show less"
+  },
+  "tasks": {
+    "title": "Downloads & Tasks",
+    "tab_active": "In progress",
+    "tab_done": "Completed",
+    "tab_failed": "Errors",
+    "kind_download": "Download",
+    "kind_promote": "Promotion",
+    "empty_active": "No tasks in progress",
+    "empty_done": "No completed tasks yet",
+    "empty_failed": "No failed tasks",
+    "clear": "Clear history",
+    "clear_title": "Clear task history?",
+    "clear_message": "This deletes every completed and failed record. Tasks in progress are not affected.",
+    "clear_confirm": "Clear",
+    "clear_cancel": "Cancel",
+    "clear_done": "History cleared"
   },
   "download": {
     "downloading": "Downloading…",

@@ -436,7 +436,7 @@
     }
   },
   "sidebar": {
-    "download": "Downloads",
+    "download": "Downloads & Aufgaben",
     "home": "Startseite",
     "recently_added": "Zuletzt hinzugefügt",
     "artists": "Künstler",
@@ -811,6 +811,23 @@
     "no_top_tracks": "Noch keine wiedergegebenen Titel",
     "show_more": "Mehr anzeigen",
     "show_less": "Weniger anzeigen"
+  },
+  "tasks": {
+    "title": "Downloads & Aufgaben",
+    "tab_active": "In Bearbeitung",
+    "tab_done": "Abgeschlossen",
+    "tab_failed": "Fehler",
+    "kind_download": "Download",
+    "kind_promote": "Übernahme",
+    "empty_active": "Keine laufenden Aufgaben",
+    "empty_done": "Noch keine abgeschlossenen Aufgaben",
+    "empty_failed": "Keine fehlgeschlagenen Aufgaben",
+    "clear": "Verlauf löschen",
+    "clear_title": "Aufgabenverlauf löschen?",
+    "clear_message": "Alle abgeschlossenen und fehlgeschlagenen Einträge werden gelöscht. Laufende Aufgaben bleiben erhalten.",
+    "clear_confirm": "Löschen",
+    "clear_cancel": "Abbrechen",
+    "clear_done": "Verlauf gelöscht"
   },
   "download": {
     "downloading": "Wird heruntergeladen…",

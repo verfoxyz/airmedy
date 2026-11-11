@@ -436,7 +436,7 @@
     }
   },
   "sidebar": {
-    "download": "ダウンロード",
+    "download": "ダウンロードとタスク",
     "home": "ホーム",
     "recently_added": "最近追加された項目",
     "artists": "アーティスト",
@@ -811,6 +811,23 @@
     "no_top_tracks": "再生した曲はまだありません",
     "show_more": "もっと見る",
     "show_less": "表示を減らす"
+  },
+  "tasks": {
+    "title": "ダウンロードとタスク",
+    "tab_active": "進行中",
+    "tab_done": "完了",
+    "tab_failed": "エラー",
+    "kind_download": "ダウンロード",
+    "kind_promote": "昇格",
+    "empty_active": "進行中のタスクはありません",
+    "empty_done": "完了したタスクはまだありません",
+    "empty_failed": "エラーのあるタスクはありません",
+    "clear": "履歴を消去",
+    "clear_title": "タスク履歴を消去しますか？",
+    "clear_message": "完了済みとエラーの記録をすべて削除します。進行中のタスクは影響を受けません。",
+    "clear_confirm": "消去",
+    "clear_cancel": "キャンセル",
+    "clear_done": "履歴を消去しました"
   },
   "download": {
     "downloading": "ダウンロード中…",

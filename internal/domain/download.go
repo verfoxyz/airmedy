@@ -129,6 +129,10 @@ type DownloadJobRepository interface {
 	// DeleteByTrack removes every job that belonged to a track. Called when the
 	// user deletes the track's file: the history describes a track that is gone.
 	DeleteByTrack(ctx context.Context, trackID string) error
+	// TrimFinished deletes terminal rows (done/failed/canceled), keeping the
+	// newest keep rows. keep == 0 deletes all terminal rows. Queued and active
+	// jobs are never touched.
+	TrimFinished(ctx context.Context, keep int) (int64, error)
 }
 
 // Stream resolution errors. The download service maps them to retry policy:

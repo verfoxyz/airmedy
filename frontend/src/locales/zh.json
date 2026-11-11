@@ -436,7 +436,7 @@
     }
   },
   "sidebar": {
-    "download": "下载",
+    "download": "下载/任务",
     "home": "首页",
     "recently_added": "最近添加",
     "artists": "艺术家",
@@ -811,6 +811,23 @@
     "no_top_tracks": "暂无已播放曲目",
     "show_more": "显示更多",
     "show_less": "显示更少"
+  },
+  "tasks": {
+    "title": "下载/任务",
+    "tab_active": "正在进行",
+    "tab_done": "已完成",
+    "tab_failed": "出错",
+    "kind_download": "下载",
+    "kind_promote": "提升",
+    "empty_active": "当前没有正在进行的任务",
+    "empty_done": "还没有已完成的任务",
+    "empty_failed": "没有出错的任务",
+    "clear": "清空记录",
+    "clear_title": "清空任务记录？",
+    "clear_message": "将删除所有已完成和出错的记录，正在进行的任务不受影响。",
+    "clear_confirm": "清空",
+    "clear_cancel": "取消",
+    "clear_done": "已清空记录"
   },
   "download": {
     "downloading": "下载中…",

@@ -409,6 +409,7 @@ func (s *Service) finishPromotionTask(ctx context.Context, taskID, state, messag
 		return
 	}
 	s.emitTaskUpdated()
+	s.trimTaskHistory(ctx)
 }
 
 // failPromotion records a failed attempt. The entry keeps pending_promote, so

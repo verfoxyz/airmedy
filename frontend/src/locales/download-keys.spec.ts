@@ -23,6 +23,7 @@ function flatten(tree: Tree, prefix = ''): string[] {
 }
 
 const downloadKeys = Object.keys(en.download)
+const taskKeys = Object.keys(en.tasks)
 
 describe('locale coverage', () => {
   for (const [name, messages] of Object.entries(locales)) {
@@ -40,6 +41,19 @@ describe('locale coverage', () => {
     for (const [name, messages] of Object.entries(locales)) {
       for (const key of downloadKeys) {
         expect((messages.download as Record<string, string>)[key], `${name}.download.${key}`).toBeTruthy()
+      }
+    }
+  })
+
+  it('keeps the tasks page keys in all 12 locales', () => {
+    expect(taskKeys).toEqual(expect.arrayContaining([
+      'title', 'tab_active', 'tab_done', 'tab_failed', 'kind_download', 'kind_promote',
+      'empty_active', 'empty_done', 'empty_failed', 'clear', 'clear_title',
+      'clear_message', 'clear_confirm', 'clear_cancel', 'clear_done',
+    ]))
+    for (const [name, messages] of Object.entries(locales)) {
+      for (const key of taskKeys) {
+        expect((messages.tasks as Record<string, string>)[key], `${name}.tasks.${key}`).toBeTruthy()
       }
     }
   })

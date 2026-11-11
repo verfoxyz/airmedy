@@ -1,21 +1,23 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AlertCircle, Ban, LoaderCircle, RotateCcw, X } from '@lucide/vue'
+import { AlertCircle, Ban, Check, LoaderCircle, RotateCcw, X } from '@lucide/vue'
 import type { DownloadJobView } from '@/stores/download'
 
 /**
- * One row of the download queue.
+ * One row of the download queue or the tasks page.
  *
- * The row never decides what a state means — the store already dropped `done`
- * jobs and hid stale failed/canceled rows behind a newer retry. It only picks
- * the copy, the icon and whether cancel/retry apply.
+ * The row never decides what a state means — the store already grouped it into
+ * a tab. It only picks the copy, the icon and whether cancel/retry apply. A
+ * promotion has no bytes to draw and cannot be canceled or retried, so its row
+ * shows the kind badge, quality and outcome instead.
  *
  * `bytesTotal === 0` is "unknown size", not "0% done": the CDN often omits a
  * Content-Length, so the bar renders an indeterminate stripe instead.
  */
 const props = defineProps<{
   job: DownloadJobView
+  kind?: 'download' | 'promote'
   busy?: boolean
 }>()
 
@@ -26,13 +28,15 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
+const isPromote = computed(() => props.kind === 'promote')
 const isIndeterminate = computed(() => props.job.state === 'active' && props.job.bytesTotal <= 0)
 const isFailed = computed(() => props.job.state === 'failed')
 const isCanceled = computed(() => props.job.state === 'canceled')
+const isDone = computed(() => props.job.state === 'done')
 const isActive = computed(() => props.job.state === 'active')
 const isQueued = computed(() => props.job.state === 'queued')
-const canCancel = computed(() => isActive.value || isQueued.value)
-const canRetry = computed(() => isFailed.value || isCanceled.value)
+const canCancel = computed(() => !isPromote.value && (isActive.value || isQueued.value))
+const canRetry = computed(() => !isPromote.value && (isFailed.value || isCanceled.value))
 
 /** Title, then the id, then a fallback: a deleted track must not blank the row. */
 const title = computed(() => props.job.title || props.job.trackId || t('download.unknown_track'))
@@ -43,6 +47,8 @@ const percent = computed(() => Math.min(100, Math.max(0, props.job.percent)))
 const statusText = computed(() => {
   if (isFailed.value) return props.job.error || t('download.failed')
   if (isCanceled.value) return t('download.canceled')
+  if (isDone.value) return props.job.quality || t('tasks.tab_done')
+  if (isPromote.value) return t('tasks.tab_active')
   if (isQueued.value) return t('download.queued_hint')
   if (isIndeterminate.value) return t('download.downloading')
   return t('download.percent', { percent: percent.value })
@@ -53,6 +59,8 @@ const attemptText = computed(() => {
   if (!isFailed.value || maxAttempts <= 0) return ''
   return t('download.attempt', { attempt: attempts, total: maxAttempts })
 })
+
+const kindLabel = computed(() => (isPromote.value ? t('tasks.kind_promote') : t('tasks.kind_download')))
 </script>
 
 <template>
@@ -63,18 +71,24 @@ const attemptText = computed(() => {
     <div class="mt-0.5 shrink-0">
       <AlertCircle v-if="isFailed" class="h-4 w-4 text-primary" />
       <Ban v-else-if="isCanceled" class="h-4 w-4 text-dimmer" />
+      <Check v-else-if="isDone" class="h-4 w-4 text-dim" />
       <LoaderCircle v-else-if="isActive" class="h-4 w-4 animate-spin text-primary" />
       <LoaderCircle v-else class="h-4 w-4 text-dimmer" />
     </div>
 
     <div class="min-w-0 flex-1">
-      <p class="truncate text-sm font-medium" :class="{ 'text-dim': isCanceled || isQueued }">
-        {{ title }}
-      </p>
+      <div class="flex items-center gap-1.5">
+        <span
+          class="shrink-0 rounded-full bg-foreground/[0.06] px-1.5 py-0.5 text-[10px] font-medium text-dimmer"
+          data-test="task-kind">{{ kindLabel }}</span>
+        <p class="truncate text-sm font-medium" :class="{ 'text-dim': isCanceled || isQueued }">
+          {{ title }}
+        </p>
+      </div>
       <p v-if="artist" class="truncate text-xs text-[color:var(--text-muted)]">{{ artist }}</p>
 
-      <!-- Progress: a real bar while active, nothing while queued/canceled/failed. -->
-      <div v-if="isActive" class="mt-1.5 flex items-center gap-2">
+      <!-- Progress: a real bar while active; a promotion has no bytes to draw. -->
+      <div v-if="isActive && !isPromote" class="mt-1.5 flex items-center gap-2">
         <div
           class="h-1 flex-1 overflow-hidden rounded-full bg-foreground/10 transition-all duration-300 group-hover:h-1.5"
           role="progressbar"

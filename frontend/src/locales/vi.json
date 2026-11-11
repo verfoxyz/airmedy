@@ -436,7 +436,7 @@
     }
   },
   "sidebar": {
-    "download": "Tải xuống",
+    "download": "Tải xuống & tác vụ",
     "home": "Trang chủ",
     "recently_added": "Thêm gần đây",
     "artists": "Nghệ sĩ",
@@ -811,6 +811,23 @@
     "no_top_tracks": "Chưa có bài hát được phát",
     "show_more": "Xem thêm",
     "show_less": "Thu gọn"
+  },
+  "tasks": {
+    "title": "Tải xuống & tác vụ",
+    "tab_active": "Đang thực hiện",
+    "tab_done": "Đã hoàn thành",
+    "tab_failed": "Lỗi",
+    "kind_download": "Tải xuống",
+    "kind_promote": "Nâng cấp",
+    "empty_active": "Không có tác vụ đang thực hiện",
+    "empty_done": "Chưa có tác vụ hoàn thành",
+    "empty_failed": "Không có tác vụ lỗi",
+    "clear": "Xóa lịch sử",
+    "clear_title": "Xóa lịch sử tác vụ?",
+    "clear_message": "Mọi bản ghi đã hoàn thành và lỗi sẽ bị xóa. Tác vụ đang thực hiện không bị ảnh hưởng.",
+    "clear_confirm": "Xóa",
+    "clear_cancel": "Hủy",
+    "clear_done": "Đã xóa lịch sử"
   },
   "download": {
     "downloading": "Đang tải…",

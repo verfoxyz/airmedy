@@ -185,6 +185,20 @@ Page-level failures travel as machine kinds in `error_kind` (`no_sources`,
 `source_unavailable`, `invalid`, `unavailable`) and are worded in the
 `cloud_search` locale namespace; the Go binding never returns a sentence for them.
 
+## Downloads & Tasks Page
+
+`views/DownloadsView.vue` reads the `tasks` store (`stores/tasks.ts`), which loads
+`DownloadService.ListTasks()` — downloads and promotions merged newest first. Three
+tabs show counts and only their own rows: **in progress** (`active`), **completed**
+(`done`) and **errors** (`failed`/`canceled`). Every row carries a download/promotion
+kind badge; only download rows offer cancel or retry, and a finished promotion shows
+its quality or error instead of a progress bar.
+
+The header's **clear history** action opens `ConfirmDialog`; confirming calls
+`ClearTaskHistory()` and reloads. The store also listens to `task:updated`, so a
+download finishing while the page is open moves to the completed tab without
+re-entering. `dispose()` releases that listener (called from `App.vue`).
+
 ## Mobile Pairing UI
 
 `MobileDevicesSettings.vue` is a separate Settings category from browser Remote

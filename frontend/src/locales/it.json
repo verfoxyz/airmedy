@@ -436,7 +436,7 @@
     }
   },
   "sidebar": {
-    "download": "Download",
+    "download": "Download e attività",
     "home": "Home",
     "recently_added": "Aggiunti di recente",
     "artists": "Artisti",
@@ -811,6 +811,23 @@
     "no_top_tracks": "Nessun brano riprodotto ancora",
     "show_more": "Mostra altro",
     "show_less": "Mostra meno"
+  },
+  "tasks": {
+    "title": "Download e attività",
+    "tab_active": "In corso",
+    "tab_done": "Completate",
+    "tab_failed": "Errori",
+    "kind_download": "Download",
+    "kind_promote": "Promozione",
+    "empty_active": "Nessuna attività in corso",
+    "empty_done": "Nessuna attività completata",
+    "empty_failed": "Nessuna attività in errore",
+    "clear": "Cancella cronologia",
+    "clear_title": "Cancellare la cronologia delle attività?",
+    "clear_message": "Verranno eliminati tutti i record completati e non riusciti. Le attività in corso non saranno modificate.",
+    "clear_confirm": "Cancella",
+    "clear_cancel": "Annulla",
+    "clear_done": "Cronologia cancellata"
   },
   "download": {
     "downloading": "Download in corso…",

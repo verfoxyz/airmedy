@@ -135,3 +135,37 @@ func (r *promotionTaskRepository) ActivePromotions(
 	}
 	return active, nil
 }
+
+// List returns the promotion history newest first. The tasks page merges it
+// with download_jobs; ordering is repeated there after the two lists meet.
+func (r *promotionTaskRepository) List(ctx context.Context) ([]*domain.PromotionTask, error) {
+	var tasks []*domain.PromotionTask
+	if err := r.db.SelectContext(ctx, &tasks,
+		`SELECT * FROM promotion_tasks ORDER BY COALESCE(finished_at, created_at) DESC`,
+	); err != nil {
+		return nil, fmt.Errorf("promotion task: list: %w", err)
+	}
+	return tasks, nil
+}
+
+// TrimFinished deletes done/failed rows, keeping the newest keep rows.
+// Queued/running work is never a candidate, even when keep is 0.
+func (r *promotionTaskRepository) TrimFinished(ctx context.Context, keep int) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `
+		DELETE FROM promotion_tasks
+		WHERE state IN (?, ?)
+		  AND id NOT IN (
+		    SELECT id FROM promotion_tasks
+		    WHERE state IN (?, ?)
+		    ORDER BY COALESCE(finished_at, created_at) DESC
+		    LIMIT ?
+		  )`,
+		domain.PromotionStateDone, domain.PromotionStateFailed,
+		domain.PromotionStateDone, domain.PromotionStateFailed,
+		keep,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("promotion task: trim history: %w", err)
+	}
+	return res.RowsAffected()
+}

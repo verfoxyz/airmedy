@@ -639,6 +639,8 @@ func (s *Service) fail(ctx context.Context, job *domain.DownloadJob, cause error
 			s.logger.Warn("download: failed to mark the track unavailable", "track_id", job.TrackID, "error", err)
 		}
 		s.emit(func(sink EventSink, j *domain.DownloadJob) { sink.DownloadFailed(j) }, job)
+		s.emitTaskUpdated()
+		s.trimTaskHistory(ctx)
 		return
 	}
 
@@ -863,6 +865,8 @@ func (s *Service) markDone(ctx context.Context, job *domain.DownloadJob, targetP
 	job.TargetPath = targetPath
 	s.logger.Info("download: finished", "job_id", job.ID, "track_id", job.TrackID, "path", targetPath)
 	s.emit(func(sink EventSink, j *domain.DownloadJob) { sink.DownloadDone(j) }, job)
+	s.emitTaskUpdated()
+	s.trimTaskHistory(ctx)
 	return nil
 }
 
