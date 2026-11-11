@@ -148,11 +148,14 @@ func (p *fakePlayer) SetPreampGain(db float64) error {
 
 // fakeArtworkCache is a no-op artwork cache for tests.
 type fakeArtworkCache struct {
-	existing map[string]bool
+	existing  map[string]bool
+	savedKey  string
+	saveCalls int
 }
 
 func (c *fakeArtworkCache) Save(_ context.Context, _ []byte, _ string) (string, error) {
-	return "", nil
+	c.saveCalls++
+	return c.savedKey, nil
 }
 
 func (c *fakeArtworkCache) GetPath(key string) string           { return key }
@@ -1907,11 +1910,17 @@ func TestPlayTracks_StreamsARemoteRowThroughTheCache(t *testing.T) {
 }
 
 type fakeStreamCovers struct {
-	url string
+	url  string
+	data []byte
+	mime string
 }
 
 func (f fakeStreamCovers) AssetForIdentity(context.Context, string, string) (string, error) {
 	return f.url, nil
+}
+
+func (f fakeStreamCovers) BytesForIdentity(context.Context, string, string) ([]byte, string, error) {
+	return f.data, f.mime, nil
 }
 
 func TestPlayTracks_RemoteRowPublishesTheCachedCover(t *testing.T) {
@@ -1944,6 +1953,60 @@ func TestPlayTracks_RemoteRowPublishesTheCachedCover(t *testing.T) {
 	}
 	if got := s.GetStatus().StreamArtworkURL; got != "" {
 		t.Fatalf("stream artwork = %q after a local track, want empty", got)
+	}
+}
+
+// fakeArtworkStore records the materialised key per track.
+type fakeArtworkStore struct {
+	keys map[string]string
+}
+
+func (s *fakeArtworkStore) SetTrackArtworkKey(_ context.Context, trackID, key string) error {
+	if s.keys == nil {
+		s.keys = make(map[string]string)
+	}
+	s.keys[trackID] = key
+	return nil
+}
+
+func TestStreamArtwork_IsMaterialisedOnceIntoTheTrackRow(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1.0}}
+	s, _ := newTestService(t, fp)
+	s.streamCache = newFakeStreamCache()
+	artwork := &fakeArtworkCache{savedKey: "cover-hash.jpg"}
+	store := &fakeArtworkStore{}
+	s.artworkCache = artwork
+	s.artworkStore = store
+	s.streamCovers = fakeStreamCovers{
+		url:  "/cover-cache/cover.jpg",
+		data: []byte("jpeg"),
+		mime: "image/jpeg",
+	}
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID:           "remote-materialise",
+		Path:         domain.RemotePath("wy", "88"),
+		Title:        "物化",
+		Availability: domain.AvailabilityRemote,
+		Provider:     "wy",
+		ExternalID:   "88",
+	}}
+	if err := s.PlayTracks([]*domain.TrackDTO{remote}, 0); err != nil {
+		t.Fatalf("PlayTracks: %v", err)
+	}
+	if got := store.keys[remote.ID]; got != "cover-hash.jpg" {
+		t.Fatalf("stored artwork key = %q, want cover-hash.jpg", got)
+	}
+	if remote.ArtworkKey != "cover-hash.jpg" {
+		t.Fatalf("track artwork key = %q, want the materialised key", remote.ArtworkKey)
+	}
+
+	// A second load must not save the same image again.
+	if err := s.PlayTracks([]*domain.TrackDTO{remote}, 0); err != nil {
+		t.Fatalf("PlayTracks again: %v", err)
+	}
+	if artwork.saveCalls != 1 {
+		t.Fatalf("artwork saved %d times, want 1", artwork.saveCalls)
 	}
 }
 

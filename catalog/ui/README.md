@@ -320,6 +320,14 @@ without using pure black.
 The Track Info Drawer keeps its Lossless quality badge on the original rose
 `#E11D48`; it deliberately does not follow the user-configured primary color.
 
+The drawer shows the row it was opened for and does not follow `currentTrack`:
+switching tracks changes playback, not the open drawer. Its cover comes from the
+row's own `artwork_key`; a remote row that has none asks
+`CatalogService.ResolveCatalogTrackCover(trackID)` once and the player store caches
+the answer per track id, so reopening the drawer needs no second call. The backend
+resolves it by the row's remote identity (the cover cache's local asset, or one
+re-download from the stored URL) and returns `""` when there is no cover.
+
 ### Dynamic Variables (Artwork-Derived)
 
 Updated via JavaScript on each track change. Declared with `@property` for CSS transition support:

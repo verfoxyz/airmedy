@@ -198,6 +198,49 @@ func TestAssetForIdentityFindsTheCachedCover(t *testing.T) {
 	assert.Empty(t, missing)
 }
 
+func TestRemoteAndBytesForIdentityReuseTheCachedImage(t *testing.T) {
+	body := jpegBody("cover", 64)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cache, db := newTestCache(t, dir, server.Client(), func() time.Time { return time.Unix(7, 0) })
+	ctx := context.Background()
+
+	assetURL, err := cache.Get(ctx, server.URL+"/a.jpg", "wy", "42", 10<<20)
+	require.NoError(t, err)
+
+	var storedURL string
+	require.NoError(t, db.QueryRow(`SELECT url FROM cover_cache`).Scan(&storedURL))
+	assert.Equal(t, server.URL+"/a.jpg", storedURL, "the row keeps the URL it was downloaded from")
+
+	remote, err := cache.RemoteForIdentity(ctx, "wy", "42")
+	require.NoError(t, err)
+	assert.Equal(t, server.URL+"/a.jpg", remote)
+
+	data, mime, err := cache.BytesForIdentity(ctx, "wy", "42")
+	require.NoError(t, err)
+	assert.Equal(t, "image/jpeg", mime)
+	assert.Equal(t, body, data, "the cached bytes are returned without another download")
+
+	missing, err := cache.RemoteForIdentity(ctx, "kg", "1")
+	require.NoError(t, err)
+	assert.Empty(t, missing)
+
+	missingData, _, err := cache.BytesForIdentity(ctx, "kg", "1")
+	require.NoError(t, err)
+	assert.Empty(t, missingData)
+
+	// A file that vanished means "not cached", not an error.
+	require.NoError(t, os.Remove(filepath.Join(dir, filepath.Base(assetURL))))
+	goneData, _, err := cache.BytesForIdentity(ctx, "wy", "42")
+	require.NoError(t, err)
+	assert.Empty(t, goneData)
+}
+
 func TestMissingFileDropsTheIndexRowAndRedownloads(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

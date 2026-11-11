@@ -129,6 +129,7 @@ SQLite database managed via `golang-migrate` for schema versioning and `sqlx` fo
 | 000090 | `stream_cache_settings.up.sql` | Add `app_settings.stream_cache_mb INTEGER NOT NULL DEFAULT 2048` and `stream_quality TEXT NOT NULL DEFAULT '320k'`, the stream-playback cache limit and the quality passed to `stream.resolve`. The repository clamps the size to `[256, 20480]` MB (`domain.ClampStreamCacheMB`; 0 means "unset" and becomes 2048) and quality through `domain.ResolveDownloadQuality`. Down drops both columns |
 | 000091 | `stream_cache.up.sql` | Add `stream_cache(cache_key, provider, external_id, title, title_key, artist, artist_key, artists, album, duration_ms, quality, audio_path, total_bytes, received_bytes, complete, playback_progress, pending_promote, created_at, last_used)` plus identity/match/LRU indexes. The audio body stays at `<DataDir>/stream-cache/<cache_key>.audio`; this row is the only metadata, replacing the `<key>.json` sidecar. `cache_key` is `sha256(provider + "/" + external_id)`; `title_key`/`artist_key` are `domain.NormalizationKey` values used for strict cross-source matching, with `duration_ms` compared only when both sides are non-zero. Timestamps are Unix seconds. Down drops the indexes and table |
 | 000092 | `cover_cache_identity.up.sql` | Add `cover_cache.provider/external_id/pinned` plus `idx_cover_cache_identity`. The identity is written by `GetCatalogCovers` so a cover can be pinned while its audio is in `stream_cache`; eviction orders by `pinned ASC, last_used ASC`, so unpinned covers go first and a pinned one survives until every unpinned row is gone. Existing rows get an empty identity and `pinned = 0` (pure LRU) and are filled in on the next hit for the same URL. Down drops the index and columns |
+| 000093 | `cover_cache_url.up.sql` | Add `cover_cache.url TEXT NOT NULL DEFAULT ''`, the remote URL a cover came from. A row keyed only by `url_hash` can serve the file but cannot re-fetch an evicted image, and promotion into the library needs the URL (or the cached bytes) to embed artwork. Existing rows keep an empty URL, filled in on the next hit for the same hash. Down drops the column |
 
 `listeningRepository.GetListeningInsights` returns up to 50 entries for both Top Artists
 (ordered by listened seconds) and Top Tracks (ordered by play count, then listened
@@ -382,9 +383,14 @@ cover_cache (   -- persistent remote cover cache (000089)
     path TEXT NOT NULL,          -- flat file name in <DataDir>/cover-cache/; the directory may move
     bytes INTEGER NOT NULL,      -- recorded on write so eviction SUMs without stat-ing files
     mime TEXT NOT NULL,          -- image/jpeg | image/png | image/webp
-    last_used INTEGER NOT NULL   -- unix seconds; the LRU key, updated on every hit
+    last_used INTEGER NOT NULL,  -- unix seconds; the LRU key, updated on every hit
+    provider TEXT NOT NULL,      -- remote identity, for pinning and identity lookups (000092)
+    external_id TEXT NOT NULL,
+    pinned INTEGER NOT NULL,     -- eviction orders pinned rows last (000092)
+    url TEXT NOT NULL            -- remote URL, so an evicted image can be re-fetched (000093)
 )
 -- idx_cover_cache_last_used: INDEX(last_used)
+-- idx_cover_cache_identity: INDEX(provider, external_id)
 ```
 
 ### Listening Insights Tables

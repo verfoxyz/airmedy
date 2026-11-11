@@ -96,7 +96,10 @@ cached one is exactly why a naive retry "does nothing".
    stored **before** the job is enqueued: the playlist auto-download hook may already have
    created the job, and an `ErrDownloadAlreadyQueued` answer must not drop the cover.
    Cover URLs live in memory only: a restart loses the cover, never the download. Tags are
-   read back afterwards; an empty title or artist is logged as a warning.
+   read back afterwards; an empty title or artist is logged as a warning. A caller that
+   already holds the bytes (promoting a streamed file) passes them as `CoverData`
+   instead of a URL, so the finished file keeps the image the app has been showing even
+   when the image host is unreachable.
 4. Atomically rename the validated part file into place.
 5. `LibraryService.ImportFileWithID(path)` → the track id this file became.
 6. Attach to `playlist_id` when the job carries one (it may be NULL: deleting the playlist

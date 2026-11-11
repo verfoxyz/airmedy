@@ -46,6 +46,7 @@ type Service struct {
 	settings       SettingsReader
 	sourceSettings domain.CatalogSourceSettingReader
 	covers         domain.CatalogCoverCache
+	coverAssets    domain.CoverIdentityAssets
 	logger         *slog.Logger
 	sourceTimeout  time.Duration
 
@@ -85,6 +86,7 @@ type Deps struct {
 	Settings       SettingsReader
 	SourceSettings domain.CatalogSourceSettingReader
 	Covers         domain.CatalogCoverCache
+	CoverAssets    domain.CoverIdentityAssets
 	Logger         *slog.Logger
 	Config         Config
 }
@@ -111,6 +113,7 @@ func NewService(deps Deps) *Service {
 		settings:       deps.Settings,
 		sourceSettings: deps.SourceSettings,
 		covers:         deps.Covers,
+		coverAssets:    deps.CoverAssets,
 		logger:         logger,
 		sourceTimeout:  timeout,
 		coverCache:     make(map[domain.CatalogIdentity]string),
@@ -357,6 +360,55 @@ func (s *Service) coverCacheLimitBytes(ctx context.Context, provider string) int
 		mb = domain.MaxCatalogCoverCacheMB
 	}
 	return int64(mb) << 20
+}
+
+// ResolveTrackCover returns a host-local cover URL for one library row, resolved
+// by the row's own remote identity rather than by what is playing.
+//
+// It serves rows that have no artwork_key yet: a streamed track's cover lives in
+// the cover cache, and the info drawer must show it before the row has played
+// long enough to materialise one. An empty result means "no cover", and the UI
+// falls back to the placeholder.
+func (s *Service) ResolveTrackCover(ctx context.Context, trackID string) (string, error) {
+	if s.localTracks == nil || s.coverAssets == nil || strings.TrimSpace(trackID) == "" {
+		return "", nil
+	}
+	track, err := s.localTracks.GetTrack(ctx, trackID)
+	if err != nil {
+		return "", fmt.Errorf("resolve cover for %s: %w", trackID, err)
+	}
+	if track == nil || !track.IsRemote() {
+		return "", nil
+	}
+	provider := domain.NormalizeProvider(track.Provider)
+	externalID := strings.TrimSpace(track.ExternalID)
+	if provider == "" || externalID == "" {
+		return "", nil
+	}
+
+	assetURL, err := s.coverAssets.AssetForIdentity(ctx, provider, externalID)
+	if err != nil {
+		s.logger.Debug("catalog: identity cover lookup failed",
+			"provider", provider, "external_id", externalID, "error", err)
+		return "", nil
+	}
+	if assetURL != "" {
+		return assetURL, nil
+	}
+
+	// The index may know the URL while its file was evicted; one re-download is
+	// cheaper than a placeholder for every row that outlived the cache.
+	remote, err := s.coverAssets.RemoteForIdentity(ctx, provider, externalID)
+	if err != nil || remote == "" || s.covers == nil {
+		return "", nil
+	}
+	assetURL, err = s.covers.Get(ctx, remote, provider, externalID, s.coverCacheLimitBytes(ctx, provider))
+	if err != nil {
+		s.logger.Warn("catalog: cover re-download failed",
+			"provider", provider, "external_id", externalID, "error", err)
+		return "", nil
+	}
+	return assetURL, nil
 }
 
 // Sources returns the source table without running a search, so the search page

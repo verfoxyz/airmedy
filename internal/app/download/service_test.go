@@ -130,16 +130,16 @@ type stubSettings struct {
 
 // stubCachedAudio stands in for the stream cache's promotion surface.
 type stubCachedAudio struct {
-	mu          sync.Mutex
-	path        string
-	quality     string
-	complete    bool
-	found       bool
-	infoErr     error
-	ensureErr   error
-	ensureWait  <-chan error
-	marked      int
-	discarded   int
+	mu         sync.Mutex
+	path       string
+	quality    string
+	complete   bool
+	found      bool
+	infoErr    error
+	ensureErr  error
+	ensureWait <-chan error
+	marked     int
+	discarded  int
 }
 
 func (c *stubCachedAudio) CachedFileInfo(context.Context, *domain.TrackDTO) (string, string, bool, bool, error) {
@@ -266,20 +266,39 @@ func (s *recordingSink) counts() (progress, done, failed int) {
 	return len(s.progress), len(s.done), len(s.failed)
 }
 
+// stubCoverAssets stands in for the cover cache's identity lookups.
+type stubCoverAssets struct {
+	asset  string
+	remote string
+	data   []byte
+	mime   string
+}
+
+func (s stubCoverAssets) AssetForIdentity(context.Context, string, string) (string, error) {
+	return s.asset, nil
+}
+func (s stubCoverAssets) RemoteForIdentity(context.Context, string, string) (string, error) {
+	return s.remote, nil
+}
+func (s stubCoverAssets) BytesForIdentity(context.Context, string, string) ([]byte, string, error) {
+	return s.data, s.mime, nil
+}
+
 type harness struct {
-	t          *testing.T
-	settings   stubSettings
-	svc        *download.Service
-	db         *sqlite.DB
-	jobs       domain.DownloadJobRepository
-	tracks     domain.TrackRepository
-	resolver   *stubResolver
-	downloader *stubDownloader
-	finalizer  *stubFinalizer
-	cached     *stubCachedAudio
-	probe      *stubDurationProbe
-	sink       *recordingSink
-	dir        string
+	t           *testing.T
+	settings    stubSettings
+	svc         *download.Service
+	db          *sqlite.DB
+	jobs        domain.DownloadJobRepository
+	tracks      domain.TrackRepository
+	resolver    *stubResolver
+	downloader  *stubDownloader
+	finalizer   *stubFinalizer
+	cached      *stubCachedAudio
+	coverAssets *stubCoverAssets
+	probe       *stubDurationProbe
+	sink        *recordingSink
+	dir         string
 	// resolverOverride/downloaderOverride let integration tests drive the same
 	// worker through the composite (plugin) resolver and the real downloader
 	// without forking the fixture.
@@ -302,17 +321,18 @@ func newHarness(t *testing.T) *harness {
 	dir := t.TempDir()
 
 	h := &harness{
-		t:          t,
-		db:         db,
-		jobs:       sqlite.NewDownloadJobRepository(db),
-		tracks:     tracks,
-		resolver:   &stubResolver{ref: domain.StreamRef{URL: "http://cdn.example/1.mp3"}},
-		downloader: &stubDownloader{bytes: 1024},
-		finalizer:  &stubFinalizer{},
-		cached:     &stubCachedAudio{},
-		probe:      &stubDurationProbe{err: errors.New("probe unavailable in this fixture")},
-		sink:       &recordingSink{},
-		dir:        dir,
+		t:           t,
+		db:          db,
+		jobs:        sqlite.NewDownloadJobRepository(db),
+		tracks:      tracks,
+		resolver:    &stubResolver{ref: domain.StreamRef{URL: "http://cdn.example/1.mp3"}},
+		downloader:  &stubDownloader{bytes: 1024},
+		finalizer:   &stubFinalizer{},
+		cached:      &stubCachedAudio{},
+		coverAssets: &stubCoverAssets{},
+		probe:       &stubDurationProbe{err: errors.New("probe unavailable in this fixture")},
+		sink:        &recordingSink{},
+		dir:         dir,
 	}
 	// Verbose on purpose while the worker is under test: a swallowed error is
 	// indistinguishable from a timeout otherwise.
@@ -344,7 +364,7 @@ func (h *harness) rebuild() {
 		h.jobs, h.tracks, resolver, mover, h.finalizer,
 		h.probe,
 		download.NewMerger(h.tracks, sqlite.NewDownloadMergeRepository(h.db, h.tracks), sqlite.NewTxManager(h.db), logger),
-		h.settings, h.cached, logger,
+		h.settings, h.cached, h.coverAssets, logger,
 	)
 	h.svc.SetEventSink(h.sink)
 }
@@ -951,7 +971,7 @@ func TestService_StartRecoversInterruptedJobs(t *testing.T) {
 		h.jobs, h.tracks, h.resolver, h.downloader, h.finalizer,
 		h.probe,
 		download.NewMerger(h.tracks, sqlite.NewDownloadMergeRepository(h.db, h.tracks), sqlite.NewTxManager(h.db), logger),
-		stubSettings{dir: h.dir}, h.cached, logger,
+		stubSettings{dir: h.dir}, h.cached, h.coverAssets, logger,
 	)
 	require.NoError(t, restarted.Start(ctx))
 	t.Cleanup(func() { _ = restarted.Stop(context.Background()) })

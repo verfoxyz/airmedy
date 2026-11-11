@@ -34,10 +34,11 @@ type StreamCache interface {
 }
 
 // StreamCoverProvider resolves the host-local cover cached for a remote
-// identity. *covercache.Cache implements it; the player only needs the path,
-// not the cache itself.
+// identity. *covercache.Cache implements it; the player only needs the asset
+// path and the bytes, not the cache itself.
 type StreamCoverProvider interface {
 	AssetForIdentity(ctx context.Context, provider, externalID string) (string, error)
+	BytesForIdentity(ctx context.Context, provider, externalID string) ([]byte, string, error)
 }
 
 // PlayerService coordinates playback and queue management.
@@ -61,6 +62,7 @@ type PlayerService struct {
 	streamSession                   *stream.Session
 	streamMu                        sync.Mutex
 	streamCovers                    StreamCoverProvider
+	artworkStore                    domain.TrackArtworkStore
 	streamArtworkURL                string
 	normSvc                         *normalization.NormalizationService
 	notifier                        domain.TrackTransitionNotifier
@@ -140,6 +142,7 @@ func NewPlayerService(
 	settingsRepo domain.SettingsRepository,
 	streamCache StreamCache,
 	streamCovers StreamCoverProvider,
+	artworkStore domain.TrackArtworkStore,
 	sleepInhibitor domain.SleepInhibitor,
 	normSvc *normalization.NormalizationService,
 	notifier domain.TrackTransitionNotifier,
@@ -157,6 +160,7 @@ func NewPlayerService(
 		settingsRepo:                    settingsRepo,
 		streamCache:                     streamCache,
 		streamCovers:                    streamCovers,
+		artworkStore:                    artworkStore,
 		sleepInhibitor:                  sleepInhibitor,
 		normSvc:                         normSvc,
 		notifier:                        notifier,
@@ -1061,6 +1065,10 @@ func (s *PlayerService) reportStreamProgress(position float64) {
 // refreshStreamArtwork resolves the host-local cover for a streamed track. The
 // same URL is served for every variant, so the footer, track info and mini
 // player render one file; local rows clear it and keep their artwork_key path.
+//
+// It also materialises that cover into the artwork pipeline once per row: a
+// remote track has no artwork_key of its own, so without this every list keeps
+// showing a placeholder even after the row has played.
 func (s *PlayerService) refreshStreamArtwork(track *domain.TrackDTO) {
 	url := ""
 	if track != nil && track.IsRemote() && s.streamCovers != nil {
@@ -1073,10 +1081,50 @@ func (s *PlayerService) refreshStreamArtwork(track *domain.TrackDTO) {
 				url = resolved
 			}
 		}
+		s.materializeStreamArtwork(track)
 	}
 	s.mu.Lock()
 	s.streamArtworkURL = url
 	s.mu.Unlock()
+}
+
+// materializeStreamArtwork copies the cover already cached for a remote identity
+// into the artwork cache and records the key on the row, so every list renders
+// it through the normal artwork path. It is idempotent: a row that already has a
+// key is left alone.
+func (s *PlayerService) materializeStreamArtwork(track *domain.TrackDTO) {
+	if s.artworkStore == nil || s.artworkCache == nil || s.streamCovers == nil {
+		return
+	}
+	if strings.TrimSpace(track.ArtworkKey) != "" {
+		return
+	}
+	provider := domain.NormalizeProvider(track.Provider)
+	if provider == "" || strings.TrimSpace(track.ExternalID) == "" || strings.TrimSpace(track.ID) == "" {
+		return
+	}
+	ctx := context.Background()
+	data, mime, err := s.streamCovers.BytesForIdentity(ctx, provider, track.ExternalID)
+	if err != nil {
+		s.logger.Debug("stream artwork bytes unavailable", "track_id", track.ID, "error", err)
+		return
+	}
+	if len(data) == 0 {
+		return
+	}
+	key, err := s.artworkCache.Save(ctx, data, mime)
+	if err != nil || key == "" {
+		s.logger.Warn("stream artwork could not be cached", "track_id", track.ID, "error", err)
+		return
+	}
+	if err := s.artworkStore.SetTrackArtworkKey(ctx, track.ID, key); err != nil {
+		s.logger.Warn("stream artwork key could not be stored", "track_id", track.ID, "error", err)
+		return
+	}
+	track.ArtworkKey = key
+	if app := application.Get(); app != nil && app.Event != nil {
+		app.Event.Emit("library:track-updated", track)
+	}
 }
 
 // flushStreamProgress persists the last reported position. Progress is otherwise

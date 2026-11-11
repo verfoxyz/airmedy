@@ -132,7 +132,7 @@ func (c *Cache) Get(ctx context.Context, remoteURL, provider, externalID string,
 	externalID = strings.TrimSpace(externalID)
 
 	hash := hashURL(parsed.String())
-	if assetURL, ok, err := c.hit(ctx, hash, provider, externalID); err != nil {
+	if assetURL, ok, err := c.hit(ctx, hash, parsed.String(), provider, externalID); err != nil {
 		return "", err
 	} else if ok {
 		return assetURL, nil
@@ -163,7 +163,7 @@ func (c *Cache) Get(ctx context.Context, remoteURL, provider, externalID string,
 
 // hit answers a cache lookup. A row whose file is missing is deleted so the
 // next request re-downloads it.
-func (c *Cache) hit(ctx context.Context, hash, provider, externalID string) (string, bool, error) {
+func (c *Cache) hit(ctx context.Context, hash, remoteURL, provider, externalID string) (string, bool, error) {
 	var name string
 	err := c.db.QueryRowContext(ctx,
 		`SELECT path FROM cover_cache WHERE url_hash = ?`, hash,
@@ -187,15 +187,17 @@ func (c *Cache) hit(ctx context.Context, hash, provider, externalID string) (str
 		return "", false, fmt.Errorf("cover cache: stat %q: %w", filePath, statErr)
 	}
 
-	// A pre-migration row has no identity; record it on the next hit so it can
-	// take part in pinning without rewriting every row during the migration.
+	// A pre-migration row has no identity or URL; record them on the next hit so
+	// the row can be pinned and its image re-fetched without rewriting every row
+	// during the migration.
 	if _, err := c.db.ExecContext(ctx,
 		`UPDATE cover_cache
 		 SET last_used = ?,
 		     provider = CASE WHEN provider = '' THEN ? ELSE provider END,
-		     external_id = CASE WHEN external_id = '' THEN ? ELSE external_id END
+		     external_id = CASE WHEN external_id = '' THEN ? ELSE external_id END,
+		     url = CASE WHEN url = '' THEN ? ELSE url END
 		 WHERE url_hash = ?`,
-		c.now().Unix(), provider, externalID, hash,
+		c.now().Unix(), provider, externalID, remoteURL, hash,
 	); err != nil {
 		// A hit whose timestamp cannot be written still serves the file; the
 		// eviction order is slightly stale but the image is correct.
@@ -219,7 +221,7 @@ func (c *Cache) fetchAndStore(ctx context.Context, remoteURL, hash, provider, ex
 	// A concurrent process may have written the same image; the content is
 	// addressed by URL hash, so its file is equivalent.
 	if _, statErr := os.Stat(filePath); statErr == nil {
-		if err := c.upsert(ctx, hash, name, int64(len(data)), mime, provider, externalID); err != nil {
+		if err := c.upsert(ctx, hash, name, int64(len(data)), mime, remoteURL, provider, externalID); err != nil {
 			return "", err
 		}
 		c.evict(ctx, limitBytes)
@@ -229,7 +231,7 @@ func (c *Cache) fetchAndStore(ctx context.Context, remoteURL, hash, provider, ex
 	if err := writeFileAtomically(c.dir, filePath, data); err != nil {
 		return "", err
 	}
-	if err := c.upsert(ctx, hash, name, int64(len(data)), mime, provider, externalID); err != nil {
+	if err := c.upsert(ctx, hash, name, int64(len(data)), mime, remoteURL, provider, externalID); err != nil {
 		// The file is intentionally left in place: a row is the only thing that
 		// makes it visible, and an orphan is harmless until the next cleanup.
 		return "", err
@@ -278,18 +280,19 @@ func (c *Cache) download(ctx context.Context, remoteURL string) ([]byte, string,
 // upsert writes the index row after the file exists. The first identity that
 // cached a URL wins: the same image may be requested by several search rows,
 // and later requests must not steal it from the row that pinned it.
-func (c *Cache) upsert(ctx context.Context, hash, name string, bytes int64, mime, provider, externalID string) error {
+func (c *Cache) upsert(ctx context.Context, hash, name string, bytes int64, mime, remoteURL, provider, externalID string) error {
 	if _, err := c.db.ExecContext(ctx,
-		`INSERT INTO cover_cache (url_hash, path, bytes, mime, last_used, provider, external_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO cover_cache (url_hash, path, bytes, mime, last_used, provider, external_id, url)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(url_hash) DO UPDATE SET
 		   path = excluded.path,
 		   bytes = excluded.bytes,
 		   mime = excluded.mime,
 		   last_used = excluded.last_used,
 		   provider = CASE WHEN cover_cache.provider = '' THEN excluded.provider ELSE cover_cache.provider END,
-		   external_id = CASE WHEN cover_cache.external_id = '' THEN excluded.external_id ELSE cover_cache.external_id END`,
-		hash, name, bytes, mime, c.now().Unix(), provider, externalID,
+		   external_id = CASE WHEN cover_cache.external_id = '' THEN excluded.external_id ELSE cover_cache.external_id END,
+		   url = CASE WHEN excluded.url = '' THEN cover_cache.url ELSE excluded.url END`,
+		hash, name, bytes, mime, c.now().Unix(), provider, externalID, remoteURL,
 	); err != nil {
 		return fmt.Errorf("cover cache: write index: %w", err)
 	}
@@ -336,6 +339,64 @@ func (c *Cache) AssetForIdentity(ctx context.Context, provider, externalID strin
 		return "", nil
 	}
 	return assetPath(name), nil
+}
+
+// RemoteForIdentity returns the remote URL the cached cover was downloaded
+// from, or "" when the identity has no cover. It lets a caller re-download an
+// image whose file was evicted, and lets a promotion embed artwork without a
+// second search.
+func (c *Cache) RemoteForIdentity(ctx context.Context, provider, externalID string) (string, error) {
+	provider = strings.TrimSpace(provider)
+	externalID = strings.TrimSpace(externalID)
+	if provider == "" || externalID == "" {
+		return "", nil
+	}
+	var remoteURL string
+	err := c.db.QueryRowContext(ctx,
+		`SELECT url FROM cover_cache
+		 WHERE provider = ? AND external_id = ? AND url <> ''
+		 ORDER BY last_used DESC LIMIT 1`,
+		provider, externalID,
+	).Scan(&remoteURL)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("cover cache: remote url for %q/%q: %w", provider, externalID, err)
+	}
+	return remoteURL, nil
+}
+
+// BytesForIdentity returns the cached image for an identity as bytes, so the
+// artwork pipeline can materialise it without downloading the image again. A
+// missing row or file is not an error: it means "no cover cached yet".
+func (c *Cache) BytesForIdentity(ctx context.Context, provider, externalID string) ([]byte, string, error) {
+	provider = strings.TrimSpace(provider)
+	externalID = strings.TrimSpace(externalID)
+	if provider == "" || externalID == "" {
+		return nil, "", nil
+	}
+	var name, mime string
+	err := c.db.QueryRowContext(ctx,
+		`SELECT path, mime FROM cover_cache
+		 WHERE provider = ? AND external_id = ?
+		 ORDER BY last_used DESC LIMIT 1`,
+		provider, externalID,
+	).Scan(&name, &mime)
+	if err == sql.ErrNoRows {
+		return nil, "", nil
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("cover cache: bytes for %q/%q: %w", provider, externalID, err)
+	}
+	data, readErr := os.ReadFile(filepath.Join(c.dir, name))
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			return nil, "", nil
+		}
+		return nil, "", fmt.Errorf("cover cache: read %q: %w", name, readErr)
+	}
+	return data, mime, nil
 }
 
 // Unpin releases an identity's covers when its stream-cache entry is deleted.
@@ -478,5 +539,10 @@ var (
 	_ interface {
 		Pin(ctx context.Context, provider, externalID string) error
 		Unpin(ctx context.Context, provider, externalID string) error
+	} = (*Cache)(nil)
+	_ interface {
+		AssetForIdentity(ctx context.Context, provider, externalID string) (string, error)
+		RemoteForIdentity(ctx context.Context, provider, externalID string) (string, error)
+		BytesForIdentity(ctx context.Context, provider, externalID string) ([]byte, string, error)
 	} = (*Cache)(nil)
 )

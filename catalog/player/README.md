@@ -452,7 +452,11 @@ flowchart TB
   identity; deleting the entry unpins it. `PlayerStatus.stream_artwork_url`
   carries the host-local `/cover-cache/...` path for the playing identity; the
   frontend prefers it over the `artwork_key` variants, and an empty value falls
-  back to the placeholder.
+  back to the placeholder. The first load of a remote row also **materialises**
+  that cover: the cached bytes go through `ArtworkCache.Save`, the resulting key
+  is written to `tracks.artwork_key`, and `library:track-updated` is emitted, so
+  every list renders the row through the normal artwork pipeline instead of a
+  placeholder. A row that already has a key is skipped.
 - Manages playback state transitions.
 - Runs a **500ms ticker** for internal logic:
   - Increments play counts and scrobbling thresholds via `checkThreshold()`.

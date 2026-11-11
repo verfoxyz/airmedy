@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, shallowRef, computed, watch } from 'vue'
 import { Events } from '@wailsio/runtime'
 import * as PlayerService from '../../bindings/airmedy/internal/infra/wails/playerservice'
+import * as CatalogService from '../../bindings/airmedy/internal/infra/wails/catalogservice'
 import { PlaybackState, PlayerStatus, RepeatMode, ThemeColors } from '../../bindings/airmedy/internal/domain/models'
 import type { Lyric, TrackDTO } from '../../bindings/airmedy/internal/domain/models'
 import { buildArtworkUrl, logger } from '@airmedy/utils'
@@ -49,6 +50,13 @@ export const usePlayerStore = defineStore('player', () => {
   const lyricsLoading = ref(false)
   const lyricsRequestId = ref(0)
   const artworkCrossfade = shallowRef<ArtworkCrossfadeState | null>(null)
+  /**
+   * resolvedTrackCovers holds covers resolved by remote identity, for rows that
+   * have no artwork_key yet (a streamed track). Keyed by track id so reopening
+   * the info drawer does not ask again.
+   */
+  const resolvedTrackCovers = ref<Record<string, string>>({})
+  const coverRequests = new Set<string>()
 
   // Interpolation state
   const localInterpolatedPosition = ref(0)
@@ -624,6 +632,31 @@ export const usePlayerStore = defineStore('player', () => {
     isTrackInfoOpen.value = true
     isQueueOpen.value = false
     isLyricsOpen.value = false
+    void resolveTrackCover(track)
+  }
+
+  /**
+   * resolveTrackCover asks the backend for the cover cached for a row's remote
+   * identity. A row that already has an artwork_key renders through the normal
+   * artwork path and needs no request.
+   */
+  async function resolveTrackCover(track: TrackDTO) {
+    const id = track?.id
+    if (!id || track.artwork_key || resolvedTrackCovers.value[id] || coverRequests.has(id)) return
+    coverRequests.add(id)
+    try {
+      const url = await CatalogService.ResolveCatalogTrackCover(id)
+      if (url) resolvedTrackCovers.value = { ...resolvedTrackCovers.value, [id]: url }
+    } catch (e) {
+      logger.error('Failed to resolve the track cover', e)
+    } finally {
+      coverRequests.delete(id)
+    }
+  }
+
+  /** resolvedTrackCover returns the identity-resolved cover for a row, if any. */
+  function resolvedTrackCover(trackId: string | null | undefined): string {
+    return trackId ? resolvedTrackCovers.value[trackId] ?? '' : ''
   }
 
   function closeAllDrawers() {
@@ -699,6 +732,7 @@ export const usePlayerStore = defineStore('player', () => {
     toggleLyrics,
     openLyrics,
     openTrackInfo,
+    resolvedTrackCover,
     closeAllDrawers,
     setPlayerMode,
     cycleRepeat,

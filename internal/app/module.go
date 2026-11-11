@@ -83,6 +83,7 @@ var Module = fx.Module("app",
 			})
 		},
 		func(cache *covercache.Cache) domain.CatalogCoverCache { return cache },
+		func(cache *covercache.Cache) domain.CoverIdentityAssets { return cache },
 		func(cache *covercache.Cache) domain.CoverPinner { return cache },
 		func(cache *covercache.Cache) player.StreamCoverProvider { return cache },
 		func() domain.MetadataExtractor { return metadata.NewTagLibExtractor() },

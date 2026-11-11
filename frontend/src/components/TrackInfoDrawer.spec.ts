@@ -1,8 +1,15 @@
-import { describe, it, expect, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { beforeEach, describe, it, expect, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { createTestingPinia } from '@pinia/testing'
 import TrackInfoDrawer from './TrackInfoDrawer.vue'
+import { usePlayerStore } from '@/stores/player'
 import { TrackDTO } from '../../bindings/airmedy/internal/domain/models'
+
+const catalogApi = vi.hoisted(() => ({
+  ResolveCatalogTrackCover: vi.fn().mockResolvedValue(''),
+}))
+vi.mock('../../bindings/airmedy/internal/infra/wails/catalogservice', () => catalogApi)
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
@@ -104,34 +111,55 @@ describe('TrackInfoDrawer quality badge', () => {
 })
 
 describe('TrackInfoDrawer artwork', () => {
-  function mountForPlayer(track: TrackDTO, streamArtwork: string | null) {
-    return mount(TrackInfoDrawer, {
-      global: {
-        plugins: [
-          createTestingPinia({
-            createSpy: vi.fn,
-            initialState: {
-              player: {
-                trackInfoTrack: track,
-                currentTrack: track,
-                status: { stream_artwork_url: streamArtwork },
-              },
-            },
-          }),
-        ],
-      },
-    })
-  }
-
-  it('uses the streamed cover while it shows the playing track', () => {
-    const track = makeTrack({ artwork_key: null })
-    const w = mountForPlayer(track, '/cover-cache/streamed.jpg')
-    expect(w.get('img').attributes('src')).toBe('/cover-cache/streamed.jpg')
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    catalogApi.ResolveCatalogTrackCover.mockResolvedValue('')
   })
 
-  it('falls back to the local artwork when no streamed cover is set', () => {
-    const track = makeTrack({ artwork_key: 'local-key' })
-    const w = mountForPlayer(track, null)
+  function mountDrawerWithStore() {
+    return mount(TrackInfoDrawer)
+  }
+
+  it('keeps showing the opened track and its cover after playback moves on', async () => {
+    catalogApi.ResolveCatalogTrackCover.mockResolvedValue('/cover-cache/opened.jpg')
+    const store = usePlayerStore()
+    const opened = makeTrack({ id: 'remote-opened', artwork_key: null, availability: 'remote' })
+    store.openTrackInfo(opened)
+    await flushPromises()
+
+    const w = mountDrawerWithStore()
+    expect(w.get('img').attributes('src')).toBe('/cover-cache/opened.jpg')
+    expect(w.text()).toContain('My Song')
+
+    store.currentTrack = makeTrack({ id: 'another-track', title: 'Another Song' })
+    await flushPromises()
+    expect(w.get('img').attributes('src')).toBe('/cover-cache/opened.jpg')
+    expect(w.text()).toContain('My Song')
+  })
+
+  it('resolves a cover by the newly opened row identity', async () => {
+    const store = usePlayerStore()
+    const first = makeTrack({ id: 'remote-1', artwork_key: null, availability: 'remote' })
+    store.openTrackInfo(first)
+    await flushPromises()
+
+    catalogApi.ResolveCatalogTrackCover.mockResolvedValue('/cover-cache/second.jpg')
+    store.openTrackInfo(makeTrack({ id: 'remote-2', artwork_key: null, availability: 'remote' }))
+    await flushPromises()
+
+    expect(catalogApi.ResolveCatalogTrackCover).toHaveBeenCalledWith('remote-2')
+    const w = mountDrawerWithStore()
+    expect(w.get('img').attributes('src')).toBe('/cover-cache/second.jpg')
+  })
+
+  it('does not ask for a cover the row already has', async () => {
+    const store = usePlayerStore()
+    store.openTrackInfo(makeTrack({ id: 'local-1', artwork_key: 'local-key' }))
+    await flushPromises()
+
+    expect(catalogApi.ResolveCatalogTrackCover).not.toHaveBeenCalled()
+    const w = mountDrawerWithStore()
     expect(w.get('img').attributes('src')).toContain('local-key')
   })
 })

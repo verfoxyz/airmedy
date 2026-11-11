@@ -59,10 +59,7 @@ func (s *Service) PromoteCachedFile(
 		return "", fmt.Errorf("promote: resolve download directory: %w", err)
 	}
 	content := domain.ResolveDownloadContent(settings)
-	coverURL := ""
-	if content.Cover {
-		coverURL = s.coverURL(track.ID)
-	}
+	coverURL, coverData, coverMIME := s.promoteCover(ctx, track, content.Cover)
 
 	finalized, err := s.finalizer.Finalize(ctx, FinalizeInput{
 		Path:        localPath,
@@ -72,6 +69,8 @@ func (s *Service) PromoteCachedFile(
 		Quality:     quality,
 		PlaylistID:  nil,
 		CoverURL:    coverURL,
+		CoverData:   coverData,
+		CoverMIME:   coverMIME,
 		Content:     content,
 	})
 	if err != nil {
@@ -178,6 +177,35 @@ func (s *Service) promoteSaved(ctx context.Context, track *domain.TrackDTO, play
 	if err := s.cached.DiscardEntry(ctx, track); err != nil {
 		s.logger.Warn("promote: cannot drop the promoted cache entry", "track_id", track.ID, "error", err)
 	}
+}
+
+// promoteCover finds artwork for a streamed row without a search: the URL the
+// search remembered, then the URL stored with the cached cover, and finally the
+// cached bytes themselves. Bytes win because a promotion must embed the image
+// the app has been showing even when the image host no longer answers.
+func (s *Service) promoteCover(ctx context.Context, track *domain.TrackDTO, want bool) (string, []byte, string) {
+	if !want || track == nil {
+		return "", nil, ""
+	}
+	provider := domain.NormalizeProvider(track.Provider)
+	externalID := strings.TrimSpace(track.ExternalID)
+
+	remote := s.coverURL(track.ID)
+	if remote == "" && s.coverAssets != nil && provider != "" && externalID != "" {
+		resolved, err := s.coverAssets.RemoteForIdentity(ctx, provider, externalID)
+		if err != nil {
+			s.logger.Debug("promote: cover url lookup failed", "track_id", track.ID, "error", err)
+		} else {
+			remote = resolved
+		}
+	}
+	if s.coverAssets != nil && provider != "" && externalID != "" {
+		data, mime, err := s.coverAssets.BytesForIdentity(ctx, provider, externalID)
+		if err == nil && len(data) > 0 {
+			return remote, data, mime
+		}
+	}
+	return remote, nil, ""
 }
 
 // cachedQualityRank treats an unknown cached tier as the lowest, so it never

@@ -12,14 +12,16 @@ const store = usePlayerStore()
 
 const track = computed(() => store.trackInfoTrack)
 
-// A streamed track has no artwork_key; the player status carries the resolved
-// host-local cover for whatever is playing. Only use it while the drawer shows
-// that same track — a drawer opened for another row keeps its own artwork.
-const artworkUrl = computed(() =>
-  track.value?.id === store.currentTrack?.id
-    ? (store.artworkUrlMd ?? buildArtworkUrl(track.value?.artwork_key, 'md'))
-    : buildArtworkUrl(track.value?.artwork_key, 'md'),
-)
+// The drawer shows the row it was opened for, even after playback moves on. A
+// streamed row has no artwork_key of its own yet, so its cover is resolved by
+// the row's remote identity; a local row keeps the artwork pipeline.
+const artworkUrl = computed(() => {
+  const current = track.value
+  if (!current) return undefined
+  return buildArtworkUrl(current.artwork_key, 'md')
+    || store.resolvedTrackCover(current.id)
+    || undefined
+})
 
 const audioQuality = computed(() => (track.value ? determineAudioQuality(track.value) : 'UNKNOWN'))
 

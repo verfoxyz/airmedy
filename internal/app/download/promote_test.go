@@ -73,6 +73,27 @@ func TestPromoteCachedFile_ReusesTheDownloadChain(t *testing.T) {
 	assert.Equal(t, 1, tracks, "promotion must leave exactly one row for the identity")
 }
 
+func TestPromoteCachedFile_EmbedsTheCachedCover(t *testing.T) {
+	h := newHarness(t)
+	h.settings.withCover = true
+	h.rebuild()
+	h.coverAssets.data = []byte("cached-jpeg")
+	h.coverAssets.mime = "image/jpeg"
+	h.coverAssets.remote = "https://cdn.example/cover.jpg"
+
+	ctx := context.Background()
+	remote := h.seedRemote(t, "remote-cover")
+	cacheFile := filepath.Join(t.TempDir(), "cached.audio")
+	require.NoError(t, os.WriteFile(cacheFile, []byte("cached-audio"), 0o644))
+
+	_, err := h.svc.PromoteCachedFile(ctx, remote, cacheFile, "320k")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("cached-jpeg"), h.finalizer.last.CoverData,
+		"the cached image is embedded without another download")
+	assert.Equal(t, "image/jpeg", h.finalizer.last.CoverMIME)
+	assert.Equal(t, "https://cdn.example/cover.jpg", h.finalizer.last.CoverURL)
+}
+
 func TestPromoteCachedFile_MissingCacheFileFails(t *testing.T) {
 	h := newHarness(t)
 	remote := h.seedRemote(t, "remote-2")

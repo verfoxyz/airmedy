@@ -46,6 +46,7 @@ func TestModuleResolvesWithThePortsAppModuleProvides(t *testing.T) {
 			func() LibraryImporter { return stubLibrary{} },
 			func() PlaylistAdder { return stubPlaylist{} },
 			func() CachedAudio { return stubCachedAudio{} },
+			func() domain.CoverIdentityAssets { return stubCoverAssetsPort{} },
 		),
 		Module,
 		fx.Invoke(func(*Service) {}),
@@ -67,6 +68,23 @@ func (stubCachedAudio) EnsureComplete(context.Context, *domain.TrackDTO) (<-chan
 }
 func (stubCachedAudio) MarkPendingPromote(context.Context, *domain.TrackDTO) error { return nil }
 func (stubCachedAudio) DiscardEntry(context.Context, *domain.TrackDTO) error       { return nil }
+
+type stubCoverAssetsPort struct {
+	asset  string
+	remote string
+	data   []byte
+	mime   string
+}
+
+func (s stubCoverAssetsPort) AssetForIdentity(context.Context, string, string) (string, error) {
+	return s.asset, nil
+}
+func (s stubCoverAssetsPort) RemoteForIdentity(context.Context, string, string) (string, error) {
+	return s.remote, nil
+}
+func (s stubCoverAssetsPort) BytesForIdentity(context.Context, string, string) ([]byte, string, error) {
+	return s.data, s.mime, nil
+}
 
 type stubDownloader struct{}
 

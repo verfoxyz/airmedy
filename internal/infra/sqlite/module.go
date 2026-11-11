@@ -9,6 +9,7 @@ import (
 var Module = fx.Module("sqlite",
 	fx.Provide(
 		func(db *DB) domain.TrackRepository { return NewTrackRepository(db) },
+		func(db *DB) domain.TrackArtworkStore { return newTrackRepository(db) },
 		func(db *DB, tracks domain.TrackRepository) domain.TrackQueryRepository {
 			return NewTrackQueryRepository(db, tracks)
 		},

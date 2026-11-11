@@ -125,3 +125,76 @@ func TestCoverCacheLimitClampsTheDeclaredSetting(t *testing.T) {
 	assert.Equal(t, int64(domain.MaxCatalogCoverCacheMB)<<20,
 		service.coverCacheLimitBytes(context.Background(), "wy"))
 }
+
+type fakeCoverAssets struct {
+	asset  string
+	remote string
+	err    error
+}
+
+func (f fakeCoverAssets) AssetForIdentity(context.Context, string, string) (string, error) {
+	return f.asset, f.err
+}
+
+func (f fakeCoverAssets) RemoteForIdentity(context.Context, string, string) (string, error) {
+	return f.remote, f.err
+}
+
+func (f fakeCoverAssets) BytesForIdentity(context.Context, string, string) ([]byte, string, error) {
+	return nil, "", nil
+}
+
+func TestResolveTrackCoverUsesTheRowsOwnIdentity(t *testing.T) {
+	cache := &fakeCoverCache{asset: "/cover-cache/a.jpg"}
+	service := NewService(Deps{
+		Covers:      cache,
+		CoverAssets: fakeCoverAssets{asset: "/cover-cache/a.jpg"},
+		LocalTracks: fakeLocalTracks{track: &domain.TrackDTO{Track: domain.Track{
+			ID:           "remote-1",
+			Path:         domain.RemotePath("wy", "42"),
+			Availability: domain.AvailabilityRemote,
+			Provider:     "wy",
+			ExternalID:   "42",
+		}}},
+	})
+
+	url, err := service.ResolveTrackCover(context.Background(), "remote-1")
+	require.NoError(t, err)
+	assert.Equal(t, "/cover-cache/a.jpg", url)
+	assert.Empty(t, cache.calls, "a cached asset must not trigger a download")
+}
+
+func TestResolveTrackCoverRedownloadsWhenTheFileWasEvicted(t *testing.T) {
+	cache := &fakeCoverCache{asset: "/cover-cache/a.jpg"}
+	service := NewService(Deps{
+		Covers:      cache,
+		CoverAssets: fakeCoverAssets{remote: "https://cdn.example/a.jpg"},
+		LocalTracks: fakeLocalTracks{track: &domain.TrackDTO{Track: domain.Track{
+			ID:           "remote-1",
+			Path:         domain.RemotePath("wy", "42"),
+			Availability: domain.AvailabilityRemote,
+			Provider:     "wy",
+			ExternalID:   "42",
+		}}},
+	})
+
+	url, err := service.ResolveTrackCover(context.Background(), "remote-1")
+	require.NoError(t, err)
+	assert.Equal(t, "/cover-cache/a.jpg", url)
+	require.Len(t, cache.calls, 1)
+	assert.Equal(t, "https://cdn.example/a.jpg", cache.calls[0].url)
+}
+
+func TestResolveTrackCoverIgnoresLocalRowsAndUnknownIdentities(t *testing.T) {
+	service := NewService(Deps{
+		Covers:      &fakeCoverCache{},
+		CoverAssets: fakeCoverAssets{},
+		LocalTracks: fakeLocalTracks{track: &domain.TrackDTO{Track: domain.Track{
+			ID: "local-1", Path: "C:/Music/a.flac", Availability: domain.AvailabilityReady,
+		}}},
+	})
+
+	url, err := service.ResolveTrackCover(context.Background(), "local-1")
+	require.NoError(t, err)
+	assert.Empty(t, url, "a local row renders through its artwork_key")
+}

@@ -369,6 +369,13 @@ func (s *CatalogService) PrepareCatalogPlayback(request CatalogActionRequest) (s
 	return track.ID, nil
 }
 
+// ResolveCatalogTrackCover resolves the host-local cover for one library row by
+// its own remote identity, so the track info drawer can show artwork for a
+// streamed row that has no artwork_key yet. An empty string means "no cover".
+func (s *CatalogService) ResolveCatalogTrackCover(trackID string) (string, error) {
+	return s.svc.ResolveTrackCover(context.Background(), trackID)
+}
+
 // translateCatalogActionError turns a domain failure into the message the frontend
 // surfaces. The machine sentinels are kept in the text so a bug report is
 // searchable, and the wording stays short enough for a toast.

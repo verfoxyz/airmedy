@@ -293,6 +293,22 @@ type CoverPinner interface {
 	Unpin(ctx context.Context, provider, externalID string) error
 }
 
+// CoverIdentityAssets answers cover questions by remote identity.
+//
+// It is separate from CatalogCoverCache because it serves a different lifecycle:
+// Get caches an image a search reported, while these methods reuse whatever is
+// already cached — for a streamed row that never had an artwork_key, and for a
+// promotion that must embed the same image. Every method treats "not cached" as
+// an empty result, not an error, because the UI falls back to a placeholder.
+type CoverIdentityAssets interface {
+	// AssetForIdentity returns the WebView path of the cached cover.
+	AssetForIdentity(ctx context.Context, provider, externalID string) (string, error)
+	// RemoteForIdentity returns the URL the cached cover came from.
+	RemoteForIdentity(ctx context.Context, provider, externalID string) (string, error)
+	// BytesForIdentity returns the cached image itself.
+	BytesForIdentity(ctx context.Context, provider, externalID string) ([]byte, string, error)
+}
+
 // CatalogLocalQuery asks whether an on-disk track already represents a search
 // row. Matching is deliberately strict (same normalised title, same primary
 // artist, duration within ±3s) so a live version or a cover is not mistaken for

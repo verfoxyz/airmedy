@@ -85,6 +85,7 @@ type Service struct {
 	merger        *Merger
 	settings      SettingsReader
 	cached        CachedAudio
+	coverAssets   domain.CoverIdentityAssets
 	lyrics        LyricsWriter
 	remover       LocalFileRemover
 	logger        *slog.Logger
@@ -124,6 +125,7 @@ func NewService(
 	merger *Merger,
 	settings SettingsReader,
 	cached CachedAudio,
+	coverAssets domain.CoverIdentityAssets,
 	logger *slog.Logger,
 ) *Service {
 	return &Service{
@@ -136,6 +138,7 @@ func NewService(
 		merger:        merger,
 		settings:      settings,
 		cached:        cached,
+		coverAssets:   coverAssets,
 		logger:        logger,
 		pollInterval:  defaultPollInterval,
 		now:           time.Now,

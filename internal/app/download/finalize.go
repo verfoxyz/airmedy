@@ -88,6 +88,12 @@ type FinalizeInput struct {
 	PlaylistID *string
 	// CoverURL, when non-empty, is fetched and embedded as the cover image.
 	CoverURL string
+	// CoverData is an already-cached cover image. When present it is embedded as
+	// is and CoverURL is not fetched: a promotion of a streamed file must not
+	// depend on the image host still serving the URL.
+	CoverData []byte
+	// CoverMIME is the content type of CoverData.
+	CoverMIME string
 	// Content says which extras to fetch and write. Its zero value writes the
 	// audio file only, which is what a caller that predates the setting gets.
 	Content domain.DownloadContent
@@ -169,8 +175,8 @@ func (f *Finalizer) Finalize(ctx context.Context, in FinalizeInput) (FinalizeRes
 		Year:        yearComponent(in.Track.Year),
 		TrackNumber: f.trackNumber(in.Track),
 	}
-	if in.Content.Cover && strings.TrimSpace(in.CoverURL) != "" {
-		if err := f.attachCover(ctx, in.CoverURL, &update); err != nil {
+	if in.Content.Cover {
+		if err := f.attachCover(ctx, in.CoverURL, in.CoverData, in.CoverMIME, &update); err != nil {
 			// Cover art is a nicety: a dead URL must not fail the download.
 			f.logger.Warn("download: cover art unavailable", "track_id", in.Track.ID, "error", err)
 		}
@@ -246,8 +252,15 @@ func (f *Finalizer) Finalize(ctx context.Context, in FinalizeInput) (FinalizeRes
 	}, nil
 }
 
-// attachCover downloads and attaches the cover image, if there is a URL.
-func (f *Finalizer) attachCover(ctx context.Context, coverURL string, update *domain.MetadataUpdate) error {
+// attachCover attaches the cover image. Bytes the caller already has (a cached
+// stream cover, for a promotion) win over a URL, so no network round trip can
+// lose the artwork of a file that is otherwise complete.
+func (f *Finalizer) attachCover(ctx context.Context, coverURL string, coverData []byte, coverMIME string, update *domain.MetadataUpdate) error {
+	if len(coverData) > 0 {
+		update.ArtworkData = coverData
+		update.ArtworkMIME = coverMIME
+		return nil
+	}
 	if strings.TrimSpace(coverURL) == "" || f.artwork == nil {
 		return nil
 	}

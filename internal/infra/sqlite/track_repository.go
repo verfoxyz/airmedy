@@ -21,6 +21,12 @@ func NewTrackRepository(db *DB) domain.TrackRepository {
 	return &trackRepository{db: db}
 }
 
+// newTrackRepository is the concrete constructor for callers that need a method
+// outside the TrackRepository port (the artwork-key write).
+func newTrackRepository(db *DB) *trackRepository {
+	return &trackRepository{db: db}
+}
+
 func (r *trackRepository) GetByID(ctx context.Context, id string) (*domain.TrackDTO, error) {
 	query := fmt.Sprintf(`SELECT %s FROM tracks t WHERE t.id = ?`, trackSelectFields)
 	var track domain.Track
@@ -936,8 +942,23 @@ func (r *trackRepository) DeleteByPathPrefix(ctx context.Context, prefix string)
 	return nil
 }
 
+// SetTrackArtworkKey records the artwork cache key on one row. A streamed track
+// has no file to re-import, so its cover arrives this way once the image is in
+// the artwork cache; the rest of the row is untouched.
+func (r *trackRepository) SetTrackArtworkKey(ctx context.Context, trackID, artworkKey string) error {
+	if strings.TrimSpace(trackID) == "" {
+		return fmt.Errorf("set track artwork: empty track id")
+	}
+	if _, err := r.db.Ext(ctx).ExecContext(ctx,
+		"UPDATE tracks SET artwork_key = ?, updated_at = ? WHERE id = ?",
+		artworkKey, time.Now(), trackID,
+	); err != nil {
+		return fmt.Errorf("failed to set artwork key for %s: %w", trackID, err)
+	}
+	return nil
+}
+
 func (r *trackRepository) GetAllArtworkKeys(ctx context.Context) ([]string, error) {
-	// Artworks can be in tracks or albums (though they should be consistent)
 	query := `
 		SELECT DISTINCT artwork_key FROM tracks WHERE artwork_key IS NOT NULL AND artwork_key != ''
 		UNION
