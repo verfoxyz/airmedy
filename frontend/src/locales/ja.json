@@ -913,6 +913,8 @@
     "in_library": "ライブラリにあり",
     "load_failed": "おすすめを読み込めませんでした。",
     "search_artist": "{artist} を検索",
-    "listeners": "リスナー {count} 人"
+    "listeners": "リスナー {count} 人",
+    "matching": "照合中…",
+    "no_source": "再生可能なソースが見つかりません"
   }
 }

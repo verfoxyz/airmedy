@@ -913,6 +913,8 @@
     "in_library": "มีในไลบรารีแล้ว",
     "load_failed": "ไม่สามารถโหลดคำแนะนำได้",
     "search_artist": "ค้นหา {artist}",
-    "listeners": "ผู้ฟัง {count} คน"
+    "listeners": "ผู้ฟัง {count} คน",
+    "matching": "กำลังจับคู่…",
+    "no_source": "ไม่พบแหล่งที่เล่นได้"
   }
 }

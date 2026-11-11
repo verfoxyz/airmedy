@@ -913,6 +913,8 @@
     "in_library": "In der Bibliothek",
     "load_failed": "Empfehlungen konnten nicht geladen werden.",
     "search_artist": "Nach {artist} suchen",
-    "listeners": "{count} Hörer"
+    "listeners": "{count} Hörer",
+    "matching": "Wird abgeglichen…",
+    "no_source": "Keine abspielbare Quelle gefunden"
   }
 }

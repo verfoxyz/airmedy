@@ -29,6 +29,8 @@ const EXPECTED_KEYS = [
   'listeners',
   'load_failed',
   'loved',
+  'matching',
+  'no_source',
   'not_connected_description',
   'not_connected_title',
   'open_settings',

@@ -48,7 +48,7 @@ func (s *Service) MatchTrack(
 		if domain.NormalizationKey(row.Title) != wantedTitle {
 			continue
 		}
-		if len(row.Artists) == 0 || domain.NormalizationKey(row.Artists[0]) != wantedArtist {
+		if !hasArtist(row.Artists, wantedArtist) {
 			continue
 		}
 		if duration > 0 && row.Duration > 0 {
@@ -63,4 +63,21 @@ func (s *Service) MatchTrack(
 		matches = append(matches, row)
 	}
 	return matches, err
+}
+
+// hasArtist accepts a row whose credited artists include the wanted one.
+//
+// Last.fm names the primary artist, while a source may list it as a featured
+// artist or append collaborators; comparing only the first credit dropped
+// playable matches that the page could otherwise offer.
+func hasArtist(artists []string, wanted string) bool {
+	if wanted == "" {
+		return false
+	}
+	for _, artist := range artists {
+		if domain.NormalizationKey(artist) == wanted {
+			return true
+		}
+	}
+	return false
 }

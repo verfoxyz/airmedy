@@ -913,6 +913,8 @@
     "in_library": "라이브러리에 있음",
     "load_failed": "추천을 불러오지 못했습니다.",
     "search_artist": "{artist} 검색",
-    "listeners": "청취자 {count}명"
+    "listeners": "청취자 {count}명",
+    "matching": "매칭 중…",
+    "no_source": "재생 가능한 소스를 찾지 못했습니다"
   }
 }

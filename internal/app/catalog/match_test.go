@@ -78,6 +78,27 @@ func TestMatchTrackRespectsTheSourceFilter(t *testing.T) {
 	}
 }
 
+func TestMatchTrackAcceptsAnyCreditedArtist(t *testing.T) {
+	sources := fakeSources{"wy": wySource()}
+	searcher := &fakeSearcher{results: map[string]domain.PluginSearchResult{
+		"wy": {
+			Rows: []domain.PluginSearchResultRow{
+				{ExternalID: "featured", Title: "Song", Artists: []string{"Primary", "Featured"}},
+				{ExternalID: "unrelated", Title: "Song", Artists: []string{"Someone Else"}},
+			},
+		},
+	}}
+	svc := newTestService(sources, searcher, fakeResolver{"wy": true}, Config{})
+
+	rows, err := svc.MatchTrack(context.Background(), "Song", "Featured", 0, []string{"wy"})
+	if err != nil {
+		t.Fatalf("MatchTrack: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ExternalID != "featured" {
+		t.Fatalf("matches = %+v, want the row crediting the wanted artist", rows)
+	}
+}
+
 func TestMatchTrackIgnoresBlankIdentity(t *testing.T) {
 	svc := newTestService(fakeSources{"wy": wySource()}, &fakeSearcher{
 		results: map[string]domain.PluginSearchResult{

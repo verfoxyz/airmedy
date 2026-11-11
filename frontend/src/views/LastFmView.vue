@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onActivated, onMounted, ref } from 'vue'
+import { computed, onActivated, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { Events } from '@wailsio/runtime'
 import {
   AlertTriangle,
   Clock,
@@ -42,6 +43,13 @@ const loading = ref(false)
 const loaded = ref(false)
 /** loadError is a machine key the template words. */
 const loadError = ref('')
+/** matchDone turns rows still marked matching into "no playable source". */
+const matchDone = ref(false)
+let offMatch: (() => void) | null = null
+// A very fast match can beat the page response; keep it until the page exists.
+let pendingMatches: RecommendationTrackDTO[] = []
+let pendingMatchDone = false
+let pendingMatchUser = ''
 
 const status = computed(() => page.value?.status ?? '')
 const notConnected = computed(() => status.value === 'not_connected')
@@ -76,8 +84,20 @@ async function load(force: boolean) {
   if (loading.value) return
   loading.value = true
   loadError.value = ''
+  matchDone.value = false
   try {
     page.value = await LastFmService.GetRecommendations(force)
+    // An event that arrived while the request was in flight belongs to this
+    // page; apply it now that there are rows to update.
+    if (page.value && pendingMatchUser === page.value.username) {
+      if (pendingMatches.length > 0) {
+        page.value = applyMatchUpdate(page.value, pendingMatches)
+      }
+      if (pendingMatchDone) matchDone.value = true
+    }
+    pendingMatches = []
+    pendingMatchDone = false
+    pendingMatchUser = ''
   } catch (error) {
     console.error('Failed to load Last.fm recommendations', error)
     loadError.value = 'load_failed'
@@ -85,6 +105,66 @@ async function load(force: boolean) {
     loading.value = false
     loaded.value = true
   }
+}
+
+interface RecommendationMatchUpdate {
+  username?: string
+  items?: RecommendationTrackDTO[]
+  done?: boolean
+}
+
+/**
+ * applyMatchUpdate replaces rows by their stable match key.
+ *
+ * A matched row keeps its position in whichever lists contain it and gains the
+ * provider identity the play/save actions need.
+ */
+function applyMatchUpdate(
+  current: RecommendationPageDTO,
+  items: RecommendationTrackDTO[],
+): RecommendationPageDTO {
+  const matches = new Map<string, RecommendationTrackDTO>()
+  for (const item of items) {
+    if (item.match_key) matches.set(item.match_key, item)
+  }
+  const replace = (rows: RecommendationTrackDTO[] | undefined) =>
+    (rows ?? []).map((row) => {
+      const match = row.match_key ? matches.get(row.match_key) : undefined
+      return match ? { ...row, ...match, matching: false } : row
+    })
+
+  return {
+    ...current,
+    tracks: replace(current.tracks),
+    recent_tracks: replace(current.recent_tracks),
+    loved_tracks: replace(current.loved_tracks),
+    top_tracks: replace(current.top_tracks),
+  }
+}
+
+/**
+ * onRecommendationsMatched fills in matched rows as the backend finds them.
+ *
+ * Events are ignored for another account (the page shows one user); an update
+ * that arrives before the page response is buffered until `load` resolves.
+ */
+function onRecommendationsMatched(event: Events.WailsEvent) {
+  const update = (event.data ?? null) as RecommendationMatchUpdate | null
+  if (!update) return
+  if (!page.value) {
+    // The page request has not resolved yet; remember the update for it.
+    if (update.username) {
+      pendingMatchUser = update.username
+      pendingMatches.push(...(update.items ?? []))
+      pendingMatchDone = pendingMatchDone || update.done === true
+    }
+    return
+  }
+  if (update.username !== page.value.username) return
+  if (update.items && update.items.length > 0) {
+    page.value = applyMatchUpdate(page.value, update.items)
+  }
+  if (update.done) matchDone.value = true
 }
 
 /**
@@ -125,7 +205,13 @@ function listenersLabel(count: number): string {
 }
 
 onMounted(() => {
+  offMatch = Events.On('lastfm:recommendations-matched', onRecommendationsMatched)
   void load(false)
+})
+
+onUnmounted(() => {
+  offMatch?.()
+  offMatch = null
 })
 
 // KeepAlive re-activates the cached instance; a page that already loaded keeps
@@ -260,8 +346,9 @@ onActivated(() => {
           <div class="grid grid-cols-2 gap-x-4 gap-y-8 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
             <RecommendationCard
               v-for="track in page?.tracks ?? []"
-              :key="`${track.provider}/${track.external_id}`"
+              :key="track.match_key"
               :track="track"
+              :match-done="matchDone"
               @play="playTrack"
               @save="saveTrack"
             />
@@ -282,8 +369,8 @@ onActivated(() => {
             <h2 class="text-2xl font-bold tracking-tight">{{ rack.title }}</h2>
           </div>
           <div class="flex gap-4 overflow-x-auto pb-2 custom-scrollbar">
-            <div v-for="track in rack.tracks" :key="`${rack.key}-${track.provider}/${track.external_id}`" class="w-36 shrink-0">
-              <RecommendationCard :track="track" @play="playTrack" @save="saveTrack" />
+            <div v-for="track in rack.tracks" :key="`${rack.key}-${track.match_key}`" class="w-36 shrink-0">
+              <RecommendationCard :track="track" :match-done="matchDone" @play="playTrack" @save="saveTrack" />
             </div>
           </div>
         </section>

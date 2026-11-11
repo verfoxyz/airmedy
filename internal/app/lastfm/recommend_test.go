@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"airmedy/internal/domain"
 )
@@ -161,7 +162,16 @@ type fakeMatcher struct {
 	sources []domain.CatalogSearchSource
 	rows    map[string][]domain.CatalogSearchResult
 	errs    map[string]error
-	calls   []string
+	// sourceRows / sourceErrs let a test make one source fail and the next
+	// answer, or make a source return no match.
+	sourceRows map[string]map[string][]domain.CatalogSearchResult
+	sourceErrs map[string]map[string]error
+	// block, when set, holds every search until the test closes it. It proves
+	// GetRecommendations returns before matching completes.
+	block chan struct{}
+
+	calls       []string
+	sourceCalls []string
 }
 
 func (f *fakeMatcher) Sources(context.Context) ([]domain.CatalogSearchSource, error) {
@@ -169,12 +179,28 @@ func (f *fakeMatcher) Sources(context.Context) ([]domain.CatalogSearchSource, er
 }
 
 func (f *fakeMatcher) MatchTrack(
-	_ context.Context, title, artist string, _ int, _ []string,
+	_ context.Context, title, artist string, _ int, sources []string,
 ) ([]domain.CatalogSearchResult, error) {
+	source := ""
+	if len(sources) > 0 {
+		source = sources[0]
+	}
+
+	f.mu.Lock()
+	block := f.block
+	f.mu.Unlock()
+	if block != nil {
+		<-block
+	}
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	key := artist + "\x00" + title
 	f.calls = append(f.calls, key)
+	f.sourceCalls = append(f.sourceCalls, source+"|"+key)
+	if rows, ok := f.sourceRows[source][key]; ok {
+		return append([]domain.CatalogSearchResult{}, rows...), f.sourceErrs[source][key]
+	}
 	return append([]domain.CatalogSearchResult{}, f.rows[key]...), f.errs[key]
 }
 
@@ -182,6 +208,56 @@ func (f *fakeMatcher) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.calls)
+}
+
+func (f *fakeMatcher) sourcesCalled() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string{}, f.sourceCalls...)
+}
+
+// eventCapture records the matching progress events a Recommender emits.
+type eventCapture struct {
+	mu      sync.Mutex
+	updates []RecommendationMatchUpdate
+	ch      chan RecommendationMatchUpdate
+}
+
+func newEventCapture() *eventCapture {
+	return &eventCapture{ch: make(chan RecommendationMatchUpdate, 256)}
+}
+
+func (c *eventCapture) emit(name string, payload any) {
+	if name != recommendationsMatchedEvent {
+		return
+	}
+	update, ok := payload.(RecommendationMatchUpdate)
+	if !ok {
+		return
+	}
+	c.mu.Lock()
+	c.updates = append(c.updates, update)
+	c.mu.Unlock()
+	c.ch <- update
+}
+
+// waitDone drains updates until Done and returns every matched item.
+func (c *eventCapture) waitDone(t *testing.T) []RecommendedTrack {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	items := make([]RecommendedTrack, 0)
+	for {
+		select {
+		case update := <-c.ch:
+			items = append(items, update.Items...)
+			if update.Done {
+				return items
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for the final matching event")
+			return nil
+		}
+	}
 }
 
 // fakeStreamRepo implements only the two lookups the recommender uses; the
@@ -228,6 +304,15 @@ func connectedSource(recent []LastFmTrack) *fakeTrackSource {
 
 func newTestRecommender(client TrackSource, matcher CatalogMatcher, streams domain.StreamCacheRepository) *Recommender {
 	return NewRecommender(client, matcher, streams, slog.Default())
+}
+
+func newCapturingRecommender(
+	client TrackSource, matcher CatalogMatcher, streams domain.StreamCacheRepository,
+) (*Recommender, *eventCapture) {
+	recommender := newTestRecommender(client, matcher, streams)
+	capture := newEventCapture()
+	recommender.emitter = capture.emit
+	return recommender, capture
 }
 
 // --- Seed tests --------------------------------------------------------------
@@ -394,16 +479,20 @@ func TestNeighbourFallbackReplacesEmptySimilarTracks(t *testing.T) {
 			},
 		},
 	}
-	recommender := newTestRecommender(source, matcher, &fakeStreamRepo{})
+	recommender, events := newCapturingRecommender(source, matcher, &fakeStreamRepo{})
 	page, err := recommender.GetRecommendations(context.Background(), false)
 	if err != nil {
 		t.Fatalf("GetRecommendations: %v", err)
 	}
-	if len(page.Tracks) != 1 {
-		t.Fatalf("tracks = %+v, want the neighbour fallback row", page.Tracks)
+	if len(page.Tracks) != 1 || !page.Tracks[0].Matching || page.Tracks[0].Provider != "" {
+		t.Fatalf("initial tracks = %+v, want the raw fallback row still matching", page.Tracks)
 	}
-	if page.Tracks[0].Title != "Fallback Hit" || page.Tracks[0].Source != "fallback" {
-		t.Fatalf("track = %+v, want a row marked as fallback", page.Tracks[0])
+	items := events.waitDone(t)
+	if len(items) != 1 {
+		t.Fatalf("matched items = %+v, want the neighbour fallback row", items)
+	}
+	if items[0].Title != "Fallback Hit" || items[0].Source != "fallback" {
+		t.Fatalf("track = %+v, want a row marked as fallback", items[0])
 	}
 	if source.artistTopTracksCalls != 1 {
 		t.Fatalf("artist top-track calls = %d, want 1", source.artistTopTracksCalls)
@@ -422,10 +511,11 @@ func TestNeighbourFallbackRunsForTheFirstTenSeedsOnly(t *testing.T) {
 		source.artistTopTracks[neighbour] = []LastFmTrack{track(neighbour, "Hit "+strconv.Itoa(index))}
 	}
 
-	recommender := newTestRecommender(source, &fakeMatcher{}, &fakeStreamRepo{})
+	recommender, events := newCapturingRecommender(source, &fakeMatcher{}, &fakeStreamRepo{})
 	if _, err := recommender.GetRecommendations(context.Background(), false); err != nil {
 		t.Fatalf("GetRecommendations: %v", err)
 	}
+	events.waitDone(t)
 	if source.artistTopTracksCalls != fallbackSeedLimit {
 		t.Fatalf("artist top-track calls = %d, want %d", source.artistTopTracksCalls, fallbackSeedLimit)
 	}
@@ -496,13 +586,17 @@ func TestGlobalFallbackUsesTagsThenChart(t *testing.T) {
 			},
 		},
 	}
-	recommender := newTestRecommender(source, matcher, &fakeStreamRepo{})
+	recommender, events := newCapturingRecommender(source, matcher, &fakeStreamRepo{})
 	page, err := recommender.GetRecommendations(context.Background(), false)
 	if err != nil {
 		t.Fatalf("GetRecommendations: %v", err)
 	}
-	if len(page.Tracks) != 1 || page.Tracks[0].Source != "fallback" {
-		t.Fatalf("tracks = %+v, want the tag fallback row", page.Tracks)
+	if len(page.Tracks) != 1 || page.Tracks[0].Source != "fallback" || !page.Tracks[0].Matching {
+		t.Fatalf("tracks = %+v, want the raw tag fallback row", page.Tracks)
+	}
+	items := events.waitDone(t)
+	if len(items) != 1 || items[0].Source != "fallback" || items[0].Provider == "" {
+		t.Fatalf("matched items = %+v, want the cached tag fallback row", items)
 	}
 	if source.tagTopTracksCalls == 0 {
 		t.Fatal("the tag fallback must query tag.getTopTracks")
@@ -524,13 +618,17 @@ func TestGlobalFallbackFallsBackToTheChart(t *testing.T) {
 			},
 		},
 	}
-	recommender := newTestRecommender(source, matcher, &fakeStreamRepo{})
+	recommender, events := newCapturingRecommender(source, matcher, &fakeStreamRepo{})
 	page, err := recommender.GetRecommendations(context.Background(), false)
 	if err != nil {
 		t.Fatalf("GetRecommendations: %v", err)
 	}
 	if len(page.Tracks) != 1 || page.Tracks[0].Title != "Chart Hit" || page.Tracks[0].Source != "fallback" {
 		t.Fatalf("tracks = %+v, want the chart fallback row", page.Tracks)
+	}
+	items := events.waitDone(t)
+	if len(items) != 1 || items[0].Title != "Chart Hit" || items[0].Provider == "" {
+		t.Fatalf("matched items = %+v, want the chart fallback row", items)
 	}
 	if source.chartTopTracksCalls != 1 {
 		t.Fatalf("chart calls = %d, want 1", source.chartTopTracksCalls)
@@ -577,7 +675,7 @@ func TestMatchPrefersLocalThenCacheThenDownloadable(t *testing.T) {
 		byTitle: map[string]*domain.StreamCacheEntry{},
 	}
 
-	recommender := newTestRecommender(source, matcher, streams)
+	recommender, events := newCapturingRecommender(source, matcher, streams)
 	page, err := recommender.GetRecommendations(context.Background(), false)
 	if err != nil {
 		t.Fatalf("GetRecommendations: %v", err)
@@ -585,13 +683,17 @@ func TestMatchPrefersLocalThenCacheThenDownloadable(t *testing.T) {
 	if page.Status != StatusOK {
 		t.Fatalf("status = %q, want ok", page.Status)
 	}
+	if len(page.Tracks) != 4 || !page.Tracks[0].Matching {
+		t.Fatalf("initial tracks = %+v, want every Last.fm row before matching", page.Tracks)
+	}
 
+	items := events.waitDone(t)
 	got := map[string]RecommendedTrack{}
-	for _, row := range page.Tracks {
+	for _, row := range items {
 		got[row.Title] = row
 	}
 	if len(got) != 3 {
-		t.Fatalf("tracks = %d, want 3 (unplayable dropped): %+v", len(got), got)
+		t.Fatalf("matched items = %d, want 3 (unplayable dropped): %+v", len(got), got)
 	}
 	if got["Local"].LocalTrackID != "track-local" {
 		t.Fatalf("local row = %+v, want the in-library row", got["Local"])
@@ -603,25 +705,79 @@ func TestMatchPrefersLocalThenCacheThenDownloadable(t *testing.T) {
 		t.Fatalf("search row = %+v, want the downloadable hit", got["Search"])
 	}
 	if _, exists := got["Unplayable"]; exists {
-		t.Fatal("a row nothing can play must be dropped")
+		t.Fatal("a row nothing can play must not be emitted")
 	}
 }
 
-func TestMatchUsesAtMostTwoSources(t *testing.T) {
+func TestMatchSourcesPrioritizeFastProviders(t *testing.T) {
+	matcher := &fakeMatcher{
+		sources: []domain.CatalogSearchSource{{ID: "mg"}, {ID: "other"}, {ID: "kw"}, {ID: "wy"}},
+	}
+	recommender := newTestRecommender(connectedSource(nil), matcher, &fakeStreamRepo{})
+	sources := recommender.matchSources(context.Background())
+
+	if len(sources) != 2 || sources[0] != "wy" || sources[1] != "kw" {
+		t.Fatalf("sources = %v, want the two fastest configured sources", sources)
+	}
+}
+
+func TestMatchSlowFallsBackToTheSecondSource(t *testing.T) {
+	matcher := &fakeMatcher{
+		sources: []domain.CatalogSearchSource{{ID: "s1"}, {ID: "s2"}},
+		sourceRows: map[string]map[string][]domain.CatalogSearchResult{
+			"s2": {
+				"Artist\x00Song": {
+					{Provider: "s2", ExternalID: "2", Title: "Song", Artists: []string{"Artist"}, Downloadable: true},
+				},
+			},
+		},
+		sourceErrs: map[string]map[string]error{
+			"s1": {"Artist\x00Song": errors.New("source down")},
+		},
+	}
+	recommender := newTestRecommender(connectedSource(nil), matcher, &fakeStreamRepo{})
+	row, err := recommender.matchSlow(
+		RecommendedTrack{Title: "Song", Artists: []string{"Artist"}}, []string{"s1", "s2"},
+	)
+	if err != nil {
+		t.Fatalf("matchSlow: %v", err)
+	}
+	if row == nil || row.Provider != "s2" {
+		t.Fatalf("row = %+v, want the fallback source hit", row)
+	}
+	calls := matcher.sourcesCalled()
+	if len(calls) != 2 || calls[0] != "s1|Artist\x00Song" || calls[1] != "s2|Artist\x00Song" {
+		t.Fatalf("source calls = %v, want one attempt per source in order", calls)
+	}
+}
+
+func TestRecommendationsReturnBeforeMatchingCompletes(t *testing.T) {
 	source := connectedSource([]LastFmTrack{track("Seed Artist", "Seed")})
 	source.similarTracks["Seed Artist\x00Seed"] = []LastFmTrack{track("Artist", "One")}
 
+	block := make(chan struct{})
 	matcher := &fakeMatcher{
-		sources: []domain.CatalogSearchSource{{ID: "s3"}, {ID: "s1"}, {ID: "s2"}},
+		sources: []domain.CatalogSearchSource{{ID: "s1"}},
 		rows: map[string][]domain.CatalogSearchResult{
 			"Artist\x00One": {{Provider: "s1", ExternalID: "1", Title: "One", Artists: []string{"Artist"}, Downloadable: true}},
 		},
+		block: block,
 	}
-	recommender := newTestRecommender(source, matcher, &fakeStreamRepo{})
-	sources := recommender.searchSources(context.Background())
+	recommender, events := newCapturingRecommender(source, matcher, &fakeStreamRepo{})
 
-	if len(sources) != 2 || sources[0] != "s1" || sources[1] != "s2" {
-		t.Fatalf("sources = %v, want the first two sorted ids", sources)
+	page, err := recommender.GetRecommendations(context.Background(), false)
+	if err != nil {
+		t.Fatalf("GetRecommendations: %v", err)
+	}
+	// The call returned while the only source search is still blocked.
+	if len(page.Tracks) != 1 || !page.Tracks[0].Matching || !page.Matching {
+		t.Fatalf("page = %+v, want the raw row returned before matching", page)
+	}
+
+	close(block)
+	items := events.waitDone(t)
+	if len(items) != 1 || items[0].Provider != "s1" {
+		t.Fatalf("items = %+v, want the blocked search's result", items)
 	}
 }
 
@@ -654,19 +810,24 @@ func TestRecommendationsCacheAndForce(t *testing.T) {
 			"Artist\x00One": {{Provider: "s1", ExternalID: "1", Title: "One", Artists: []string{"Artist"}, Downloadable: true}},
 		},
 	}
-	recommender := newTestRecommender(source, matcher, &fakeStreamRepo{})
+	recommender, events := newCapturingRecommender(source, matcher, &fakeStreamRepo{})
 
 	if _, err := recommender.GetRecommendations(context.Background(), false); err != nil {
 		t.Fatalf("first build: %v", err)
 	}
+	events.waitDone(t)
 	firstSimilar := source.similarTrackCalls
 	firstMatches := matcher.callCount()
 	if firstSimilar != 1 || firstMatches != 1 {
 		t.Fatalf("first build made %d similar / %d match calls, want 1/1", firstSimilar, firstMatches)
 	}
 
-	if _, err := recommender.GetRecommendations(context.Background(), false); err != nil {
+	cached, err := recommender.GetRecommendations(context.Background(), false)
+	if err != nil {
 		t.Fatalf("cached build: %v", err)
+	}
+	if cached.Matching || len(cached.Tracks) != 1 || cached.Tracks[0].Provider == "" {
+		t.Fatalf("cached page = %+v, want the match cache applied without a job", cached)
 	}
 	if source.similarTrackCalls != firstSimilar {
 		t.Fatal("a cached page must not repeat similar-track requests")
@@ -675,11 +836,18 @@ func TestRecommendationsCacheAndForce(t *testing.T) {
 		t.Fatal("a cached page must not repeat catalogue matches")
 	}
 
-	if _, err := recommender.GetRecommendations(context.Background(), true); err != nil {
+	forced, err := recommender.GetRecommendations(context.Background(), true)
+	if err != nil {
 		t.Fatalf("forced build: %v", err)
 	}
 	if source.similarTrackCalls <= firstSimilar {
 		t.Fatal("force must skip the page cache and re-query similar tracks")
+	}
+	if matcher.callCount() != firstMatches {
+		t.Fatal("force must reuse the 30-minute match cache")
+	}
+	if forced.Matching || len(forced.Tracks) != 1 || forced.Tracks[0].Provider == "" {
+		t.Fatalf("forced page = %+v, want the cached match applied", forced)
 	}
 }
 
@@ -699,20 +867,25 @@ func TestRecommendationsPartialWhenSeedFails(t *testing.T) {
 	}
 }
 
-func TestRecommendationsEmptyWhenNoSources(t *testing.T) {
+func TestRecommendationsKeepRowsWhenNoSourceCanBeSearched(t *testing.T) {
 	source := connectedSource([]LastFmTrack{track("Seed Artist", "Seed")})
 	source.similarTracks["Seed Artist\x00Seed"] = []LastFmTrack{track("Artist", "One")}
 
-	recommender := newTestRecommender(source, &fakeMatcher{}, &fakeStreamRepo{})
+	recommender, events := newCapturingRecommender(source, &fakeMatcher{}, &fakeStreamRepo{})
 	page, err := recommender.GetRecommendations(context.Background(), false)
 	if err != nil {
 		t.Fatalf("GetRecommendations: %v", err)
 	}
-	if len(page.Tracks) != 0 {
-		t.Fatalf("tracks = %d, want 0 when no source can be searched", len(page.Tracks))
+	if len(page.Tracks) != 1 || !page.Tracks[0].Matching {
+		t.Fatalf("tracks = %+v, want the Last.fm row before matching", page.Tracks)
 	}
 	if page.Status != StatusOK {
 		t.Fatalf("status = %q, want ok", page.Status)
+	}
+
+	items := events.waitDone(t)
+	if len(items) != 0 {
+		t.Fatalf("items = %+v, want none without a source", items)
 	}
 }
 

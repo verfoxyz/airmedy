@@ -913,6 +913,8 @@
     "in_library": "Đã có trong thư viện",
     "load_failed": "Không thể tải gợi ý.",
     "search_artist": "Tìm {artist}",
-    "listeners": "{count} người nghe"
+    "listeners": "{count} người nghe",
+    "matching": "Đang khớp nguồn…",
+    "no_source": "Không tìm thấy nguồn phát được"
   }
 }

@@ -913,6 +913,8 @@
     "in_library": "En la biblioteca",
     "load_failed": "No se pudieron cargar las recomendaciones.",
     "search_artist": "Buscar {artist}",
-    "listeners": "{count} oyentes"
+    "listeners": "{count} oyentes",
+    "matching": "Buscando coincidencias…",
+    "no_source": "No se encontró una fuente reproducible"
   }
 }

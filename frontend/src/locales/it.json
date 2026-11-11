@@ -913,6 +913,8 @@
     "in_library": "Nella libreria",
     "load_failed": "Impossibile caricare i consigli.",
     "search_artist": "Cerca {artist}",
-    "listeners": "{count} ascoltatori"
+    "listeners": "{count} ascoltatori",
+    "matching": "Ricerca della corrispondenza…",
+    "no_source": "Nessuna fonte riproducibile trovata"
   }
 }

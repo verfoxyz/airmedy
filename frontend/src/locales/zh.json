@@ -913,6 +913,8 @@
     "in_library": "已在库中",
     "load_failed": "无法加载推荐。",
     "search_artist": "搜索 {artist}",
-    "listeners": "{count} 位听众"
+    "listeners": "{count} 位听众",
+    "matching": "匹配中…",
+    "no_source": "未找到可播放源"
   }
 }

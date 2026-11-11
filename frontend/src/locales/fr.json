@@ -913,6 +913,8 @@
     "in_library": "Dans la bibliothèque",
     "load_failed": "Impossible de charger les recommandations.",
     "search_artist": "Rechercher {artist}",
-    "listeners": "{count} auditeurs"
+    "listeners": "{count} auditeurs",
+    "matching": "Recherche de correspondance…",
+    "no_source": "Aucune source lisible trouvée"
   }
 }

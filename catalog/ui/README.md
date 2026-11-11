@@ -206,12 +206,18 @@ logic: seeding, scoring, rate limiting, matching and the 30-minute cache live in
 Every row is a catalogue row: `RecommendationTrackDTO` carries the same provider,
 identity, cover, state and `local_track_id` fields as `CatalogRowDTO`, so the card
 calls the shared `catalog` store (`preparePlayback` / `save`) and a local file plays
-from disk without a download. Rows the matcher cannot attach to a playable source
-are absent from the payload, not rendered disabled.
+from disk without a download.
 
-Status is `ok`, `partial` (a banner above the lists) or `not_connected` (a card that
-routes to `/settings/integrations`). The page loads once on mount/activation; the
-refresh button is the only path that passes `force=true`.
+`GetRecommendations` is two-phase. The first response is the Last.fm-side page:
+rows carry `matching=true` and `match_key`, with no provider yet. Source matching
+then runs in the background (one source at a time in `wy → kg → tx → kw → mg`
+order, two sources at most, four concurrent) and emits
+`lastfm:recommendations-matched` with `{username, items, done}` in batches of 1–3
+or every 500 ms. The page replaces rows by `match_key`; a row that finishes
+without a provider renders "no playable source" once `done` arrives. Match
+outcomes are cached for 30 minutes, so reopening or refreshing the page reuses
+them without another search. The page status is still `ok`, `partial` (a Last.fm
+request failed) or `not_connected`; matching failures never blank the page.
 
 When `track.getSimilar` has nothing for a seed, the backend falls back to the seed's
 similar artists and their top tracks (first ten seeds only). If every seed is empty,

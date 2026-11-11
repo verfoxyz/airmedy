@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"airmedy/internal/domain"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // Recommendation page status. The frontend words each one, so they are machine
@@ -56,12 +58,17 @@ const (
 	// matchCacheTTL is how long one catalogue match is reused. It is shared by
 	// all four lists so the same track is never searched twice.
 	matchCacheTTL = 30 * time.Minute
-	// maxMatchCandidates bounds one page build's catalogue searches. Four lists
-	// can overlap heavily; this keeps a cold page from turning into hundreds of
-	// source calls.
-	maxMatchCandidates = 120
+	// maxMatchCandidates bounds one page's background matching. It matches the
+	// four lists after de-duplication, not 60 per list.
+	maxMatchCandidates = 60
 	// matchConcurrency is the number of catalogue searches in flight.
-	matchConcurrency = 2
+	matchConcurrency = 4
+	// matchCandidateTimeout bounds one candidate's attempt against one source.
+	matchCandidateTimeout = 15 * time.Second
+	// matchEventBatch flushes the event buffer once this many rows are ready.
+	matchEventBatch = 3
+	// matchEventInterval is the periodic flush for a slow trickle of matches.
+	matchEventInterval = 500 * time.Millisecond
 	// fallbackSeedLimit bounds how many seeds run the neighbour fallback. A cold
 	// account's seeds all miss track.getSimilar, and the fallback costs four
 	// requests per seed.
@@ -77,6 +84,16 @@ const (
 	// fallbackChartLimit is the global chart window of the last resort.
 	fallbackChartLimit = 20
 )
+
+// sourcePriority is the matching order: fast sources first, then anything else
+// a plugin reports. One candidate tries at most two of them.
+var sourcePriority = map[string]int{
+	"wy": 0,
+	"kg": 1,
+	"tx": 2,
+	"kw": 3,
+	"mg": 4,
+}
 
 // Source weights for the combined list. A recent seed is the strongest signal,
 // a loved track is deliberate but older, and a top track is already a favourite
@@ -126,34 +143,53 @@ type CatalogMatcher interface {
 	Sources(ctx context.Context) ([]domain.CatalogSearchSource, error)
 }
 
-// RecommendedTrack is one playable recommendation.
+// RecommendedTrack is one recommendation, before or after source matching.
 //
-// The fields mirror a catalogue row (provider/external id, state, local track)
-// so the frontend can feed it to the same play/save actions as a search row.
+// The first page ships Last.fm's own rows with Matching=true and no provider.
+// The background matcher then sends the same row (same MatchKey) with provider
+// fields filled in and Matching=false. A row that finished without a provider
+// is the frontend's "no playable source" state.
 type RecommendedTrack struct {
-	Provider   string
-	ExternalID string
-	Title      string
-	Artists    []string
-	AlbumName  string
-	Duration   int
-	CoverURL   string
+	Provider   string   `json:"provider"`
+	ExternalID string   `json:"external_id"`
+	Title      string   `json:"title"`
+	Artists    []string `json:"artists"`
+	AlbumName  string   `json:"album_name"`
+	Duration   int      `json:"duration"`
+	CoverURL   string   `json:"cover_url"`
 	// CoverURLLarge is the rendition the saved file should embed.
-	CoverURLLarge string
-	Downloadable  bool
+	CoverURLLarge string `json:"cover_url_large"`
+	Downloadable  bool   `json:"downloadable"`
 	// DownloadBlockedReason is a machine kind ("no_resolver") the frontend words.
-	DownloadBlockedReason string
+	DownloadBlockedReason string `json:"blocked_reason"`
 	// State is the catalogue row state: "", in_library, downloading, failed, saved.
-	State string
+	State string `json:"state"`
 	// LocalTrackID is an on-disk row that already represents this song.
-	LocalTrackID string
-	Sources      []string
+	LocalTrackID string   `json:"local_track_id"`
+	Sources      []string `json:"sources"`
 	// Score is the recommendation score within the list that contains it.
-	Score float64
+	Score float64 `json:"score"`
 	// Source is "similar" for a direct track.getSimilar hit and "fallback" for a
 	// row produced by the neighbour/tag/chart fallback chain. The page renders
 	// both as ordinary recommendations.
-	Source string
+	Source string `json:"source"`
+	// MatchKey is the stable artist+title identity shared by the initial row and
+	// every event update. The frontend replaces rows by this key.
+	MatchKey string `json:"match_key"`
+	// Matching is true while the background matcher has not finished this row.
+	Matching bool `json:"matching"`
+}
+
+// RecommendationMatchUpdate is the payload of lastfm:recommendations-matched.
+//
+// The backend sends 1–3 matched rows at a time, coalesced every 500 ms. Done is
+// the final frame: rows still marked Matching on the page have no playable
+// source. It is emitted from the app layer, so the JSON tags are the frontend
+// contract.
+type RecommendationMatchUpdate struct {
+	Username string             `json:"username"`
+	Items    []RecommendedTrack `json:"items"`
+	Done     bool               `json:"done"`
 }
 
 // SimilarArtist is one artist from artist.getSimilar.
@@ -170,13 +206,22 @@ type RecommendationPage struct {
 	// Username is the connected account, shown in the page header.
 	Username  string
 	AvatarURL string
-	Tracks    []RecommendedTrack
+	// Matching reports whether any row still awaits source matching.
+	Matching bool
+	Tracks   []RecommendedTrack
 	// RecentTracks / LovedTracks / TopTracks are the three per-seed-source lists.
 	RecentTracks   []RecommendedTrack
 	LovedTracks    []RecommendedTrack
 	TopTracks      []RecommendedTrack
 	SimilarArtists []SimilarArtist
 }
+
+// EventEmitter delivers one frontend event. It is a seam so the matcher can be
+// tested without a running Wails application.
+type EventEmitter func(name string, payload any)
+
+// recommendationsMatchedEvent is emitted as matching progresses.
+const recommendationsMatchedEvent = "lastfm:recommendations-matched"
 
 // Recommender builds the personalised page from Last.fm seeds and catalogue
 // matches.
@@ -186,11 +231,15 @@ type Recommender struct {
 	streams domain.StreamCacheRepository
 	logger  *slog.Logger
 	now     func() time.Time
+	// emitter delivers match progress. nil disables events (tests that do not
+	// inspect them).
+	emitter EventEmitter
 
-	mu       sync.Mutex
-	pages    map[string]cachedPage
-	matches  map[string]cachedMatch
-	inflight map[string]*inflightBuild
+	mu           sync.Mutex
+	pages        map[string]cachedPage
+	matches      map[string]cachedMatch
+	inflight     map[string]*inflightBuild
+	matchRunning map[string]bool
 }
 
 type cachedPage struct {
@@ -220,14 +269,16 @@ func NewRecommender(
 		logger = slog.Default()
 	}
 	return &Recommender{
-		client:   client,
-		matcher:  matcher,
-		streams:  streams,
-		logger:   logger,
-		now:      time.Now,
-		pages:    make(map[string]cachedPage),
-		matches:  make(map[string]cachedMatch),
-		inflight: make(map[string]*inflightBuild),
+		client:       client,
+		matcher:      matcher,
+		streams:      streams,
+		logger:       logger,
+		now:          time.Now,
+		emitter:      emitToWails,
+		pages:        make(map[string]cachedPage),
+		matches:      make(map[string]cachedMatch),
+		inflight:     make(map[string]*inflightBuild),
+		matchRunning: make(map[string]bool),
 	}
 }
 
@@ -252,12 +303,41 @@ func (r *Recommender) GetRecommendations(ctx context.Context, force bool) (Recom
 	cacheKey := username + "|" + seedHash(seeds.all)
 	if !force {
 		if page, ok := r.cachedPage(cacheKey); ok {
-			return page, nil
+			return r.decorateAndStart(ctx, cacheKey, username, page), nil
 		}
 	}
 
 	page, err := r.buildOnce(ctx, cacheKey, username, avatarURL, seeds, partial)
-	return page, err
+	if err != nil {
+		return page, err
+	}
+	return r.decorateAndStart(ctx, cacheKey, username, page), nil
+}
+
+// decorateAndStart applies cached matches to a fresh page and starts the
+// background matcher for the rest.
+//
+// The page is returned before any source search runs: Last.fm rows are visible
+// immediately, and the browser fills in provider identities through
+// lastfm:recommendations-matched. Rows whose match is already cached come back
+// complete, so reopening the page does not flash "matching".
+func (r *Recommender) decorateAndStart(
+	ctx context.Context, cacheKey, username string, page RecommendationPage,
+) RecommendationPage {
+	page, pending := r.decoratePage(page)
+	if len(pending) == 0 {
+		return page
+	}
+	sources := r.matchSources(ctx)
+	if len(sources) == 0 {
+		// Nothing can be searched: finish immediately instead of leaving the page
+		// waiting forever.
+		page.Matching = true
+		r.startMatching(cacheKey, username, pending, nil)
+		return page
+	}
+	r.startMatching(cacheKey, username, pending, sources)
+	return page
 }
 
 // seedSet is the merged input of one build.
@@ -435,29 +515,19 @@ func (r *Recommender) build(
 		}
 	}
 
-	sources := r.searchSources(ctx)
-	matchInput := orderedCandidates(combined, recentList, lovedList, topList)
-	if len(matchInput) == 0 {
-		matchInput = orderedCandidates(globalFallback)
-	}
-	matches, matchFailed := r.matchCandidates(ctx, matchInput, sources)
-	if matchFailed {
-		partial = true
-	}
-
-	page.Tracks = renderList(combined, matches, maxPlayable, combinedScore)
+	page.Tracks = renderCandidates(combined, maxPlayable, combinedScore)
 	if len(page.Tracks) == 0 && len(globalFallback) > 0 {
-		page.Tracks = renderList(globalFallback, matches, maxPlayable, func(entry *candidate) float64 {
+		page.Tracks = renderCandidates(globalFallback, maxPlayable, func(entry *candidate) float64 {
 			return entry.score
 		})
 	}
-	page.RecentTracks = renderList(recentList, matches, perKindLimit, func(entry *candidate) float64 {
+	page.RecentTracks = renderCandidates(recentList, perKindLimit, func(entry *candidate) float64 {
 		return float64(entry.hits[seedRecent])
 	})
-	page.LovedTracks = renderList(lovedList, matches, perKindLimit, func(entry *candidate) float64 {
+	page.LovedTracks = renderCandidates(lovedList, perKindLimit, func(entry *candidate) float64 {
 		return float64(entry.hits[seedLoved])
 	})
-	page.TopTracks = renderList(topList, matches, perKindLimit, func(entry *candidate) float64 {
+	page.TopTracks = renderCandidates(topList, perKindLimit, func(entry *candidate) float64 {
 		return float64(entry.hits[seedTop])
 	})
 
@@ -855,27 +925,6 @@ func rankCombined(candidates map[string]*candidate) []*candidate {
 	return list
 }
 
-// orderedCandidates flattens the lists for matching, combined first, without
-// duplicate keys.
-func orderedCandidates(lists ...[]*candidate) []*candidate {
-	seen := make(map[string]struct{})
-	ordered := make([]*candidate, 0)
-	for _, list := range lists {
-		for _, entry := range list {
-			key := candidateKey(entry.track.Artist, entry.track.Title)
-			if _, duplicate := seen[key]; duplicate {
-				continue
-			}
-			seen[key] = struct{}{}
-			ordered = append(ordered, entry)
-			if len(ordered) >= maxMatchCandidates {
-				return ordered
-			}
-		}
-	}
-	return ordered
-}
-
 // --- Similar artists ---------------------------------------------------------
 
 func (r *Recommender) collectSimilarArtists(ctx context.Context, seeds seedSet) ([]SimilarArtist, bool) {
@@ -987,9 +1036,10 @@ func (r *Recommender) collectSimilarArtists(ctx context.Context, seeds seedSet) 
 
 // --- Catalogue matching ------------------------------------------------------
 
-// searchSources resolves the source filter used for matching. The page asks at
-// most two sources per track, which is what the specification budgets.
-func (r *Recommender) searchSources(ctx context.Context) []string {
+// matchSources returns the sources in matching order, capped at the two a
+// candidate may try. Fast sources come first; any other plugin keeps an
+// alphabetical order after the known ones.
+func (r *Recommender) matchSources(ctx context.Context) []string {
 	if r.matcher == nil {
 		return nil
 	}
@@ -999,100 +1049,275 @@ func (r *Recommender) searchSources(ctx context.Context) []string {
 		return nil
 	}
 	ids := make([]string, 0, len(sources))
+	seen := make(map[string]struct{}, len(sources))
 	for _, source := range sources {
-		if id := strings.TrimSpace(source.ID); id != "" {
-			ids = append(ids, id)
+		id := strings.TrimSpace(source.ID)
+		if id == "" {
+			continue
 		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
 	}
-	sort.Strings(ids)
+	sort.SliceStable(ids, func(i, j int) bool {
+		left, right := sourceRank(ids[i]), sourceRank(ids[j])
+		if left != right {
+			return left < right
+		}
+		return ids[i] < ids[j]
+	})
 	if len(ids) > 2 {
 		ids = ids[:2]
 	}
 	return ids
 }
 
-// matchCandidates matches every candidate once and returns the chosen row per
-// key. The per-track result is cached for 30 minutes, so the four lists and a
-// later page build reuse the same search.
-func (r *Recommender) matchCandidates(
-	ctx context.Context, candidates []*candidate, sources []string,
-) (map[string]*domain.CatalogSearchResult, bool) {
-	matches := make(map[string]*domain.CatalogSearchResult, len(candidates))
-	if r.matcher == nil || len(sources) == 0 {
-		return matches, false
+func sourceRank(id string) int {
+	if rank, ok := sourcePriority[strings.ToLower(id)]; ok {
+		return rank
+	}
+	return len(sourcePriority)
+}
+
+// decoratePage applies already-known matches to the raw Last.fm rows and
+// returns the rows that still need a search.
+func (r *Recommender) decoratePage(page RecommendationPage) (RecommendationPage, []RecommendedTrack) {
+	matched := make(map[string]RecommendedTrack)
+	failed := make(map[string]struct{})
+	pendingSeen := make(map[string]struct{})
+	pending := make([]RecommendedTrack, 0)
+
+	for _, list := range [][]RecommendedTrack{page.Tracks, page.RecentTracks, page.LovedTracks, page.TopTracks} {
+		for _, row := range list {
+			key := row.MatchKey
+			if key == "" {
+				continue
+			}
+			if _, known := matched[key]; known {
+				continue
+			}
+			if _, known := failed[key]; known {
+				continue
+			}
+			if _, queued := pendingSeen[key]; queued {
+				continue
+			}
+			cached, ok := r.cachedMatch(key)
+			if !ok {
+				pendingSeen[key] = struct{}{}
+				pending = append(pending, row)
+				continue
+			}
+			if cached == nil {
+				// A cached "no match" is definitive for the cache window; the row
+				// renders as "no playable source" without another search.
+				failed[key] = struct{}{}
+				continue
+			}
+			matched[key] = matchedRecommended(row, cached)
+		}
+	}
+	if len(pending) > maxMatchCandidates {
+		pending = pending[:maxMatchCandidates]
 	}
 
-	matchCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
-	defer cancel()
+	page.Tracks = applyMatches(page.Tracks, matched, failed)
+	page.RecentTracks = applyMatches(page.RecentTracks, matched, failed)
+	page.LovedTracks = applyMatches(page.LovedTracks, matched, failed)
+	page.TopTracks = applyMatches(page.TopTracks, matched, failed)
+	page.Matching = len(pending) > 0
+	return page, pending
+}
 
-	var (
-		mu       sync.Mutex
-		wg       sync.WaitGroup
-		failures int
-		slots    = make(chan struct{}, matchConcurrency)
-	)
-	for _, entry := range candidates {
-		entry := entry
-		key := candidateKey(entry.track.Artist, entry.track.Title)
-		if row, ok := r.cachedMatch(key, sources); ok {
-			if row != nil {
-				matches[key] = row
-			}
+func applyMatches(
+	rows []RecommendedTrack, matched map[string]RecommendedTrack, failed map[string]struct{},
+) []RecommendedTrack {
+	if len(rows) == 0 {
+		return rows
+	}
+	result := make([]RecommendedTrack, len(rows))
+	for index, row := range rows {
+		if match, ok := matched[row.MatchKey]; ok {
+			result[index] = match
 			continue
 		}
+		if _, ok := failed[row.MatchKey]; ok {
+			row.Matching = false
+		}
+		result[index] = row
+	}
+	return result
+}
 
+// startMatching launches one background matcher per page key. A second request
+// while the job runs joins it instead of doubling the source calls.
+func (r *Recommender) startMatching(
+	cacheKey, username string, pending []RecommendedTrack, sources []string,
+) {
+	r.mu.Lock()
+	if r.matchRunning[cacheKey] {
+		r.mu.Unlock()
+		return
+	}
+	r.matchRunning[cacheKey] = true
+	r.mu.Unlock()
+
+	go r.runMatching(cacheKey, username, pending, sources)
+}
+
+// runMatching searches the pending rows and emits matches as they arrive.
+//
+// Matches are coalesced into batches of matchEventBatch or one event per
+// matchEventInterval, whichever comes first. The final event always carries
+// Done=true, even when nothing matched.
+func (r *Recommender) runMatching(
+	cacheKey, username string, pending []RecommendedTrack, sources []string,
+) {
+	defer func() {
+		r.mu.Lock()
+		delete(r.matchRunning, cacheKey)
+		r.mu.Unlock()
+	}()
+
+	if len(sources) == 0 || r.matcher == nil {
+		r.emitMatchUpdate(username, nil, true)
+		return
+	}
+
+	var (
+		bufferMu sync.Mutex
+		buffer   []RecommendedTrack
+	)
+	flush := func(done bool) {
+		bufferMu.Lock()
+		items := append([]RecommendedTrack{}, buffer...)
+		buffer = nil
+		bufferMu.Unlock()
+		if len(items) == 0 && !done {
+			return
+		}
+		r.emitMatchUpdate(username, items, done)
+	}
+
+	stop := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(matchEventInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				flush(false)
+			case <-stop:
+				return
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, matchConcurrency)
+	for _, row := range pending {
+		row := row
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			select {
-			case slots <- struct{}{}:
-			case <-matchCtx.Done():
-				mu.Lock()
-				failures++
-				mu.Unlock()
-				return
-			}
+			slots <- struct{}{}
 			defer func() { <-slots }()
 
-			row, err := r.matchOne(matchCtx, entry.track, sources)
-			mu.Lock()
-			defer mu.Unlock()
-			// A partial search failure still leaves usable rows; keep them and
-			// report the page as partial.
-			if row != nil {
-				r.storeMatch(key, sources, row)
-				matches[key] = row
-			} else if err == nil {
-				r.storeMatch(key, sources, nil)
+			match, err := r.matchSlow(row, sources)
+			// A failed search is cached as "no match" too: the page must not
+			// hammer a dead source on every refresh.
+			r.storeMatch(row.MatchKey, match)
+			if err != nil && match == nil {
+				r.logger.Debug("last.fm recommendations: match failed",
+					"artist", firstArtist(row.Artists), "title", row.Title, "error", err)
 			}
-			if err != nil {
-				failures++
-				if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-					r.logger.Debug("last.fm recommendations: match failed",
-						"artist", entry.track.Artist, "title", entry.track.Title, "error", err)
-				}
+			if match == nil {
+				return
+			}
+
+			item := matchedRecommended(row, match)
+			bufferMu.Lock()
+			buffer = append(buffer, item)
+			shouldFlush := len(buffer) >= matchEventBatch
+			bufferMu.Unlock()
+			if shouldFlush {
+				flush(false)
 			}
 		}()
 	}
 	wg.Wait()
-	return matches, failures > 0
+	close(stop)
+	<-stopped
+	flush(true)
 }
 
-// matchOne picks the first row across the priority documented in §4: an
-// on-disk file, then a cached stream, then a downloadable source hit.
-func (r *Recommender) matchOne(
-	ctx context.Context, track LastFmTrack, sources []string,
+// matchSlow tries the selected sources one at a time within one candidate
+// budget. The first source that yields a playable row wins; a failed source
+// moves to the next, up to two.
+func (r *Recommender) matchSlow(
+	track RecommendedTrack, sources []string,
 ) (*domain.CatalogSearchResult, error) {
-	rows, err := r.matcher.MatchTrack(ctx, track.Title, track.Artist, track.Duration, sources)
-	if err != nil && len(rows) == 0 {
-		return nil, err
-	}
-	if len(rows) == 0 {
-		return nil, err
+	artist := firstArtist(track.Artists)
+	if r.matcher == nil || artist == "" || strings.TrimSpace(track.Title) == "" {
+		return nil, nil
 	}
 
-	best := chooseMatch(ctx, r.streams, rows)
-	return best, err
+	ctx, cancel := context.WithTimeout(context.Background(), matchCandidateTimeout)
+	defer cancel()
+
+	var lastErr error
+	for index, source := range sources {
+		if index >= 2 {
+			break
+		}
+		rows, err := r.matcher.MatchTrack(ctx, track.Title, artist, track.Duration, []string{source})
+		best := chooseMatch(ctx, r.streams, rows)
+		if best != nil {
+			return best, nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, lastErr
+}
+
+func (r *Recommender) emitMatchUpdate(username string, items []RecommendedTrack, done bool) {
+	if r.emitter == nil {
+		return
+	}
+	if items == nil {
+		items = []RecommendedTrack{}
+	}
+	r.emitter(recommendationsMatchedEvent, RecommendationMatchUpdate{
+		Username: username,
+		Items:    items,
+		Done:     done,
+	})
+}
+
+// emitToWails is the production emitter. A missing application (unit tests)
+// simply drops the event.
+func emitToWails(name string, payload any) {
+	app := application.Get()
+	if app == nil || app.Event == nil {
+		return
+	}
+	app.Event.Emit(name, payload)
+}
+
+func firstArtist(artists []string) string {
+	if len(artists) > 0 {
+		return strings.TrimSpace(artists[0])
+	}
+	return ""
 }
 
 func chooseMatch(ctx context.Context, streams domain.StreamCacheRepository, rows []domain.CatalogSearchResult) *domain.CatalogSearchResult {
@@ -1140,28 +1365,38 @@ func streamCached(ctx context.Context, streams domain.StreamCacheRepository, row
 	return err == nil && entry != nil
 }
 
-// renderList maps matched rows onto one list, preserving its order.
-func renderList(
-	list []*candidate,
-	matches map[string]*domain.CatalogSearchResult,
-	limit int,
-	score func(*candidate) float64,
+// renderCandidates renders the Last.fm-side rows. No provider is known yet;
+// the background matcher fills it in through events.
+func renderCandidates(
+	list []*candidate, limit int, score func(*candidate) float64,
 ) []RecommendedTrack {
 	result := make([]RecommendedTrack, 0, len(list))
 	for _, entry := range list {
-		row := matches[candidateKey(entry.track.Artist, entry.track.Title)]
-		if row == nil {
-			continue
-		}
-		result = append(result, toRecommended(row, score(entry), entry.source()))
 		if len(result) >= limit {
 			break
 		}
+		result = append(result, rawRecommended(entry, score(entry)))
 	}
 	return result
 }
 
-func toRecommended(row *domain.CatalogSearchResult, score float64, source string) RecommendedTrack {
+func rawRecommended(entry *candidate, score float64) RecommendedTrack {
+	return RecommendedTrack{
+		Title:     entry.track.Title,
+		Artists:   []string{entry.track.Artist},
+		AlbumName: entry.track.Album,
+		Duration:  entry.track.Duration,
+		CoverURL:  entry.track.ImageURL,
+		Score:     score,
+		Source:    entry.source(),
+		MatchKey:  candidateKey(entry.track.Artist, entry.track.Title),
+		Matching:  true,
+	}
+}
+
+// matchedRecommended copies the catalogue identity onto the Last.fm row while
+// preserving the recommendation-only fields (score, source, match key).
+func matchedRecommended(base RecommendedTrack, row *domain.CatalogSearchResult) RecommendedTrack {
 	return RecommendedTrack{
 		Provider:              row.Provider,
 		ExternalID:            row.ExternalID,
@@ -1176,8 +1411,10 @@ func toRecommended(row *domain.CatalogSearchResult, score float64, source string
 		State:                 row.State,
 		LocalTrackID:          row.LocalTrackID,
 		Sources:               append([]string{}, row.Sources...),
-		Score:                 score,
-		Source:                source,
+		Score:                 base.Score,
+		Source:                base.Source,
+		MatchKey:              base.MatchKey,
+		Matching:              false,
 	}
 }
 
@@ -1197,23 +1434,24 @@ func (r *Recommender) cachedPage(key string) (RecommendationPage, bool) {
 	return entry.page, true
 }
 
-func (r *Recommender) cachedMatch(key string, sources []string) (*domain.CatalogSearchResult, bool) {
-	cacheKey := matchCacheKey(key, sources)
+func (r *Recommender) cachedMatch(key string) (*domain.CatalogSearchResult, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	entry, ok := r.matches[cacheKey]
+	entry, ok := r.matches[key]
 	if !ok {
 		return nil, false
 	}
 	if r.now().After(entry.expiresAt) {
-		delete(r.matches, cacheKey)
+		delete(r.matches, key)
 		return nil, false
 	}
 	return entry.row, true
 }
 
-func (r *Recommender) storeMatch(key string, sources []string, row *domain.CatalogSearchResult) {
-	cacheKey := matchCacheKey(key, sources)
+func (r *Recommender) storeMatch(key string, row *domain.CatalogSearchResult) {
+	if key == "" {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var copyRow *domain.CatalogSearchResult
@@ -1221,11 +1459,7 @@ func (r *Recommender) storeMatch(key string, sources []string, row *domain.Catal
 		value := *row
 		copyRow = &value
 	}
-	r.matches[cacheKey] = cachedMatch{row: copyRow, expiresAt: r.now().Add(matchCacheTTL)}
-}
-
-func matchCacheKey(key string, sources []string) string {
-	return key + "|" + strings.Join(sources, ",")
+	r.matches[key] = cachedMatch{row: copyRow, expiresAt: r.now().Add(matchCacheTTL)}
 }
 
 // seedHash identifies one seed set for the page cache.

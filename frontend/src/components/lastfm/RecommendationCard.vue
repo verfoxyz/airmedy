@@ -14,6 +14,8 @@ import type { RecommendationTrackDTO } from '../../../bindings/airmedy/internal/
  */
 const props = defineProps<{
   track: RecommendationTrackDTO
+  /** matchDone turns a still-pending row into the explicit "no source" state. */
+  matchDone?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -30,8 +32,20 @@ watch(() => props.track.cover_url, () => {
 
 const artistLine = computed(() => (props.track.artists ?? []).filter(Boolean).join(' · '))
 const inLibrary = computed(() => props.track.state === 'in_library')
-const canPlay = computed(() => props.track.downloadable || !!props.track.local_track_id || inLibrary.value)
-const canSave = computed(() => props.track.downloadable && (!inLibrary.value || !!props.track.local_track_id))
+const matching = computed(() => props.track.matching === true && !props.matchDone)
+// A row is unplayable when matching finished without filling a provider and it
+// has no local file to fall back to.
+const noSource = computed(
+  () => !matching.value && !props.track.provider && !props.track.local_track_id && !inLibrary.value,
+)
+const canPlay = computed(
+  () => !matching.value && !noSource.value &&
+    (props.track.downloadable || !!props.track.local_track_id || inLibrary.value),
+)
+const canSave = computed(
+  () => !matching.value && !noSource.value && props.track.downloadable &&
+    (!inLibrary.value || !!props.track.local_track_id),
+)
 </script>
 
 <template>
@@ -87,8 +101,14 @@ const canSave = computed(() => props.track.downloadable && (!inLibrary.value || 
 
     <p class="mt-2 truncate text-sm font-semibold text-foreground" :title="track.title">{{ track.title }}</p>
     <p class="truncate text-xs text-dim" :title="artistLine">{{ artistLine }}</p>
-    <p v-if="track.provider" class="mt-0.5 truncate text-[10px] uppercase tracking-wide text-dimmer">
-      {{ track.provider }}
+    <p
+      class="mt-0.5 truncate text-[10px] tracking-wide text-dimmer"
+      :class="{ uppercase: !matching && !noSource }"
+      data-test="recommendation-status"
+    >
+      <template v-if="matching">{{ t('lastfm.matching') }}</template>
+      <template v-else-if="noSource">{{ t('lastfm.no_source') }}</template>
+      <template v-else>{{ track.provider }}</template>
     </p>
   </div>
 </template>

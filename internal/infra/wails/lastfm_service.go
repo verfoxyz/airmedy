@@ -71,6 +71,11 @@ type RecommendationTrackDTO struct {
 	// Source is "similar" for a direct track.getSimilar hit or "fallback" for a
 	// row produced by the cold-account fallback chain.
 	Source string `json:"source"`
+	// MatchKey is the stable artist+title identity shared by the initial row and
+	// every lastfm:recommendations-matched update.
+	MatchKey string `json:"match_key"`
+	// Matching is true until the background matcher finishes this row.
+	Matching bool `json:"matching"`
 }
 
 // SimilarArtistDTO is one artist in the similar-artists grid.
@@ -87,6 +92,8 @@ type RecommendationPageDTO struct {
 	Status    string `json:"status"`
 	Username  string `json:"username"`
 	AvatarURL string `json:"avatar_url"`
+	// Matching reports whether any row still awaits source matching.
+	Matching bool `json:"matching"`
 	// Tracks is the combined list. The three source lists are independent and
 	// may contain the same track with a different score.
 	Tracks         []RecommendationTrackDTO `json:"tracks"`
@@ -114,6 +121,7 @@ func toRecommendationPageDTO(page lastfm.RecommendationPage) RecommendationPageD
 		Status:         page.Status,
 		Username:       page.Username,
 		AvatarURL:      page.AvatarURL,
+		Matching:       page.Matching,
 		Tracks:         toRecommendationTrackDTOs(page.Tracks),
 		RecentTracks:   toRecommendationTrackDTOs(page.RecentTracks),
 		LovedTracks:    toRecommendationTrackDTOs(page.LovedTracks),
@@ -150,6 +158,8 @@ func toRecommendationTrackDTOs(tracks []lastfm.RecommendedTrack) []Recommendatio
 			Sources:       append([]string{}, track.Sources...),
 			Score:         track.Score,
 			Source:        track.Source,
+			MatchKey:      track.MatchKey,
+			Matching:      track.Matching,
 		})
 	}
 	return result
