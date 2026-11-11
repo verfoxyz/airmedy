@@ -2,6 +2,7 @@
 
 > 状态：待开工
 > 前置：M5 已实现（`promote.go`、`stream_cache.pending_promote`）
+> 联动：`promotion_tasks` 历史表与「下载/任务」页见 [downloads-tasks.md](../library/downloads-tasks.md)（本任务负责写这张表，不另建历史机制）
 > 现象：播放中的曲目被提升后，原缓存文件没有被删除
 
 ---
@@ -93,13 +94,31 @@ HasActiveSession(provider, externalID string) bool
 - `Service.Start` 里启动 worker：启动后立即扫一次（覆盖“播放中关闭应用”的情况），之后每 30 秒一次；
 - `Cache.OnSessionClosed` → 触发一次扫描（放在 fx 装配里把回调设为 `service.WakePromotionSweep`，不引入循环依赖：download 已依赖 `CachedAudio` 端口，stream 不依赖 download）。
 
-### 4.3 `PromoteOnSave`
+### 4.3 历史记录（与「下载/任务」页联动）
+
+提升的每次状态变化都写入 `promotion_tasks`（表结构、迁移 `000095`、清空/保留策略由 [downloads-tasks.md](../library/downloads-tasks.md) 定义）：
+
+| 时机 | 写入 |
+|---|---|
+| 用户点提升、落持久任务 | 插入一行 `state='queued'`（track/provider/external_id/quality 快照） |
+| worker 开始执行该条目 | `state='running'`, `started_at=now` |
+| 移动成功并删除缓存 | `state='done'`, `finished_at=now` |
+| 任一步失败 | `state='failed'`, `error=...`, `finished_at=now` |
+| 走“下载音质更高”分支 | 视为 `done`（请求已交给下载队列；下载结果由下载任务自己记录） |
+
+约定：
+
+- 一个 `stream_cache` 条目同一时刻只允许一行 `queued/running` 的 `promotion_tasks`；重复点提升复用该行；
+- 每次状态写入后 emit `task:updated`（事件统一定义在 downloads-tasks 文档）；
+- 本任务**不新增**历史表、不清空、不裁剪，全部交给 downloads-tasks 的实现。
+
+### 4.4 `PromoteOnSave`
 
 - 仍然立即 `MarkPendingPromote`（持久任务），但**不再**在调用线程里 `EnsureComplete`/移动；
 - 只 `WakePromotionSweep()` 后返回；
 - 有活动下载任务时保持现状：不重复提升。
 
-### 4.4 `internal/app/library` 删除路径
+### 4.5 `internal/app/library` 删除路径
 
 `RemoveTrackFromLibrary` 删除 remote 行时，若该条目有活动 session，`DiscardEntry` 会返回 `ErrDiscardDeferred`，删除行仍然继续；残留文件由缓存启动清理/下一轮 sweep 收掉（与本次任务共用 `promoted` 语义，不另做机制）。
 
@@ -116,7 +135,8 @@ HasActiveSession(provider, externalID string) bool
 - 启动场景：构造 `pending`/`promoted` 行，`Start` 后自动处理；
 - 质量更高：`Enqueue` 被调用，`pending_promote` 被清掉；
 - `DiscardEntry` 对 `promoted=1` 且文件已不存在时返回成功；
-- 迁移 `000094` up/down。
+- 迁移 `000094` up/down；
+- 历史：queued→running→done/failed 各有对应 `promotion_tasks` 行；重复点提升不新增 `queued` 行；每次写入后 emit `task:updated`。
 
 **人工**
 
