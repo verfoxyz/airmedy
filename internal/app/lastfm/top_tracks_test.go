@@ -2,6 +2,7 @@ package lastfm
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -53,6 +54,25 @@ func (c *topTrackCapture) waitDone(t *testing.T) []TopTrackItem {
 	}
 }
 
+// waitFinal drains updates until the named row reaches a non-matching state.
+func (c *topTrackCapture) waitFinal(t *testing.T, matchKey string) TopTrackItem {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case update := <-c.ch:
+			for _, item := range update.Items {
+				if item.MatchKey == matchKey && !item.Matching {
+					return item
+				}
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for a failover result")
+			return TopTrackItem{}
+		}
+	}
+}
+
 func newTopTrackRecommender(source *fakeTrackSource, matcher *fakeMatcher) (*Recommender, *topTrackCapture) {
 	recommender := newTestRecommender(source, matcher, &fakeStreamRepo{})
 	capture := newTopTrackCapture()
@@ -62,7 +82,7 @@ func newTopTrackRecommender(source *fakeTrackSource, matcher *fakeMatcher) (*Rec
 
 func TestTopTracksUsesOneRequestAndReturnsEveryRow(t *testing.T) {
 	source := connectedSource(nil)
-	source.top["7day"] = []LastFmTrack{track("Artist", "One"), track("Artist", "Two")}
+	source.top[topTrackPeriod] = []LastFmTrack{track("Artist", "One"), track("Artist", "Two")}
 
 	block := make(chan struct{})
 	matcher := &fakeMatcher{
@@ -91,9 +111,33 @@ func TestTopTracksUsesOneRequestAndReturnsEveryRow(t *testing.T) {
 	events.waitDone(t)
 }
 
+// TestTopTracksRequestUsesOverallAndFifty pins the data window: overall keeps an
+// account useful after a quiet week, and fifty is the page size the MVP renders.
+func TestTopTracksRequestUsesOverallAndFifty(t *testing.T) {
+	source := connectedSource(nil)
+	for index := 0; index < 60; index++ {
+		source.top[topTrackPeriod] = append(source.top[topTrackPeriod], track("Artist", "Song "+strconv.Itoa(index)))
+	}
+	recommender, _ := newTopTrackRecommender(source, &fakeMatcher{})
+
+	page, err := recommender.GetTopTrackRecommendations(context.Background())
+	if err != nil {
+		t.Fatalf("GetTopTrackRecommendations: %v", err)
+	}
+	if len(source.topPeriods) != 1 || source.topPeriods[0] != "overall" {
+		t.Fatalf("requested periods = %v, want [overall]", source.topPeriods)
+	}
+	if len(source.topLimits) != 1 || source.topLimits[0] != 50 {
+		t.Fatalf("requested limits = %v, want [50]", source.topLimits)
+	}
+	if len(page.Items) != 50 {
+		t.Fatalf("items = %d, want the fifty requested rows", len(page.Items))
+	}
+}
+
 func TestTopTrackWorkersSearchOnlyTheirSourceOnce(t *testing.T) {
 	source := connectedSource(nil)
-	source.top["7day"] = []LastFmTrack{track("Artist", "Hit"), track("Artist", "Never")}
+	source.top[topTrackPeriod] = []LastFmTrack{track("Artist", "Hit"), track("Artist", "Never")}
 	matchKey := candidateKey("Artist", "Hit")
 	rawHitKey := "Artist\x00Hit"
 	rawNeverKey := "Artist\x00Never"
@@ -154,7 +198,7 @@ func TestTopTrackWorkersSearchOnlyTheirSourceOnce(t *testing.T) {
 
 func TestTopTrackMarksNoSourceAfterEveryWorkerFails(t *testing.T) {
 	source := connectedSource(nil)
-	source.top["7day"] = []LastFmTrack{track("Artist", "Obscure")}
+	source.top[topTrackPeriod] = []LastFmTrack{track("Artist", "Obscure")}
 
 	matcher := &fakeMatcher{
 		sources: []domain.CatalogSearchSource{{ID: "wy"}, {ID: "kg"}},
@@ -176,7 +220,7 @@ func TestTopTrackMarksNoSourceAfterEveryWorkerFails(t *testing.T) {
 
 func TestTopTrackWithNoSourcesFinishesImmediately(t *testing.T) {
 	source := connectedSource(nil)
-	source.top["7day"] = []LastFmTrack{track("Artist", "Song")}
+	source.top[topTrackPeriod] = []LastFmTrack{track("Artist", "Song")}
 
 	recommender, _ := newTopTrackRecommender(source, &fakeMatcher{})
 	page, err := recommender.GetTopTrackRecommendations(context.Background())
@@ -190,7 +234,7 @@ func TestTopTrackWithNoSourcesFinishesImmediately(t *testing.T) {
 
 func TestTopTrackCacheSkipsSourceSearchesOnRefresh(t *testing.T) {
 	source := connectedSource(nil)
-	source.top["7day"] = []LastFmTrack{track("Artist", "Hit")}
+	source.top[topTrackPeriod] = []LastFmTrack{track("Artist", "Hit")}
 
 	matcher := &fakeMatcher{
 		sources: []domain.CatalogSearchSource{{ID: "wy"}},
@@ -226,7 +270,7 @@ func TestTopTrackCacheSkipsSourceSearchesOnRefresh(t *testing.T) {
 func TestTopTrackEventsEndWithDone(t *testing.T) {
 	source := connectedSource(nil)
 	for index := 0; index < 4; index++ {
-		source.top["7day"] = append(source.top["7day"], track("Artist", "Song "+string(rune('A'+index))))
+		source.top[topTrackPeriod] = append(source.top[topTrackPeriod], track("Artist", "Song "+string(rune('A'+index))))
 	}
 	matcher := &fakeMatcher{
 		sources: []domain.CatalogSearchSource{{ID: "wy"}},
@@ -249,7 +293,7 @@ func TestTopTrackEventsEndWithDone(t *testing.T) {
 
 func TestTopTrackMatchKeyIsArtistAndTitle(t *testing.T) {
 	source := connectedSource(nil)
-	source.top["7day"] = []LastFmTrack{track("Artist", "Song")}
+	source.top[topTrackPeriod] = []LastFmTrack{track("Artist", "Song")}
 	recommender, _ := newTopTrackRecommender(source, &fakeMatcher{})
 
 	page, err := recommender.GetTopTrackRecommendations(context.Background())
@@ -260,4 +304,111 @@ func TestTopTrackMatchKeyIsArtistAndTitle(t *testing.T) {
 	if len(page.Items) != 1 || page.Items[0].MatchKey != want || !strings.Contains(want, "\x00") {
 		t.Fatalf("item = %+v, want match key %q", page.Items, want)
 	}
+}
+
+// TestPlaybackFailureRequeuesFromTheNextSource is the failover contract: the
+// provider that could not play a matched row is remembered and skipped, and the
+// next source fills the same row in.
+func TestPlaybackFailureRequeuesFromTheNextSource(t *testing.T) {
+	source := connectedSource(nil)
+	source.top[topTrackPeriod] = []LastFmTrack{track("Artist", "Hit")}
+	matchKey := candidateKey("Artist", "Hit")
+	rawKey := "Artist\x00Hit"
+
+	matcher := &fakeMatcher{
+		sources: []domain.CatalogSearchSource{{ID: "wy"}, {ID: "kg"}},
+		sourceRows: map[string]map[string][]domain.CatalogSearchResult{
+			"wy": {
+				rawKey: {{Provider: "wy", ExternalID: "1", Title: "Hit", Artists: []string{"Artist"}, Downloadable: true}},
+			},
+		},
+	}
+	recommender, events := newTopTrackRecommender(source, matcher)
+	if _, err := recommender.GetTopTrackRecommendations(context.Background()); err != nil {
+		t.Fatalf("GetTopTrackRecommendations: %v", err)
+	}
+	initial := events.waitDone(t)
+	if len(initial) != 1 || initial[0].Provider != "wy" || !initial[0].Matched {
+		t.Fatalf("initial match = %+v, want the wy row", initial)
+	}
+	wyCallsBefore := countSourceCalls(matcher.sourcesCalled(), "wy|"+rawKey)
+
+	// The second provider only answers after the first one failed to play.
+	matcher.mu.Lock()
+	matcher.sourceRows["kg"] = map[string][]domain.CatalogSearchResult{
+		rawKey: {{Provider: "kg", ExternalID: "2", Title: "Hit", Artists: []string{"Artist"}, Downloadable: true}},
+	}
+	matcher.mu.Unlock()
+
+	recommender.HandlePlaybackFailure("wy", "1")
+
+	final := events.waitFinal(t, matchKey)
+	if final.Provider != "kg" || !final.Matched || final.Matching || final.NoSource {
+		t.Fatalf("failover item = %+v, want a matched kg row", final)
+	}
+	if got := countSourceCalls(matcher.sourcesCalled(), "wy|"+rawKey); got != wyCallsBefore {
+		t.Fatalf("the failed source was searched again: %d -> %d calls", wyCallsBefore, got)
+	}
+	if got := countSourceCalls(matcher.sourcesCalled(), "kg|"+rawKey); got == 0 {
+		t.Fatal("the next source was never searched")
+	}
+	if _, cached := recommender.cachedSourceMatch(matchKey, "wy"); cached {
+		t.Fatal("the failed source's cached match must be dropped")
+	}
+	if failed := recommender.failedTopSources(matchKey); !failed["wy"] {
+		t.Fatalf("failed sources = %v, want wy recorded", failed)
+	}
+}
+
+// TestPlaybackFailureWithoutAnotherSourceMarksNoSource: a row whose only source
+// failed must settle as "no match" instead of retrying forever.
+func TestPlaybackFailureWithoutAnotherSourceMarksNoSource(t *testing.T) {
+	source := connectedSource(nil)
+	source.top[topTrackPeriod] = []LastFmTrack{track("Artist", "Hit")}
+	matchKey := candidateKey("Artist", "Hit")
+	rawKey := "Artist\x00Hit"
+
+	matcher := &fakeMatcher{
+		sources: []domain.CatalogSearchSource{{ID: "wy"}},
+		sourceRows: map[string]map[string][]domain.CatalogSearchResult{
+			"wy": {
+				rawKey: {{Provider: "wy", ExternalID: "1", Title: "Hit", Artists: []string{"Artist"}, Downloadable: true}},
+			},
+		},
+	}
+	recommender, events := newTopTrackRecommender(source, matcher)
+	if _, err := recommender.GetTopTrackRecommendations(context.Background()); err != nil {
+		t.Fatalf("GetTopTrackRecommendations: %v", err)
+	}
+	events.waitDone(t)
+	callsBefore := len(matcher.sourcesCalled())
+
+	recommender.HandlePlaybackFailure("wy", "1")
+
+	final := events.waitFinal(t, matchKey)
+	if !final.NoSource || final.Matched || final.Matching {
+		t.Fatalf("failover item = %+v, want no_source", final)
+	}
+	if got := len(matcher.sourcesCalled()); got != callsBefore {
+		t.Fatalf("source calls = %d, want no retry (was %d)", got, callsBefore)
+	}
+
+	// A refresh must keep the previous failure rather than trying wy again.
+	page, err := recommender.GetTopTrackRecommendations(context.Background())
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if len(page.Items) != 1 || !page.Items[0].NoSource || page.Items[0].Matching {
+		t.Fatalf("refreshed item = %+v, want no_source", page.Items)
+	}
+}
+
+func countSourceCalls(calls []string, want string) int {
+	count := 0
+	for _, call := range calls {
+		if call == want {
+			count++
+		}
+	}
+	return count
 }

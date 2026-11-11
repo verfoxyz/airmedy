@@ -36,6 +36,10 @@ let offMatch: (() => void) | null = null
 // Events can beat the page response; keep them until there are rows to update.
 let pendingItems: TopTrackItemDTO[] = []
 let pendingDone = false
+// Rows the backend re-queued after a playback failure. A Done frame from an
+// earlier worker run must not finish these, or the failover would look like a
+// permanent "no match" before the new source answers.
+const requeued = new Set<string>()
 
 const status = computed(() => page.value?.status ?? '')
 const notConnected = computed(() => status.value === 'not_connected')
@@ -48,6 +52,7 @@ async function load() {
   loadError.value = ''
   pendingItems = []
   pendingDone = false
+  requeued.clear()
   try {
     page.value = await LastFmService.GetTopTrackRecommendations()
     if (page.value) {
@@ -81,7 +86,12 @@ function applyItems(
 ): TopTrackItemDTO[] {
   const byKey = new Map<string, TopTrackItemDTO>()
   for (const update of updates) {
-    if (update.match_key) byKey.set(update.match_key, update)
+    if (!update.match_key) continue
+    byKey.set(update.match_key, update)
+    // A matching update without a provider is the failover signal: the row is
+    // being searched again and must survive the next Done frame.
+    if (update.matching && !update.provider) requeued.add(update.match_key)
+    else requeued.delete(update.match_key)
   }
   const next = current.map((row) => {
     const update = row.match_key ? byKey.get(row.match_key) : undefined
@@ -92,7 +102,9 @@ function applyItems(
 
 function finishItems(rows: TopTrackItemDTO[]): TopTrackItemDTO[] {
   return rows.map((row) =>
-    row.matching ? { ...row, matching: false, matched: false, no_source: true } : row,
+    row.matching && !(row.match_key && requeued.has(row.match_key))
+      ? { ...row, matching: false, matched: false, no_source: true }
+      : row,
   )
 }
 

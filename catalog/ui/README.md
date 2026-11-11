@@ -192,8 +192,8 @@ Page-level failures travel as machine kinds in `error_kind` (`no_sources`,
 
 `views/LastFmView.vue` is the sidebar entry directly below Search. It renders a
 single "top tracks" list from `LastFmService.GetTopTrackRecommendations()`, which
-makes one Last.fm request (`user.getTopTracks`, `7day`, limit 50) and returns every
-row immediately.
+makes one Last.fm request (`user.getTopTracks`, `overall`, limit 50) and returns
+every row immediately.
 
 Matching runs five workers, one per source (`wy`, `kg`, `tx`, `kw`, `mg` in
 priority order). A worker searches only its own source; a miss puts the row back
@@ -208,6 +208,14 @@ title); a row is `matching` until a source hits, then shows its provider and the
 shared play/save actions. `done` is authoritative: no row stays `matching`, and
 unresolved rows read "no match". Local files are not filtered out — a matched
 local row is immediately playable.
+
+A remote row whose audio fails to load reports the failed provider identity to
+the recommender (`PlayerService.AddPlaybackFailureListener`). That provider is
+remembered and skipped for the row, its cached match is dropped, and the row is
+pushed back to `matching` with a `done:false` update while the remaining sources
+are searched. The page keeps such a re-queued row `matching` through an earlier
+worker run's `done` frame; another hit restores the actions, and exhausting every
+source ends in `no_source`.
 
 Status is `ok` or `not_connected`; an unconnected page routes to
 `/settings/integrations`.

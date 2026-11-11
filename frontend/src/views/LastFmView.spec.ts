@@ -197,6 +197,35 @@ describe('LastFmView (top tracks MVP)', () => {
     )
   })
 
+  it('returns a failed row to matching and survives a done frame', async () => {
+    mocks.getTopTracks.mockResolvedValue(page([item('Hit', 'matched')]))
+    const wrapper = await mountView()
+
+    // The backend re-queues the row and, while it is searching, an older worker
+    // run sends Done. The row must stay in the matching state.
+    await emitMatch({ items: [item('Hit', 'matching')], done: true })
+
+    const row = wrapper.find('[data-test="top-track-row"]')
+    expect(row.find('[data-test="top-track-status"]').attributes('data-state')).toBe('matching')
+    expect(row.find('[data-test="top-track-play"]').exists()).toBe(false)
+
+    await emitMatch({ items: [item('Hit', 'matched')], done: false })
+    expect(row.find('[data-test="top-track-status"]').attributes('data-state')).toBe('matched')
+    expect(row.find('[data-test="top-track-play"]').exists()).toBe(true)
+  })
+
+  it('shows no match when the failover finds nothing', async () => {
+    mocks.getTopTracks.mockResolvedValue(page([item('Hit', 'matched')]))
+    const wrapper = await mountView()
+
+    await emitMatch({ items: [item('Hit', 'matching')], done: false })
+    await emitMatch({ items: [item('Hit', 'no_match')], done: false })
+
+    const row = wrapper.find('[data-test="top-track-row"]')
+    expect(row.find('[data-test="top-track-status"]').attributes('data-state')).toBe('no-match')
+    expect(row.find('[data-test="top-track-play"]').exists()).toBe(false)
+  })
+
   it('refreshes the page and returns to the matching state', async () => {
     mocks.getTopTracks.mockResolvedValue(page([item('Hit', 'matching')]))
     const wrapper = await mountView()

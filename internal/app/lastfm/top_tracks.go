@@ -12,7 +12,10 @@ import (
 // TopTracks MVP constants. The page deliberately makes one Last.fm request and
 // shows every row immediately; source matching then fills the rows in.
 const (
-	topTrackPeriod = "7day"
+	// topTrackPeriod is the whole-time window. The page is "most played tracks",
+	// and a 7-day window is empty for an account that stopped listening a while
+	// ago (it returned two rows for a real account while overall returned fifty).
+	topTrackPeriod = "overall"
 	topTrackLimit  = 50
 	// topTrackSourceLimit is the number of source workers. Each worker owns one
 	// source and searches only that source.
@@ -74,7 +77,7 @@ type cachedSourceMatch struct {
 	expiresAt time.Time
 }
 
-// GetTopTrackRecommendations returns the user's top tracks from the last week.
+// GetTopTrackRecommendations returns the user's all-time most played tracks.
 //
 // It makes exactly one Last.fm request and returns every row before any source
 // search runs. Cached per-source outcomes are applied first, so a refresh shows
@@ -118,6 +121,7 @@ func (r *Recommender) GetTopTrackRecommendations(ctx context.Context) (TopTrackP
 	}
 
 	sources := r.topTrackSources(ctx)
+	r.rememberTopRows(items)
 	states := r.seedTopTrackStates(items, sources)
 	pageItems := make([]TopTrackItem, len(states))
 	pending := false
@@ -134,13 +138,36 @@ func (r *Recommender) GetTopTrackRecommendations(ctx context.Context) (TopTrackP
 	return TopTrackPage{Status: StatusOK, Items: pageItems}, nil
 }
 
+// rememberTopRows keeps the Last.fm-side rows of the current page. Failover
+// resets a matched row from this copy, and only rows the user can currently see
+// are worth keeping.
+func (r *Recommender) rememberTopRows(items []TopTrackItem) {
+	rows := make(map[string]TopTrackItem, len(items))
+	for _, item := range items {
+		if item.MatchKey == "" {
+			continue
+		}
+		rows[item.MatchKey] = item
+	}
+	r.mu.Lock()
+	r.topRows = rows
+	r.mu.Unlock()
+}
+
 // seedTopTrackStates applies the per-source match cache and returns the rows a
 // worker still has to handle.
 func (r *Recommender) seedTopTrackStates(items []TopTrackItem, sources []string) []*topTrackState {
 	states := make([]*topTrackState, len(items))
 	for index, item := range items {
 		state := &topTrackState{item: item, tried: make(map[string]bool)}
+		failed := r.failedTopSources(item.MatchKey)
 		for _, source := range sources {
+			if failed[source] {
+				// This provider already failed to play this track: a retry would
+				// only fail again, so the row moves on to the next source.
+				state.tried[source] = true
+				continue
+			}
 			row, ok := r.cachedSourceMatch(item.MatchKey, source)
 			if !ok {
 				continue
@@ -164,20 +191,59 @@ func (r *Recommender) seedTopTrackStates(items []TopTrackItem, sources []string)
 	return states
 }
 
+// queuedTopTrackRun is one worker queue. A page load runs with finalDone, so the
+// last event tells the frontend that every unresolved row has no source. A
+// failover rerun sends Done=false: the rest of the page is already settled and
+// must not be overwritten.
+type queuedTopTrackRun struct {
+	states    []*topTrackState
+	sources   []string
+	finalDone bool
+}
+
 // startTopTrackMatching runs one job per account. A second page request while
 // the job runs joins it through the same event stream.
 func (r *Recommender) startTopTrackMatching(
 	username string, states []*topTrackState, sources []string,
 ) {
+	r.enqueueTopTrackRun(username, queuedTopTrackRun{
+		states:    states,
+		sources:   sources,
+		finalDone: true,
+	})
+}
+
+// enqueueTopTrackRun serializes runs per account. A failover arrives while the
+// page's queue may still be working; it waits instead of racing the same rows.
+func (r *Recommender) enqueueTopTrackRun(username string, run queuedTopTrackRun) {
 	r.mu.Lock()
 	if r.topRunning[username] {
+		r.topQueue[username] = append(r.topQueue[username], run)
 		r.mu.Unlock()
 		return
 	}
 	r.topRunning[username] = true
 	r.mu.Unlock()
 
-	go r.runTopTrackMatching(username, states, sources)
+	go r.runTopTrackQueue(username, run)
+}
+
+// runTopTrackQueue drains the queued runs one after another.
+func (r *Recommender) runTopTrackQueue(username string, run queuedTopTrackRun) {
+	for {
+		r.runTopTrackMatching(username, run)
+		r.mu.Lock()
+		queue := r.topQueue[username]
+		if len(queue) == 0 {
+			delete(r.topQueue, username)
+			delete(r.topRunning, username)
+			r.mu.Unlock()
+			return
+		}
+		run = queue[0]
+		r.topQueue[username] = queue[1:]
+		r.mu.Unlock()
+	}
 }
 
 // runTopTrackMatching is the five-worker queue.
@@ -185,14 +251,8 @@ func (r *Recommender) startTopTrackMatching(
 // Each worker owns one source. A worker takes any pending row that has not tried
 // its source yet; a miss puts the row back for the other workers and records the
 // source as tried. A row becomes NoSource after every source failed.
-func (r *Recommender) runTopTrackMatching(
-	username string, states []*topTrackState, sources []string,
-) {
-	defer func() {
-		r.mu.Lock()
-		delete(r.topRunning, username)
-		r.mu.Unlock()
-	}()
+func (r *Recommender) runTopTrackMatching(username string, run queuedTopTrackRun) {
+	states, sources := run.states, run.sources
 
 	var (
 		bufferMu sync.Mutex
@@ -222,7 +282,7 @@ func (r *Recommender) runTopTrackMatching(
 			state.done = true
 			buffer = append(buffer, state.item)
 		}
-		flush(true)
+		flush(run.finalDone)
 		return
 	}
 
@@ -332,7 +392,147 @@ func (r *Recommender) runTopTrackMatching(
 	wg.Wait()
 	close(stop)
 	<-stopped
-	flush(true)
+	flush(run.finalDone)
+}
+
+// HandlePlaybackFailure re-queues the top-track row whose matched source could
+// not play.
+//
+// The failed provider is remembered per row and its cached match is dropped, so
+// the next run searches only the remaining sources. The row is pushed back to
+// "matching" immediately; when every source has failed the final update carries
+// no_source and nothing retries automatically.
+func (r *Recommender) HandlePlaybackFailure(provider, externalID string) {
+	provider = domain.NormalizeProvider(provider)
+	externalID = strings.TrimSpace(externalID)
+	if provider == "" || externalID == "" {
+		return
+	}
+	for _, matchKey := range r.topTrackKeysForIdentity(provider, externalID) {
+		r.requeueTopTrack(matchKey, provider)
+	}
+}
+
+// topTrackKeysForIdentity maps a playing provider identity back to every page
+// row that was matched from it.
+func (r *Recommender) topTrackKeysForIdentity(provider, externalID string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	seen := make(map[string]struct{})
+	keys := make([]string, 0, 1)
+	for cacheKey, entry := range r.sourceMatches {
+		if entry.row == nil {
+			continue
+		}
+		if domain.NormalizeProvider(entry.row.Provider) != provider ||
+			strings.TrimSpace(entry.row.ExternalID) != externalID {
+			continue
+		}
+		index := strings.LastIndexByte(cacheKey, '|')
+		if index <= 0 {
+			continue
+		}
+		matchKey := cacheKey[:index]
+		if _, duplicate := seen[matchKey]; duplicate {
+			continue
+		}
+		seen[matchKey] = struct{}{}
+		keys = append(keys, matchKey)
+	}
+	return keys
+}
+
+// requeueTopTrack resets one row and searches it again without the failed source.
+func (r *Recommender) requeueTopTrack(matchKey, failedProvider string) {
+	r.mu.Lock()
+	base, ok := r.topRows[matchKey]
+	if !ok {
+		r.mu.Unlock()
+		return
+	}
+	failed := r.topFailedSources[matchKey]
+	if failed == nil {
+		failed = make(map[string]bool)
+		r.topFailedSources[matchKey] = failed
+	}
+	failed[failedProvider] = true
+	delete(r.sourceMatches, matchKey+"|"+failedProvider)
+	tried := make(map[string]bool, len(failed))
+	for source := range failed {
+		tried[source] = true
+	}
+	r.mu.Unlock()
+
+	item := resetTopTrackItem(base)
+	r.emitTopTrackUpdate([]TopTrackItem{item})
+
+	connected, username, _ := r.client.GetStatus()
+	if !connected || strings.TrimSpace(username) == "" {
+		return
+	}
+
+	sources := r.topTrackSources(context.Background())
+	state := &topTrackState{item: item, tried: tried}
+	remaining := 0
+	for _, source := range sources {
+		if !tried[source] {
+			remaining++
+		}
+	}
+	if remaining == 0 {
+		item.Matching = false
+		item.NoSource = true
+		state.item = item
+		state.done = true
+		r.emitTopTrackUpdate([]TopTrackItem{item})
+		return
+	}
+	r.enqueueTopTrackRun(username, queuedTopTrackRun{
+		states:  []*topTrackState{state},
+		sources: sources,
+	})
+}
+
+// resetTopTrackItem clears every matched field, leaving the Last.fm identity the
+// next source search needs.
+func resetTopTrackItem(item TopTrackItem) TopTrackItem {
+	item.Provider = ""
+	item.ExternalID = ""
+	item.State = ""
+	item.LocalTrackID = ""
+	item.BlockedReason = ""
+	item.Sources = nil
+	item.Downloadable = false
+	item.CoverURLLarge = ""
+	item.Matched = false
+	item.NoSource = false
+	item.Matching = true
+	return item
+}
+
+// emitTopTrackUpdate sends a failover state change. Done is always false: the
+// rest of the page is already resolved and must not be finished as "no source".
+func (r *Recommender) emitTopTrackUpdate(items []TopTrackItem) {
+	if r.emitter == nil {
+		return
+	}
+	r.emitter(recommendationsMatchedEvent, TopTrackUpdate{Items: items, Done: false})
+}
+
+// failedTopSources returns the providers already known to fail this row.
+func (r *Recommender) failedTopSources(matchKey string) map[string]bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	failed := r.topFailedSources[matchKey]
+	if len(failed) == 0 {
+		return nil
+	}
+	copy := make(map[string]bool, len(failed))
+	for source := range failed {
+		copy[source] = true
+	}
+	return copy
 }
 
 // searchTopTrackSource asks exactly one source, within the per-candidate budget.

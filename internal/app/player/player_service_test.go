@@ -1865,6 +1865,44 @@ func (f *fakeStreamCache) FlushProgress(_ *stream.Session) {
 	f.mu.Unlock()
 }
 
+// TestPlaybackFailureListenerReportsRemoteStreamErrors: the Last.fm page needs
+// the failed provider identity to switch sources. A stream that cannot open must
+// reach listeners; a local row is never reported.
+func TestPlaybackFailureListenerReportsRemoteStreamErrors(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1.0}}
+	s, _ := newTestService(t, fp)
+	cache := newFakeStreamCache()
+	cache.openErr = fmt.Errorf("no playable source")
+	s.streamCache = cache
+
+	var reported *domain.TrackDTO
+	var reportedErr error
+	s.AddPlaybackFailureListener(func(track *domain.TrackDTO, err error) {
+		reported = track
+		reportedErr = err
+	})
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID: "remote-1", Path: domain.RemotePath("wy", "42"), Title: "歌",
+		Provider: "wy", ExternalID: "42", Availability: domain.AvailabilityRemote, Duration: 120,
+	}}
+	if err := s.PlayTracks([]*domain.TrackDTO{remote}, 0); err == nil {
+		t.Fatal("PlayTracks must surface the stream error")
+	}
+	if reported == nil || reported.Provider != "wy" || reported.ExternalID != "42" || reportedErr == nil {
+		t.Fatalf("reported = %+v / %v, want the failed wy/42 identity", reported, reportedErr)
+	}
+
+	reported = nil
+	local := &domain.TrackDTO{Track: domain.Track{ID: "local-1", Path: `D:\Music\a.mp3`, Duration: 120}}
+	if err := s.PlayTracks([]*domain.TrackDTO{local}, 0); err != nil {
+		t.Fatalf("PlayTracks on a local row: %v", err)
+	}
+	if reported != nil {
+		t.Fatalf("a local row must not report a source failure: %+v", reported)
+	}
+}
+
 // TestRemapTrack_SwitchesCurrentAndQueueToTheSurvivor: a merge deleted the
 // remote row the decoder was streaming; the player must move to the local row,
 // close the stream session and continue from the file.

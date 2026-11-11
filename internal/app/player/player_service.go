@@ -125,6 +125,7 @@ type PlayerService struct {
 	queueListeners            []func([]*domain.TrackDTO)
 	scrobbleListeners         []func(*domain.TrackDTO, time.Time)
 	npListeners               []func(*domain.TrackDTO)
+	playbackFailureListeners  []func(*domain.TrackDTO, error)
 	lyricsListeners           []func(*domain.Lyric)
 	artworkCrossfadeListeners []func(domain.ArtworkCrossfadeEvent)
 }
@@ -281,6 +282,29 @@ func (s *PlayerService) AddNowPlayingListener(f func(*domain.TrackDTO)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.npListeners = append(s.npListeners, f)
+}
+
+// AddPlaybackFailureListener registers a callback fired when a remote track
+// cannot be loaded or started. It lets the Last.fm page retry the same song
+// against another provider; local rows are never reported because a missing
+// file is not a source choice.
+func (s *PlayerService) AddPlaybackFailureListener(f func(*domain.TrackDTO, error)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.playbackFailureListeners = append(s.playbackFailureListeners, f)
+}
+
+// reportPlaybackFailure notifies listeners after a remote load/play error.
+func (s *PlayerService) reportPlaybackFailure(track *domain.TrackDTO, err error) {
+	if err == nil || track == nil || !track.IsRemote() {
+		return
+	}
+	s.mu.RLock()
+	listeners := append([]func(*domain.TrackDTO, error){}, s.playbackFailureListeners...)
+	s.mu.RUnlock()
+	for _, f := range listeners {
+		f(track, err)
+	}
 }
 
 // AddLyricsListener registers a callback that will be called whenever lyrics are resolved for the current track.
@@ -1326,10 +1350,12 @@ func (s *PlayerService) flushStreamProgress() {
 
 func (s *PlayerService) loadInactiveAtPosition(track *domain.TrackDTO, position float64, paused bool) error {
 	if err := s.ensurePlayable(track); err != nil {
+		s.reportPlaybackFailure(track, err)
 		return err
 	}
 	playable, streamSession, err := s.preparePlayable(track)
 	if err != nil {
+		s.reportPlaybackFailure(track, err)
 		return err
 	}
 
@@ -1342,6 +1368,7 @@ func (s *PlayerService) loadInactiveAtPosition(track *domain.TrackDTO, position 
 	if err := s.player.Load(playable); err != nil {
 		s.dropStreamSession()
 		s.logger.Error("failed to reload inactive track", "track", track.Path, "error", err)
+		s.reportPlaybackFailure(track, err)
 		return err
 	}
 	if s.normSvc != nil {
@@ -1382,12 +1409,14 @@ func (s *PlayerService) loadInactiveAtPosition(track *domain.TrackDTO, position 
 
 func (s *PlayerService) loadAndPlayAtPosition(track *domain.TrackDTO, position float64, previousReason domain.PlaybackEndReason) error {
 	if err := s.ensurePlayable(track); err != nil {
+		s.reportPlaybackFailure(track, err)
 		return err
 	}
 	// Open the stream while the outgoing track still plays: the cache resolves
 	// and prebuffers before the decoder is asked to switch.
 	playable, streamSession, err := s.preparePlayable(track)
 	if err != nil {
+		s.reportPlaybackFailure(track, err)
 		return err
 	}
 
@@ -1407,6 +1436,7 @@ func (s *PlayerService) loadAndPlayAtPosition(track *domain.TrackDTO, position f
 	if err := s.player.Load(playable); err != nil {
 		s.dropStreamSession()
 		s.logger.Error("failed to load track", "track", track.Path, "error", err)
+		s.reportPlaybackFailure(track, err)
 		return err
 	}
 
@@ -1429,6 +1459,7 @@ func (s *PlayerService) loadAndPlayAtPosition(track *domain.TrackDTO, position f
 
 	if err := s.player.Play(); err != nil {
 		s.logger.Error("failed to play track", "track", track.Path, "error", err)
+		s.reportPlaybackFailure(track, err)
 		return err
 	}
 	s.startListening(track)

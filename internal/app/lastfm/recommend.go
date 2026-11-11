@@ -244,6 +244,17 @@ type Recommender struct {
 	// keeps one worker queue per account.
 	sourceMatches map[string]cachedSourceMatch
 	topRunning    map[string]bool
+	// topQueue holds follow-up runs (a re-queued row after a playback failure)
+	// while a page's worker queue is still running.
+	topQueue map[string][]queuedTopTrackRun
+	// topRows is the original Last.fm row of every track on the current page. A
+	// playback failure resets the row from this copy, because the matched item
+	// has already replaced the title/artist with the provider's version.
+	topRows map[string]TopTrackItem
+	// topFailedSources remembers, per row, which providers could not play it.
+	// Every later run skips them, so a page refresh cannot send the user back to
+	// the same broken source.
+	topFailedSources map[string]map[string]bool
 }
 
 type cachedPage struct {
@@ -273,18 +284,21 @@ func NewRecommender(
 		logger = slog.Default()
 	}
 	return &Recommender{
-		client:        client,
-		matcher:       matcher,
-		streams:       streams,
-		logger:        logger,
-		now:           time.Now,
-		emitter:       emitToWails,
-		pages:         make(map[string]cachedPage),
-		matches:       make(map[string]cachedMatch),
-		inflight:      make(map[string]*inflightBuild),
-		matchRunning:  make(map[string]bool),
-		sourceMatches: make(map[string]cachedSourceMatch),
-		topRunning:    make(map[string]bool),
+		client:           client,
+		matcher:          matcher,
+		streams:          streams,
+		logger:           logger,
+		now:              time.Now,
+		emitter:          emitToWails,
+		pages:            make(map[string]cachedPage),
+		matches:          make(map[string]cachedMatch),
+		inflight:         make(map[string]*inflightBuild),
+		matchRunning:     make(map[string]bool),
+		sourceMatches:    make(map[string]cachedSourceMatch),
+		topRunning:       make(map[string]bool),
+		topQueue:         make(map[string][]queuedTopTrackRun),
+		topRows:          make(map[string]TopTrackItem),
+		topFailedSources: make(map[string]map[string]bool),
 	}
 }
 

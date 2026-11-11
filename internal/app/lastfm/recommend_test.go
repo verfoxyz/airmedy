@@ -45,6 +45,10 @@ type fakeTrackSource struct {
 	similarArtistCalls int
 	seedCalls          int
 	topCalls           int
+	// topPeriods and topLimits record what the top-tracks page asked for, so a
+	// test can pin the window and page size.
+	topPeriods []string
+	topLimits  []int
 	// Fallback call counters, kept separate from similarArtistCalls so a test
 	// can assert the fallback budget without the similar-artists grid noise.
 	artistTopTracksCalls int
@@ -69,11 +73,13 @@ func (f *fakeTrackSource) GetRecentTracks(_ context.Context, _ int) ([]LastFmTra
 	return append([]LastFmTrack{}, f.recent...), nil
 }
 
-func (f *fakeTrackSource) GetTopTracks(_ context.Context, period string, _ int) ([]LastFmTrack, error) {
+func (f *fakeTrackSource) GetTopTracks(_ context.Context, period string, limit int) ([]LastFmTrack, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.seedCalls++
 	f.topCalls++
+	f.topPeriods = append(f.topPeriods, period)
+	f.topLimits = append(f.topLimits, limit)
 	if err := f.topErr[period]; err != nil {
 		return nil, err
 	}

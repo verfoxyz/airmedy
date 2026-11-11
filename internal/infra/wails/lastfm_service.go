@@ -196,9 +196,9 @@ type TopTrackPageDTO struct {
 	Items  []TopTrackItemDTO `json:"items"`
 }
 
-// GetTopTrackRecommendations returns the user's 7-day top tracks and starts the
-// five-source background matcher. Every row is returned before any source
-// search; match updates arrive through lastfm:recommendations-matched.
+// GetTopTrackRecommendations returns the user's all-time most played tracks and
+// starts the five-source background matcher. Every row is returned before any
+// source search; match updates arrive through lastfm:recommendations-matched.
 func (s *LastFmService) GetTopTrackRecommendations() (TopTrackPageDTO, error) {
 	page, err := s.recommender.GetTopTrackRecommendations(context.Background())
 	if err != nil {
