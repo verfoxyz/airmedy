@@ -42,6 +42,8 @@ import (
 	"log/slog"
 
 	"go.uber.org/fx"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 var Module = fx.Module("app",
@@ -185,12 +187,18 @@ var Module = fx.Module("app",
 		// neither app/stream nor app/player.
 		lib.SetStreamCacheDiscarder(cache)
 		lib.SetPlaybackRemover(playerSvc)
+		// Promotion must not move a file the decoder still points at, and a
+		// promoted row must not be streamed again. Both are narrow ports so
+		// neither stream nor download imports app/player.
+		downloadSvc.SetPlayingTrack(playerSvc)
+		cache.SetLocalIdentityChecker(downloadSvc)
 		// Promotion moves the cache file, so it waits for playback to release it;
 		// a closing session is the fastest signal, the worker's timer is the
 		// backstop. Wire direction: stream notifies download, never the reverse.
 		cache.OnSessionClosed(func(_, _ string) {
 			downloadSvc.WakeCacheMaintenance()
 		})
+		var offTrackMerged func()
 		pairingSvc.AddDeviceConnectionListener(func(deviceID string, connected bool) {
 			if connected {
 				return
@@ -201,6 +209,18 @@ var Module = fx.Module("app",
 		})
 		lc.Append(fx.Hook{
 			OnStart: func(ctx context.Context) error {
+				// A merge deletes the remote row. The player may still have it
+				// loaded (the download case, or the promotion that runs after the
+				// session closed), so it must remap before the next write or load.
+				if app := application.Get(); app != nil && app.Event != nil {
+					offTrackMerged = app.Event.On("track:merged", func(event *application.CustomEvent) {
+						payload, ok := event.Data.(map[string]string)
+						if !ok {
+							return
+						}
+						playerSvc.RemapTrack(context.Background(), payload["from_track_id"], payload["to_track_id"])
+					})
+				}
 				// Wire metadata changes to player state; favorites use their own listener.
 				lib.AddTrackUpdateListener(func(track *domain.TrackDTO) {
 					playerSvc.SyncTrack(track)
@@ -303,6 +323,10 @@ var Module = fx.Module("app",
 				return lib.Start(ctx)
 			},
 			OnStop: func(ctx context.Context) error {
+				if offTrackMerged != nil {
+					offTrackMerged()
+					offTrackMerged = nil
+				}
 				if err := analysisSvc.Stop(ctx); err != nil {
 					slog.Error("Failed to stop analysis service", "error", err)
 				}

@@ -78,12 +78,31 @@ type Cache struct {
 	listener      net.Listener
 	port          int
 	started       bool
+
+	// localIdentity lets Open refuse a row that already became a library file.
+	// *download.Service satisfies it; the cache only needs the yes/no answer.
+	localIdentity LocalIdentityChecker
 }
 
 // SettingsProvider is the settings slice the cache needs. *appsettings.Service
 // satisfies it; taking the narrow port keeps this package out of appsettings.
 type SettingsProvider interface {
 	GetSettings(ctx context.Context) (*domain.AppSettings, error)
+}
+
+// LocalIdentityChecker answers whether a remote identity now belongs to a
+// library file. Wiring happens in the composition root, so this package does not
+// import the download service.
+type LocalIdentityChecker interface {
+	HasLocalIdentity(ctx context.Context, provider, externalID string) (bool, error)
+}
+
+// SetLocalIdentityChecker installs the guard used by Open. Safe to call before
+// Start; the cache never writes through it.
+func (c *Cache) SetLocalIdentityChecker(checker LocalIdentityChecker) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.localIdentity = checker
 }
 
 // Session is one playback window over a cached stream. ID is derived from the
@@ -229,6 +248,22 @@ func (c *Cache) Open(ctx context.Context, track *domain.TrackDTO) (*Session, err
 	provider := domain.NormalizeProvider(track.Provider)
 	if provider == "" || strings.TrimSpace(track.ExternalID) == "" {
 		return nil, fmt.Errorf("%w: track %s has no provider/external id", domain.ErrStreamUnavailable, track.ID)
+	}
+
+	// A promoted row keeps its identity, so a player still holding the old
+	// remote DTO must not recreate a cache under it. Refuse before any session,
+	// row or file exists; the caller reloads the local row instead.
+	c.mu.Lock()
+	checker := c.localIdentity
+	c.mu.Unlock()
+	if checker != nil {
+		local, err := checker.HasLocalIdentity(ctx, provider, strings.TrimSpace(track.ExternalID))
+		if err != nil {
+			return nil, fmt.Errorf("open stream: check local identity: %w", err)
+		}
+		if local {
+			return nil, fmt.Errorf("%w: %s/%s", domain.ErrStreamAlreadyLocal, provider, track.ExternalID)
+		}
 	}
 
 	identityKey := cacheKeyFor(provider, track.ExternalID)
@@ -674,6 +709,13 @@ func (c *Cache) PendingPromotions(ctx context.Context) ([]*domain.StreamCacheEnt
 // PendingDiscards returns every entry whose cache must be deleted once idle.
 func (c *Cache) PendingDiscards(ctx context.Context) ([]*domain.StreamCacheEntry, error) {
 	return c.repo.ListPendingDiscard(ctx)
+}
+
+// AllEntries lists every cached entry, least recently used first. The promotion
+// sweep uses it to find caches whose identity already became a library file but
+// whose flags were never set (a crash or a race left them behind).
+func (c *Cache) AllEntries(ctx context.Context) ([]*domain.StreamCacheEntry, error) {
+	return c.repo.ListForEviction(ctx)
 }
 
 // HasActiveSession reports whether a playback or background session still holds

@@ -144,6 +144,10 @@ var (
 	ErrStreamAuth        = errors.New("stream auth rejected") // 403, retrying cannot help
 )
 
+// ErrStreamAlreadyLocal means the identity now belongs to a library file, so a
+// cached stream must not be created for it: the player has to use the local row.
+var ErrStreamAlreadyLocal = errors.New("stream identity is already in the library")
+
 // ErrStreamDiscardDeferred means a stream-cache entry could not be deleted
 // because a playback session still owns its file. The entry is flagged for the
 // promotion worker, which retries once the session closes; callers must treat

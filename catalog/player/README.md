@@ -459,7 +459,18 @@ flowchart TB
   placeholder. A row that already has a key is skipped. A pending promotion cannot
   move the cached file while any session owns it: closing the session fires the
   cache's `OnSessionClosed` observer, which wakes the download cache-maintenance
-  worker.
+  worker. Promotion also refuses to move a file the decoder has loaded without a
+  session (a load window or a retry): `PlayerService.PlayingTrack` is the port the
+  worker consults, and the 30 s sweep retries once playback moves on.
+- **Merge remap.** A finished download or promotion deletes the remote row and
+  emits `track:merged` (`from_track_id`, `to_track_id`). `PlayerService.RemapTrack`
+  replaces the current row and every queue occurrence with the survivor, closes the
+  stream session, rebinds listening/attempt bookkeeping to the new id, and reloads
+  the local file at the same position/state. Without this the decoder kept a
+  deleted row (a later write failed its foreign key) and the next attempt reopened
+  a stream cache for an already-local identity. `stream.Cache.Open` additionally
+  refuses such an identity with `domain.ErrStreamAlreadyLocal` instead of creating
+  a new entry.
 - Manages playback state transitions.
 - Runs a **500ms ticker** for internal logic:
   - Increments play counts and scrobbling thresholds via `checkThreshold()`.

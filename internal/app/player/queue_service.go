@@ -579,6 +579,24 @@ func (s *QueueService) UpdateTrack(track *domain.TrackDTO) {
 	}
 }
 
+// ReplaceTrack swaps every queue entry that still points at fromID for track.
+// A merge deletes the remote row, so leaving the old id would make the next
+// advance load a row that no longer exists.
+func (s *QueueService) ReplaceTrack(fromID string, track *domain.TrackDTO) {
+	if fromID == "" || track == nil || fromID == track.ID {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, list := range [][]*domain.TrackDTO{s.originalList, s.shuffledList} {
+		for i, current := range list {
+			if current != nil && current.ID == fromID {
+				list[i] = track
+			}
+		}
+	}
+}
+
 // UpdateFavorite preserves queue order and metadata without publishing a new queue.
 func (s *QueueService) UpdateFavorite(track *domain.TrackDTO) {
 	s.mu.Lock()

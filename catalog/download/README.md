@@ -125,7 +125,13 @@ a worker.
 - **Worker.** Its own loop (not the download worker): one sweep on `Start`, one on every
   wake, and a 30 s backstop. `stream.Cache.OnSessionClosed` wakes it, wired in `app.Module`.
   `RunCacheMaintenanceSweep` is single-flight and handles **pending discards first**, then
-  pending promotions. Entries with an active playback session are skipped, not failed.
+  pending promotions, then orphaned caches. Entries with an active playback session are
+  skipped, not failed, and the worker also skips the row the player currently has loaded
+  (`PlayingTrack`), because moving that file would break the decoder even when no cache
+  session owns it.
+- **Orphan sweep.** Every sweep lists all cached entries and deletes any whose identity
+  already maps to a non-remote track, covering a crash or race that left the flags unset.
+  A live session defers that delete to the next sweep.
 - **Two independent flags.** `promoted` means the audio was moved into the library;
   `discard_pending` means the cache is no longer needed and must be deleted once idle. A
   promotion sets both after the move; a finished download sets only `discard_pending` when

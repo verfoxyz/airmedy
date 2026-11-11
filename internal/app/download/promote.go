@@ -92,8 +92,13 @@ func (s *Service) PromoteCachedFile(
 	if mergeErr != nil {
 		s.logger.Warn("promote: merge after a cached file failed",
 			"track_id", track.ID, "error", mergeErr)
-	} else if merged.SurvivorTrackID != "" {
-		survivorID = merged.SurvivorTrackID
+	} else {
+		if merged.SurvivorTrackID != "" {
+			survivorID = merged.SurvivorTrackID
+		}
+		// The player must stop streaming the deleted row and continue from the
+		// local file the promotion just created.
+		s.emitTrackMerged(merged.RemovedTrackID, merged.SurvivorTrackID)
 	}
 
 	if content.Lyrics && s.lyrics != nil {
@@ -220,6 +225,54 @@ func (s *Service) RunCacheMaintenanceSweep(ctx context.Context) {
 		}
 		s.sweepPromotion(ctx, entry)
 	}
+
+	// Backstop for caches left behind by a crash or a race: an entry whose
+	// identity is already a library file must not survive, even without a flag.
+	s.sweepOrphans(ctx)
+}
+
+// sweepOrphans deletes caches whose identity now belongs to a local track. A
+// playback session still holding the file defers the delete to a later sweep.
+func (s *Service) sweepOrphans(ctx context.Context) {
+	if s.cached == nil || s.merger == nil {
+		return
+	}
+	entries, err := s.cached.AllEntries(ctx)
+	if err != nil {
+		s.logger.Warn("promote: cannot list cached entries", "error", err)
+		return
+	}
+	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return
+		}
+		if entry == nil || entry.Promoted || entry.DiscardPending {
+			// The normal passes already cover these.
+			continue
+		}
+		provider := domain.NormalizeProvider(entry.Provider)
+		externalID := strings.TrimSpace(entry.ExternalID)
+		if provider == "" || externalID == "" {
+			continue
+		}
+		track, lookupErr := s.merger.FindByRemoteIdentity(ctx, provider, externalID)
+		if lookupErr != nil {
+			s.logger.Warn("promote: orphan lookup failed",
+				"provider", provider, "external_id", externalID, "error", lookupErr)
+			continue
+		}
+		if track == nil || track.IsRemote() {
+			continue
+		}
+		if s.cached.HasActiveSession(provider, externalID) {
+			continue
+		}
+		if err := s.cached.DiscardEntry(ctx, trackFromEntry(entry)); err != nil &&
+			!errors.Is(err, domain.ErrStreamDiscardDeferred) {
+			s.logger.Warn("promote: cannot delete an orphaned cache",
+				"cache_key", entry.CacheKey, "error", err)
+		}
+	}
 }
 
 // sweepDiscard deletes a cache nobody needs any more. A session still holding
@@ -295,6 +348,12 @@ func (s *Service) sweepPromotion(ctx context.Context, entry *domain.StreamCacheE
 // executePromotion completes the cache and either promotes it or hands the
 // track to the download queue when the cache is below the configured quality.
 func (s *Service) executePromotion(ctx context.Context, entry *domain.StreamCacheEntry, track *domain.TrackDTO) {
+	// The decoder may have the remote row loaded without a cache session (a load
+	// window or a retry). Moving the file then breaks playback, so this round is
+	// skipped; a session close, the next wake or the 30s backstop retries it.
+	if playing := s.playingTrackID(ctx); playing != "" && playing == track.ID {
+		return
+	}
 	taskID := s.startPromotionTask(ctx, entry, track)
 
 	done, err := s.cached.EnsureComplete(ctx, track)

@@ -897,6 +897,90 @@ func (s *PlayerService) PeekPreviousTrack() *domain.TrackDTO {
 	return s.queue.PeekPrevious()
 }
 
+// PlayingTrack reports the row the decoder currently has loaded, even while it
+// is paused. The promotion worker refuses to move a cache file this row points
+// at. ok is false when nothing is loaded.
+func (s *PlayerService) PlayingTrack(_ context.Context) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.currentTrack == nil {
+		return "", false
+	}
+	return s.currentTrack.ID, true
+}
+
+// RemapTrack moves the player off a remote row that a merge deleted and onto the
+// survivor that now owns the file.
+//
+// It replaces the current row and every queue occurrence, releases the stream
+// session (the decoder must stop reading a cache the promotion is moving), and
+// reloads the survivor from disk at the same position. Analytics bookkeeping is
+// rebound to the survivor id, because an attempt or listen row keyed on the
+// deleted id would fail its foreign key later.
+func (s *PlayerService) RemapTrack(ctx context.Context, fromTrackID, toTrackID string) {
+	if strings.TrimSpace(fromTrackID) == "" || strings.TrimSpace(toTrackID) == "" || fromTrackID == toTrackID {
+		return
+	}
+	survivor, err := s.trackRepo.GetByID(ctx, toTrackID)
+	if err != nil {
+		s.logger.Warn("player: cannot load the surviving track",
+			"from", fromTrackID, "to", toTrackID, "error", err)
+		return
+	}
+	if survivor == nil {
+		// The survivor is gone too, so the stale entry must not stay in the queue.
+		s.queue.RemoveTrack(fromTrackID)
+		s.emitQueue()
+		return
+	}
+
+	// Replace the queue before touching playback: a natural advance may run
+	// between the two steps, and it must already resolve the local row.
+	s.queue.ReplaceTrack(fromTrackID, survivor)
+
+	s.mu.Lock()
+	current := s.currentTrack
+	if current == nil || current.ID != fromTrackID {
+		s.mu.Unlock()
+		s.emitQueue()
+		return
+	}
+	status := s.player.GetStatus()
+	s.currentTrack = survivor
+	if s.listeningTrack != nil && s.listeningTrack.ID == fromTrackID {
+		s.listeningTrack = survivor
+	}
+	if s.playbackAttempt != nil && s.playbackAttempt.TrackID == fromTrackID {
+		s.playbackAttempt.TrackID = toTrackID
+	}
+	if s.playCounted[fromTrackID] {
+		delete(s.playCounted, fromTrackID)
+		s.playCounted[toTrackID] = true
+	}
+	if s.npReported[fromTrackID] {
+		delete(s.npReported, fromTrackID)
+		s.npReported[toTrackID] = true
+	}
+	s.mu.Unlock()
+
+	s.dropStreamSession()
+	s.emitQueue()
+
+	var loadErr error
+	switch status.PlaybackState {
+	case domain.PlaybackStatePlaying:
+		loadErr = s.loadAndPlayAtPosition(survivor, status.Position, domain.PlaybackEndStopped)
+	case domain.PlaybackStatePaused:
+		loadErr = s.loadInactiveAtPosition(survivor, status.Position, true)
+	default:
+		loadErr = s.loadInactiveAtPosition(survivor, status.Position, false)
+	}
+	if loadErr != nil {
+		s.logger.Warn("player: cannot continue from the surviving file",
+			"to", toTrackID, "error", loadErr)
+	}
+}
+
 // SyncTrack updates the metadata of a track in the current player state if it matches.
 func (s *PlayerService) SyncTrack(track *domain.TrackDTO) {
 	s.mu.Lock()

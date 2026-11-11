@@ -134,6 +134,18 @@ func TestDownloadCompletionEmitsTaskUpdated(t *testing.T) {
 	assert.Greater(t, h.sink.taskUpdates(), 0, "the tasks page must reload after a download finishes")
 }
 
+// TestDownloadCompletionEmitsTrackMerged: the finished download folds the
+// remote row into the imported one; the player must be told which id survives.
+func TestDownloadCompletionEmitsTrackMerged(t *testing.T) {
+	h := newHarness(t)
+	row := h.downloadAndImport(t, 200, 200)
+
+	merged := h.sink.mergedCalls()
+	require.Len(t, merged, 1)
+	assert.Equal(t, "remote-duration", merged[0][0])
+	assert.Equal(t, row.ID, merged[0][1])
+}
+
 func TestDownloadFailureEmitsTaskUpdated(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

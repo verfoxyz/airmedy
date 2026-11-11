@@ -143,6 +143,7 @@ type stubCachedAudio struct {
 
 	pending    []*domain.StreamCacheEntry
 	discards   []*domain.StreamCacheEntry
+	entries    []*domain.StreamCacheEntry
 	active     map[string]bool
 	promoted   []string
 	cleared    []string
@@ -190,6 +191,12 @@ func (c *stubCachedAudio) MarkPendingPromote(_ context.Context, track *domain.Tr
 		PendingPromote: true,
 	})
 	return nil
+}
+
+func (c *stubCachedAudio) AllEntries(context.Context) ([]*domain.StreamCacheEntry, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]*domain.StreamCacheEntry(nil), c.entries...), nil
 }
 
 func (c *stubCachedAudio) DiscardEntry(_ context.Context, track *domain.TrackDTO) error {
@@ -369,6 +376,7 @@ type recordingSink struct {
 	done     []*domain.DownloadJob
 	failed   []*domain.DownloadJob
 	tasks    int
+	merged   [][2]string
 }
 
 func (s *recordingSink) DownloadProgress(j *domain.DownloadJob) {
@@ -393,6 +401,19 @@ func (s *recordingSink) TaskUpdated() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tasks++
+}
+
+// TrackMerged records the merge notifications the player consumes.
+func (s *recordingSink) TrackMerged(fromTrackID, toTrackID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.merged = append(s.merged, [2]string{fromTrackID, toTrackID})
+}
+
+func (s *recordingSink) mergedCalls() [][2]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([][2]string(nil), s.merged...)
 }
 
 func (s *recordingSink) taskUpdates() int {

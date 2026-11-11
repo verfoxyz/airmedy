@@ -260,6 +260,40 @@ func remoteTrack() *domain.TrackDTO {
 	return &domain.TrackDTO{Track: domain.Track{ID: "t1", Title: "Song", Provider: "wy", ExternalID: "42"}}
 }
 
+// stubLocalIdentity is the guard the composition root installs.
+type stubLocalIdentity struct {
+	local bool
+	err   error
+}
+
+func (s stubLocalIdentity) HasLocalIdentity(context.Context, string, string) (bool, error) {
+	return s.local, s.err
+}
+
+// TestOpen_RefusesAnIdentityThatIsAlreadyLocal: a promoted row keeps its
+// identity, so a player still holding the old remote DTO must not recreate a
+// cache entry for it.
+func TestOpen_RefusesAnIdentityThatIsAlreadyLocal(t *testing.T) {
+	repo := newFakeStreamCacheRepo()
+	cache := newTestCacheWithRepo(t, &fakeResolver{}, repo)
+	cache.SetLocalIdentityChecker(stubLocalIdentity{local: true})
+
+	track := &domain.TrackDTO{Track: domain.Track{
+		ID: "remote-1", Path: domain.RemotePath("wy", "42"), Title: "Song",
+		Provider: "wy", ExternalID: "42", Availability: domain.AvailabilityRemote,
+	}}
+	_, err := cache.Open(context.Background(), track)
+	if !errors.Is(err, domain.ErrStreamAlreadyLocal) {
+		t.Fatalf("Open error = %v, want ErrStreamAlreadyLocal", err)
+	}
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	if len(repo.entries) != 0 {
+		t.Fatalf("an entry was created for a local identity: %+v", repo.entries)
+	}
+}
+
 func TestCacheProxiesFullBodyAndRange(t *testing.T) {
 	data := bytes.Repeat([]byte("airmedy-stream-"), 4096)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

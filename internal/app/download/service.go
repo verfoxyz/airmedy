@@ -60,6 +60,17 @@ type CachedAudio interface {
 	// ClearPendingPromote ends a request whose audio is being downloaded at a
 	// higher quality instead.
 	ClearPendingPromote(ctx context.Context, track *domain.TrackDTO) error
+	// AllEntries lists every cached entry, so the sweep can drop caches whose
+	// identity already became a library file.
+	AllEntries(ctx context.Context) ([]*domain.StreamCacheEntry, error)
+}
+
+// PlayingTrack reports the row the decoder currently has loaded. Promotion must
+// not move a file the player still points at, even when no cache session owns it
+// (a load window or a retry in progress). *player.PlayerService satisfies it;
+// the worker depends only on this narrow port.
+type PlayingTrack interface {
+	PlayingTrack(ctx context.Context) (trackID string, ok bool)
 }
 
 // SettingsReader is the slice of the settings service the download service
@@ -90,6 +101,9 @@ type EventSink interface {
 	DownloadFailed(job *domain.DownloadJob)
 	// TaskUpdated reports a promotion task change; the tasks page reloads.
 	TaskUpdated()
+	// TrackMerged reports that a remote row was folded into a local one. The
+	// player remaps its current track and queue off it.
+	TrackMerged(fromTrackID, toTrackID string)
 }
 
 // Service runs the download queue: it claims due jobs, resolves a fresh stream,
@@ -134,6 +148,11 @@ type Service struct {
 	// sink is replaced when the Wails layer installs itself; nil until then.
 	sinkMu sync.RWMutex
 	sink   EventSink
+
+	// playing is installed by the composition root. It is read from the
+	// maintenance worker, so the setter and the reads share playingMu.
+	playingMu sync.RWMutex
+	playing   PlayingTrack
 
 	// coverURLs remembers the cover a track was enqueued with. It is not
 	// persisted: a cached cover is a nicety, and the row already carries
@@ -233,6 +252,58 @@ func (s *Service) SetEventSink(sink EventSink) {
 	s.sinkMu.Lock()
 	defer s.sinkMu.Unlock()
 	s.sink = sink
+}
+
+// SetPlayingTrack installs the player port the promotion worker consults before
+// moving a file. Wiring happens in the composition root, so this package never
+// imports app/player.
+func (s *Service) SetPlayingTrack(playing PlayingTrack) {
+	s.playingMu.Lock()
+	defer s.playingMu.Unlock()
+	s.playing = playing
+}
+
+// playingTrackID reports the row the decoder currently has loaded, or "" when no
+// player is wired or nothing is loaded.
+func (s *Service) playingTrackID(ctx context.Context) string {
+	s.playingMu.RLock()
+	playing := s.playing
+	s.playingMu.RUnlock()
+	if playing == nil {
+		return ""
+	}
+	id, ok := playing.PlayingTrack(ctx)
+	if !ok {
+		return ""
+	}
+	return id
+}
+
+// emitTrackMerged tells the player a remote row became a local one.
+func (s *Service) emitTrackMerged(fromTrackID, toTrackID string) {
+	if fromTrackID == "" || toTrackID == "" || fromTrackID == toTrackID {
+		return
+	}
+	s.sinkMu.RLock()
+	sink := s.sink
+	s.sinkMu.RUnlock()
+	if sink != nil {
+		sink.TrackMerged(fromTrackID, toTrackID)
+	}
+}
+
+// HasLocalIdentity reports whether the identity already belongs to a library
+// file. The stream cache uses it to refuse creating a new entry for a promoted
+// row the player may still be holding as remote.
+func (s *Service) HasLocalIdentity(ctx context.Context, provider, externalID string) (bool, error) {
+	if s.merger == nil {
+		return false, nil
+	}
+	track, err := s.merger.FindByRemoteIdentity(ctx, provider, externalID)
+	if err != nil {
+		return false, fmt.Errorf("local identity %s/%s: %w", provider, externalID, err)
+	}
+	return track != nil && !track.IsRemote(), nil
 }
 
 func (s *Service) emit(fn func(EventSink, *domain.DownloadJob), job *domain.DownloadJob) {
@@ -771,6 +842,11 @@ func (s *Service) execute(ctx context.Context, job *domain.DownloadJob) error {
 	survivorID := finalized.TrackID
 	if mergeErr == nil && merged.SurvivorTrackID != "" {
 		survivorID = merged.SurvivorTrackID
+	}
+	// The player may still hold the remote row this download replaced; tell it
+	// to continue from the surviving local row.
+	if mergeErr == nil {
+		s.emitTrackMerged(merged.RemovedTrackID, merged.SurvivorTrackID)
 	}
 
 	// Lyrics are attached after the merge: the remote row the job started from

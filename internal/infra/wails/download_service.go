@@ -18,6 +18,9 @@ const (
 	// EventTaskUpdated announces a promotion-history change. The tasks page
 	// reloads; the payload is empty because it reads the list itself.
 	EventTaskUpdated = "task:updated"
+	// EventTrackMerged announces that a remote row was folded into a local one.
+	// The player remaps its current track and queue from the payload.
+	EventTrackMerged = "track:merged"
 )
 
 // DownloadProgressEvent is what the UI needs for one progress ring. It is a
@@ -82,6 +85,19 @@ func (downloadEventSink) TaskUpdated() {
 		return
 	}
 	app.Event.Emit(EventTaskUpdated, nil)
+}
+
+// TrackMerged implements download.EventSink: the player replaces the deleted
+// remote row with the survivor before touching playback state again.
+func (downloadEventSink) TrackMerged(fromTrackID, toTrackID string) {
+	app := application.Get()
+	if app == nil || app.Event == nil {
+		return
+	}
+	app.Event.Emit(EventTrackMerged, map[string]string{
+		"from_track_id": fromTrackID,
+		"to_track_id":   toTrackID,
+	})
 }
 
 func emitDownloadEvent(name string, job *domain.DownloadJob) {

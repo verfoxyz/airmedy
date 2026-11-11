@@ -1865,6 +1865,53 @@ func (f *fakeStreamCache) FlushProgress(_ *stream.Session) {
 	f.mu.Unlock()
 }
 
+// TestRemapTrack_SwitchesCurrentAndQueueToTheSurvivor: a merge deleted the
+// remote row the decoder was streaming; the player must move to the local row,
+// close the stream session and continue from the file.
+func TestRemapTrack_SwitchesCurrentAndQueueToTheSurvivor(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1}}
+	s, _ := newTestService(t, fp)
+	cache := newFakeStreamCache()
+	s.streamCache = cache
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID: "remote-1", Path: domain.RemotePath("wy", "42"), Title: "歌",
+		Provider: "wy", ExternalID: "42", Availability: domain.AvailabilityRemote, Duration: 120,
+	}}
+	local := &domain.TrackDTO{Track: domain.Track{
+		ID: "local-1", Path: `C:\Music\song.flac`, Title: "歌", Duration: 120, Availability: domain.AvailabilityReady,
+	}}
+	s.trackRepo = &reloadTrackRepo{track: local}
+	s.queue.SetQueue([]*domain.TrackDTO{remote, remote}, 0)
+
+	if err := s.loadAndPlay(remote); err != nil {
+		t.Fatalf("loadAndPlay: %v", err)
+	}
+	if s.streamSession == nil {
+		t.Fatal("the remote row should have opened a stream session")
+	}
+
+	s.RemapTrack(context.Background(), remote.ID, local.ID)
+
+	if current := s.GetCurrentTrack(); current == nil || current.ID != local.ID {
+		t.Fatalf("current track = %+v, want the surviving local row", current)
+	}
+	for _, queued := range s.GetQueue() {
+		if queued.ID != local.ID {
+			t.Fatalf("queue still holds %q, want only the survivor", queued.ID)
+		}
+	}
+	cache.mu.Lock()
+	closed := len(cache.closed)
+	cache.mu.Unlock()
+	if closed == 0 {
+		t.Fatal("the stream session was not closed before the local reload")
+	}
+	if fp.loadedPath != local.Path {
+		t.Fatalf("decoder opened %q, want the local file %q", fp.loadedPath, local.Path)
+	}
+}
+
 func TestPlayTracks_StreamsARemoteRowThroughTheCache(t *testing.T) {
 	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1.0}}
 	s, _ := newTestService(t, fp)

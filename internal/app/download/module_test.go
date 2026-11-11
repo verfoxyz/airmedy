@@ -81,6 +81,9 @@ func (stubCachedAudio) SetDiscardPending(context.Context, *domain.TrackDTO, bool
 	return nil
 }
 func (stubCachedAudio) ClearPendingPromote(context.Context, *domain.TrackDTO) error { return nil }
+func (stubCachedAudio) AllEntries(context.Context) ([]*domain.StreamCacheEntry, error) {
+	return nil, nil
+}
 
 type stubPromotionTasks struct{ domain.PromotionTaskRepository }
 

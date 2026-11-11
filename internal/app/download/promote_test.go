@@ -182,6 +182,12 @@ func TestPromoteOnSave_UsesTheCacheAtEqualOrHigherQuality(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, row)
 			assert.Equal(t, "remote-"+tt.name, row.ExternalID)
+
+			// The player is told to move off the deleted remote row.
+			merged := h.sink.mergedCalls()
+			require.Len(t, merged, 1)
+			assert.Equal(t, remote.ID, merged[0][0])
+			assert.Equal(t, row.ID, merged[0][1])
 		})
 	}
 }
@@ -246,6 +252,67 @@ func TestPromotionSweep_WaitsForPlaybackToReleaseTheFile(t *testing.T) {
 	h.cached.setActive("wy", remote.ExternalID, false)
 	h.svc.RunCacheMaintenanceSweep(context.Background())
 	waitFor(t, "the deferred promotion", func() bool { return h.finalizer.count() == 1 })
+}
+
+// stubPlayingTrack is the player port the promotion worker consults.
+type stubPlayingTrack struct {
+	id string
+}
+
+func (p stubPlayingTrack) PlayingTrack(context.Context) (string, bool) {
+	return p.id, p.id != ""
+}
+
+// TestPromotionSweep_SkipsTheTrackThePlayerHasLoaded: even without a cache
+// session, the decoder may hold the remote row (a load window or a retry). The
+// file must not move then; the next sweep after playback changes does it.
+func TestPromotionSweep_SkipsTheTrackThePlayerHasLoaded(t *testing.T) {
+	h := newHarness(t)
+	remote := seedPromotion(t, h, "remote-playing", domain.Quality320k, true)
+	h.svc.SetPlayingTrack(stubPlayingTrack{id: remote.ID})
+
+	h.svc.PromoteOnSave(context.Background(), remote)
+	h.svc.RunCacheMaintenanceSweep(context.Background())
+
+	assert.Equal(t, 0, h.finalizer.count(), "a loaded track must not be moved")
+	_, discarded := h.cached.counts()
+	assert.Equal(t, 0, discarded, "its cache must not be deleted either")
+	h.cached.mu.Lock()
+	assert.Len(t, h.cached.pending, 1, "the request stays pending")
+	h.cached.mu.Unlock()
+
+	// Playback moved on: the same request finishes on the next sweep.
+	h.svc.SetPlayingTrack(stubPlayingTrack{})
+	h.svc.RunCacheMaintenanceSweep(context.Background())
+	waitFor(t, "the deferred promotion", func() bool { return h.finalizer.count() == 1 })
+}
+
+// TestPromotionSweep_DiscardsACacheWhoseIdentityIsLocal: a crash or race can
+// leave a cache without any flag even though the identity is already a library
+// file. The sweep must delete it.
+func TestPromotionSweep_DiscardsACacheWhoseIdentityIsLocal(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	require.NoError(t, h.tracks.Upsert(ctx, &domain.Track{
+		ID:           "local-orphan",
+		Path:         "/music/orphan.mp3",
+		Title:        "Orphan",
+		Availability: domain.AvailabilityReady,
+		Provider:     "wy",
+		ExternalID:   "orphan",
+	}))
+	h.cached.mu.Lock()
+	h.cached.entries = []*domain.StreamCacheEntry{{
+		CacheKey:   "orphan-cache",
+		Provider:   "wy",
+		ExternalID: "orphan",
+	}}
+	h.cached.mu.Unlock()
+
+	h.svc.RunCacheMaintenanceSweep(ctx)
+
+	_, discarded := h.cached.counts()
+	assert.Equal(t, 1, discarded, "a cache for an already-local identity must be deleted")
 }
 
 func TestPromotionSweep_PurgesAPromotedEntryWithoutCompletingIt(t *testing.T) {
