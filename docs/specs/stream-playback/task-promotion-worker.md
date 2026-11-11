@@ -26,12 +26,12 @@
 
 ## 3. 数据模型
 
-迁移 `000094`（与已开工的实现兼容，只新增列，不改 `promoted`）：
+迁移编号（注意：`000094` 已应用、只含 `promoted`，**不要修改它**；新增列用新迁移）：
 
-```sql
-ALTER TABLE stream_cache ADD COLUMN promoted INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE stream_cache ADD COLUMN discard_pending INTEGER NOT NULL DEFAULT 0;
-```
+- `000094_stream_cache_promoted.up.sql`：`promoted INTEGER NOT NULL DEFAULT 0`（已应用，保持原样）
+- `000096_stream_cache_discard_pending.up.sql`：`discard_pending INTEGER NOT NULL DEFAULT 0`
+
+> 背景见 [fix-discard-pending-migration.md](fix-discard-pending-migration.md)。
 
 两个独立状态：
 
@@ -168,7 +168,7 @@ if err := s.cached.DiscardEntry(ctx, track); err != nil {
 - 启动场景：构造 `pending_promote` / `promoted` / `discard_pending` 行，`Start` 后自动处理；
 - 重新播放 `discard_pending` 且文件仍在的条目：清标记、复用缓存；
 - 质量更高：`Enqueue` 被调用，`pending_promote` 被清掉；
-- 迁移 `000094` up/down；
+- 迁移：`000094` 保持原样，`000096` up/down；
 - 历史：queued→running→done/failed 各有对应 `promotion_tasks` 行；重复点提升不新增 `queued` 行；每次写入后 emit `task:updated`。
 
 **人工**
