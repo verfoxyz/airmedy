@@ -394,7 +394,17 @@
       "with_lyric_translation_desc": "Giữ dòng đã dịch bên cạnh bản gốc.",
       "with_lyric_translation_needs_lyrics": "Hãy bật lời bài hát trước — không có lời thì không có gì để dịch.",
       "with_cover": "Ảnh bìa",
-      "with_cover_desc": "Nhúng ảnh bìa vào tệp đã tải xuống."
+      "with_cover_desc": "Nhúng ảnh bìa vào tệp đã tải xuống.",
+      "dedupe": "Xóa bộ nhớ đệm trùng lặp",
+      "dedupe_desc": "Dọn các bộ nhớ đệm trùng, đã nhập và mồ côi, giữ bản chất lượng cao nhất.",
+      "dedupe_scan": "Quét",
+      "dedupe_scanning": "Đang quét…",
+      "dedupe_report": "Có thể xóa {count} mục, khoảng {size}.",
+      "dedupe_clean": "Dọn",
+      "dedupe_done": "Đã xóa {count} mục, giải phóng {size}.",
+      "dedupe_skipped": "Đã bỏ qua {count}.",
+      "dedupe_nothing": "Không có bộ nhớ đệm để dọn.",
+      "dedupe_failed": "Dọn thất bại. Hãy thử lại sau."
     },
     "plugins": {
       "title": "Plugin",

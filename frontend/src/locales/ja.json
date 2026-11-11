@@ -394,7 +394,17 @@
       "with_lyric_translation_desc": "翻訳された歌詞行を原文と並べて保持します。",
       "with_lyric_translation_needs_lyrics": "先に歌詞をオンにしてください。歌詞がなければ翻訳する対象がありません。",
       "with_cover": "カバーアート",
-      "with_cover_desc": "カバー画像をダウンロードしたファイルに埋め込みます。"
+      "with_cover_desc": "カバー画像をダウンロードしたファイルに埋め込みます。",
+      "dedupe": "重複キャッシュを削除",
+      "dedupe_desc": "重複・取り込み済み・孤立したストリームキャッシュを削除し、最高音質の1件を残します。",
+      "dedupe_scan": "スキャン",
+      "dedupe_scanning": "スキャン中…",
+      "dedupe_report": "{count} 件（約 {size}）を削除できます。",
+      "dedupe_clean": "削除",
+      "dedupe_done": "{count} 件を削除し、{size} を解放しました。",
+      "dedupe_skipped": "{count} 件をスキップしました。",
+      "dedupe_nothing": "削除するキャッシュはありません。",
+      "dedupe_failed": "削除に失敗しました。後でもう一度お試しください。"
     },
     "plugins": {
       "title": "プラグイン",

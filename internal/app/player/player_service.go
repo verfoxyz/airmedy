@@ -41,6 +41,14 @@ type StreamCoverProvider interface {
 	BytesForIdentity(ctx context.Context, provider, externalID string) ([]byte, string, error)
 }
 
+// cacheCleanupCheckpoint remembers what to restore after a duplicate-cache
+// cleanup paused playback to release the stream file.
+type cacheCleanupCheckpoint struct {
+	trackID    string
+	position   float64
+	wasPlaying bool
+}
+
 // PlayerService coordinates playback and queue management.
 type PlayerService struct {
 	mu                              sync.RWMutex
@@ -91,6 +99,9 @@ type PlayerService struct {
 
 	endedNaturally bool             // true when queue ran out; cleared on Play or loadAndPlay
 	nextPreQueued  *domain.TrackDTO // track pre-enqueued for gapless transition
+
+	// cacheCleanup is set while a duplicate-cache cleanup has playback paused.
+	cacheCleanup *cacheCleanupCheckpoint
 
 	crossfadeSec          float64 // crossfade duration in seconds; 0 = off (gapless)
 	fading                bool    // a crossfade overlap is currently in progress
@@ -979,6 +990,68 @@ func (s *PlayerService) RemapTrack(ctx context.Context, fromTrackID, toTrackID s
 		s.logger.Warn("player: cannot continue from the surviving file",
 			"to", toTrackID, "error", loadErr)
 	}
+}
+
+// PlayingIdentity reports the remote identity the decoder currently has loaded.
+// A local row has no identity, so ok is false.
+func (s *PlayerService) PlayingIdentity(_ context.Context) (string, string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.currentTrack == nil || !s.currentTrack.IsRemote() {
+		return "", "", false
+	}
+	provider := domain.NormalizeProvider(s.currentTrack.Provider)
+	externalID := strings.TrimSpace(s.currentTrack.ExternalID)
+	if provider == "" || externalID == "" {
+		return "", "", false
+	}
+	return provider, externalID, true
+}
+
+// PauseForCacheCleanup pauses playback (only when it was playing) and releases
+// the stream session so a cleanup can delete the cache file. The current track,
+// queue, repeat/shuffle mode and position are left in place; the position and
+// play state are remembered for ResumeAfterCacheCleanup.
+func (s *PlayerService) PauseForCacheCleanup(_ context.Context) error {
+	status := s.player.GetStatus()
+	s.mu.Lock()
+	checkpoint := &cacheCleanupCheckpoint{
+		position:   status.Position,
+		wasPlaying: status.PlaybackState == domain.PlaybackStatePlaying,
+	}
+	if s.currentTrack != nil {
+		checkpoint.trackID = s.currentTrack.ID
+	}
+	s.cacheCleanup = checkpoint
+	s.mu.Unlock()
+
+	if checkpoint.wasPlaying {
+		if err := s.Pause(); err != nil {
+			return err
+		}
+	}
+	// Deleting the cache while the decoder owns it fails on Windows.
+	s.dropStreamSession()
+	return nil
+}
+
+// ResumeAfterCacheCleanup reloads the same track at the remembered position when
+// the cleanup had paused it. The cache layer reuses a surviving cross-source
+// entry or fetches a fresh stream; a local row simply reopens its file.
+func (s *PlayerService) ResumeAfterCacheCleanup(ctx context.Context) error {
+	s.mu.Lock()
+	checkpoint := s.cacheCleanup
+	s.cacheCleanup = nil
+	current := s.currentTrack
+	s.mu.Unlock()
+	if checkpoint == nil || !checkpoint.wasPlaying || checkpoint.trackID == "" {
+		return nil
+	}
+	if current == nil || current.ID != checkpoint.trackID {
+		// The user chose another track while the cleanup ran; leave it alone.
+		return nil
+	}
+	return s.loadAndPlayAtPosition(current, checkpoint.position, domain.PlaybackEndStopped)
 }
 
 // SyncTrack updates the metadata of a track in the current player state if it matches.

@@ -394,7 +394,17 @@
       "with_lyric_translation_desc": "Conservar la línea traducida junto al original.",
       "with_lyric_translation_needs_lyrics": "Activa primero las letras: sin ellas no hay nada que traducir.",
       "with_cover": "Portada",
-      "with_cover_desc": "Incrustar la imagen de portada en el archivo descargado."
+      "with_cover_desc": "Incrustar la imagen de portada en el archivo descargado.",
+      "dedupe": "Eliminar caché duplicada",
+      "dedupe_desc": "Limpia cachés duplicadas, ya importadas y huérfanas, conservando la copia de mayor calidad.",
+      "dedupe_scan": "Analizar",
+      "dedupe_scanning": "Analizando…",
+      "dedupe_report": "Se pueden eliminar {count} entradas, unos {size}.",
+      "dedupe_clean": "Limpiar",
+      "dedupe_done": "Se eliminaron {count} entradas y se liberaron {size}.",
+      "dedupe_skipped": "Se omitieron {count}.",
+      "dedupe_nothing": "No hay caché que limpiar.",
+      "dedupe_failed": "No se pudo limpiar. Inténtalo más tarde."
     },
     "plugins": {
       "title": "Complementos",

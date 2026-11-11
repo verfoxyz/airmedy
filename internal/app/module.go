@@ -191,6 +191,7 @@ var Module = fx.Module("app",
 		// promoted row must not be streamed again. Both are narrow ports so
 		// neither stream nor download imports app/player.
 		downloadSvc.SetPlayingTrack(playerSvc)
+		downloadSvc.SetCacheCleanupPlayer(playerSvc)
 		cache.SetLocalIdentityChecker(downloadSvc)
 		// Promotion moves the cache file, so it waits for playback to release it;
 		// a closing session is the fastest signal, the worker's timer is the

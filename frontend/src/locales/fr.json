@@ -394,7 +394,17 @@
       "with_lyric_translation_desc": "Conserver la ligne traduite à côté de l’original.",
       "with_lyric_translation_needs_lyrics": "Activez d’abord les paroles : sans elles, il n’y a rien à traduire.",
       "with_cover": "Pochette",
-      "with_cover_desc": "Intégrer l’image de pochette dans le fichier téléchargé."
+      "with_cover_desc": "Intégrer l’image de pochette dans le fichier téléchargé.",
+      "dedupe": "Supprimer le cache en double",
+      "dedupe_desc": "Nettoie les caches en double, déjà importés et orphelins, en gardant la meilleure qualité.",
+      "dedupe_scan": "Analyser",
+      "dedupe_scanning": "Analyse…",
+      "dedupe_report": "{count} entrées, environ {size}, peuvent être supprimées.",
+      "dedupe_clean": "Nettoyer",
+      "dedupe_done": "{count} entrées supprimées, {size} libérés.",
+      "dedupe_skipped": "{count} ignorées.",
+      "dedupe_nothing": "Aucun cache à nettoyer.",
+      "dedupe_failed": "Échec du nettoyage. Réessayez plus tard."
     },
     "plugins": {
       "title": "Extensions",

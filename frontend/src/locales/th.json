@@ -394,7 +394,17 @@
       "with_lyric_translation_desc": "เก็บบรรทัดคำแปลไว้ควบคู่กับต้นฉบับ",
       "with_lyric_translation_needs_lyrics": "เปิดเนื้อเพลงก่อน — หากไม่มีเนื้อเพลงก็ไม่มีอะไรให้แปล",
       "with_cover": "ภาพปก",
-      "with_cover_desc": "ฝังภาพปกไว้ในไฟล์ที่ดาวน์โหลด"
+      "with_cover_desc": "ฝังภาพปกไว้ในไฟล์ที่ดาวน์โหลด",
+      "dedupe": "ลบแคชซ้ำ",
+      "dedupe_desc": "ล้างแคชสตรีมที่ซ้ำ นำเข้าแล้ว และไม่มีระเบียน โดยเก็บคุณภาพสูงสุดไว้",
+      "dedupe_scan": "สแกน",
+      "dedupe_scanning": "กำลังสแกน…",
+      "dedupe_report": "ลบได้ {count} รายการ ประมาณ {size}",
+      "dedupe_clean": "ล้าง",
+      "dedupe_done": "ลบ {count} รายการ คืนพื้นที่ {size}",
+      "dedupe_skipped": "ข้าม {count} รายการ",
+      "dedupe_nothing": "ไม่มีแคชให้ล้าง",
+      "dedupe_failed": "ล้างไม่สำเร็จ โปรดลองอีกครั้งภายหลัง"
     },
     "plugins": {
       "title": "ปลั๊กอิน",

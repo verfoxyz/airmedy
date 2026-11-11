@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Download, FolderOpen, RotateCcw, AlertTriangle } from '@lucide/vue'
+import { Download, FolderOpen, RotateCcw, AlertTriangle, Trash2 } from '@lucide/vue'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem, Switch, Input } from '@airmedy/ui'
 import * as LibraryService from '../../../bindings/airmedy/internal/infra/wails/libraryservice'
+import * as DownloadService from '../../../bindings/airmedy/internal/infra/wails/downloadservice'
+import type { DuplicateCacheReport } from '../../../bindings/airmedy/internal/domain/models'
 import {
   useAppStore,
   DOWNLOAD_QUALITIES,
@@ -15,6 +17,7 @@ import {
 } from '@/stores/app'
 import SettingSection from './SettingSection.vue'
 import SettingRow from './SettingRow.vue'
+import ConfirmDialog from '../ConfirmDialog.vue'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -71,6 +74,93 @@ function qualityRank(quality: DownloadQuality): number {
 function onCacheSizeChange(event: Event) {
   const value = Number((event.target as HTMLInputElement).value)
   void appStore.updateStreamCacheMB(value)
+}
+
+// --- Duplicate-cache cleanup ------------------------------------------------
+//
+// The scan is a read-only report; the user confirms it before anything is
+// deleted. While either call runs the button is disabled so a double click
+// cannot delete twice.
+const dedupeScanning = ref(false)
+const dedupeRunning = ref(false)
+const dedupeOpen = ref(false)
+const dedupePending = ref<DuplicateCacheReport | null>(null)
+const dedupeMessage = ref('')
+const dedupeFailed = ref(false)
+const dedupeBusy = computed(() => dedupeScanning.value || dedupeRunning.value)
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit++
+  }
+  const digits = value >= 100 || unit === 0 ? 0 : 1
+  return `${value.toFixed(digits)} ${units[unit]}`
+}
+
+/** Deleted entries plus orphan files, which the report counts separately. */
+function removableCount(report: DuplicateCacheReport | null): number {
+  if (!report) return 0
+  return (report.removable ?? 0) + (report.orphan_files ?? 0)
+}
+
+const dedupeReportText = computed(() =>
+  t('settings.download.dedupe_report', {
+    count: removableCount(dedupePending.value),
+    size: formatBytes(dedupePending.value?.removable_bytes ?? 0),
+  }),
+)
+
+async function scanDuplicates() {
+  if (dedupeBusy.value) return
+  dedupeScanning.value = true
+  dedupeMessage.value = ''
+  dedupeFailed.value = false
+  try {
+    const report = await DownloadService.ScanDuplicateCache()
+    if (removableCount(report) === 0) {
+      dedupePending.value = null
+      dedupeMessage.value = t('settings.download.dedupe_nothing')
+      return
+    }
+    dedupePending.value = report
+    dedupeOpen.value = true
+  } catch (error) {
+    console.error('Duplicate cache scan failed:', error)
+    dedupeFailed.value = true
+    dedupeMessage.value = t('settings.download.dedupe_failed')
+  } finally {
+    dedupeScanning.value = false
+  }
+}
+
+async function cleanDuplicates() {
+  dedupeOpen.value = false
+  if (dedupeRunning.value) return
+  dedupeRunning.value = true
+  dedupeMessage.value = ''
+  dedupeFailed.value = false
+  try {
+    const result = await DownloadService.CleanDuplicateCache()
+    dedupeMessage.value = t('settings.download.dedupe_done', {
+      count: removableCount(result),
+      size: formatBytes(result?.removable_bytes ?? 0),
+    })
+    if (result?.skipped?.length) {
+      dedupeMessage.value += ` ${t('settings.download.dedupe_skipped', { count: result.skipped.length })}`
+    }
+    dedupePending.value = null
+  } catch (error) {
+    console.error('Duplicate cache cleanup failed:', error)
+    dedupeFailed.value = true
+    dedupeMessage.value = t('settings.download.dedupe_failed')
+  } finally {
+    dedupeRunning.value = false
+  }
 }
 </script>
 
@@ -165,10 +255,39 @@ function onCacheSizeChange(event: Event) {
           />
         </div>
       </SettingRow>
+
+      <SettingRow :title="t('settings.download.dedupe')" :description="t('settings.download.dedupe_desc')">
+        <div class="flex flex-col items-end gap-1.5">
+          <button
+            type="button"
+            class="flex items-center gap-2 rounded-xl bg-foreground/[0.04] px-3 py-2 text-sm font-bold text-foreground transition-all hover:bg-foreground/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+            :disabled="dedupeBusy"
+            data-test="dedupe-scan"
+            @click="scanDuplicates">
+            <Trash2 class="h-4 w-4" />
+            {{ dedupeScanning ? t('settings.download.dedupe_scanning') : t('settings.download.dedupe_scan') }}
+          </button>
+          <p
+            v-if="dedupeMessage"
+            class="max-w-[260px] text-right text-xs"
+            :class="dedupeFailed ? 'text-primary' : 'text-subdued'"
+            role="status"
+            data-test="dedupe-status">
+            {{ dedupeMessage }}
+          </p>
+        </div>
+      </SettingRow>
     </SettingSection>
 
-    <!-- What is fetched and written beside the audio file. Each switch is an
-         independent request, so they are grouped apart from the audio options. -->
+    <ConfirmDialog
+      :open="dedupeOpen"
+      :title="t('settings.download.dedupe')"
+      :message="dedupeReportText"
+      :confirm-label="t('settings.download.dedupe_clean')"
+      danger
+      @update:open="dedupeOpen = $event"
+      @cancel="dedupeOpen = false"
+      @confirm="cleanDuplicates" />
     <SettingSection :icon="Download" :label="t('settings.download.content_title')">
       <SettingRow :title="t('settings.download.with_lyrics')" :description="t('settings.download.with_lyrics_desc')">
         <Switch :model-value="appStore.downloadWithLyrics" data-test="download-with-lyrics"

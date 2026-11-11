@@ -63,6 +63,10 @@ type CachedAudio interface {
 	// AllEntries lists every cached entry, so the sweep can drop caches whose
 	// identity already became a library file.
 	AllEntries(ctx context.Context) ([]*domain.StreamCacheEntry, error)
+	// OrphanFiles lists .audio files that no row references.
+	OrphanFiles(ctx context.Context) ([]domain.StreamCacheOrphan, error)
+	// DeleteFile removes one cache file by its flat name.
+	DeleteFile(name string) error
 }
 
 // PlayingTrack reports the row the decoder currently has loaded. Promotion must
@@ -71,6 +75,16 @@ type CachedAudio interface {
 // the worker depends only on this narrow port.
 type PlayingTrack interface {
 	PlayingTrack(ctx context.Context) (trackID string, ok bool)
+}
+
+// CacheCleanupPlayer is the playback side of the duplicate-cache cleanup: it
+// pauses without clearing the queue, releases the stream session so the file can
+// be deleted, and resumes the same track and position afterwards.
+type CacheCleanupPlayer interface {
+	// PlayingIdentity reports the remote identity the decoder has loaded.
+	PlayingIdentity(ctx context.Context) (provider, externalID string, ok bool)
+	PauseForCacheCleanup(ctx context.Context) error
+	ResumeAfterCacheCleanup(ctx context.Context) error
 }
 
 // SettingsReader is the slice of the settings service the download service
@@ -153,6 +167,7 @@ type Service struct {
 	// maintenance worker, so the setter and the reads share playingMu.
 	playingMu sync.RWMutex
 	playing   PlayingTrack
+	cleanup   CacheCleanupPlayer
 
 	// coverURLs remembers the cover a track was enqueued with. It is not
 	// persisted: a cached cover is a nicety, and the row already carries
@@ -261,6 +276,20 @@ func (s *Service) SetPlayingTrack(playing PlayingTrack) {
 	s.playingMu.Lock()
 	defer s.playingMu.Unlock()
 	s.playing = playing
+}
+
+// SetCacheCleanupPlayer installs the playback side of the duplicate-cache
+// cleanup. It is separate from PlayingTrack because it changes playback state.
+func (s *Service) SetCacheCleanupPlayer(player CacheCleanupPlayer) {
+	s.playingMu.Lock()
+	defer s.playingMu.Unlock()
+	s.cleanup = player
+}
+
+func (s *Service) cacheCleanupPlayer() CacheCleanupPlayer {
+	s.playingMu.RLock()
+	defer s.playingMu.RUnlock()
+	return s.cleanup
 }
 
 // playingTrackID reports the row the decoder currently has loaded, or "" when no

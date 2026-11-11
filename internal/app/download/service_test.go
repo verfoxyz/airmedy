@@ -144,10 +144,15 @@ type stubCachedAudio struct {
 	pending    []*domain.StreamCacheEntry
 	discards   []*domain.StreamCacheEntry
 	entries    []*domain.StreamCacheEntry
+	orphans    []domain.StreamCacheOrphan
 	active     map[string]bool
 	promoted   []string
 	cleared    []string
 	discardErr error
+
+	deletedFiles         []string
+	deleteFileErr        error
+	discardedExternalIDs []string
 }
 
 func (c *stubCachedAudio) CachedFileInfo(context.Context, *domain.TrackDTO) (string, string, bool, bool, error) {
@@ -199,10 +204,29 @@ func (c *stubCachedAudio) AllEntries(context.Context) ([]*domain.StreamCacheEntr
 	return append([]*domain.StreamCacheEntry(nil), c.entries...), nil
 }
 
+func (c *stubCachedAudio) OrphanFiles(context.Context) ([]domain.StreamCacheOrphan, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]domain.StreamCacheOrphan(nil), c.orphans...), nil
+}
+
+func (c *stubCachedAudio) DeleteFile(name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.deleteFileErr != nil {
+		return c.deleteFileErr
+	}
+	c.deletedFiles = append(c.deletedFiles, name)
+	return nil
+}
+
 func (c *stubCachedAudio) DiscardEntry(_ context.Context, track *domain.TrackDTO) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.discarded++
+	if track != nil {
+		c.discardedExternalIDs = append(c.discardedExternalIDs, track.ExternalID)
+	}
 	if c.discardErr != nil {
 		return c.discardErr
 	}

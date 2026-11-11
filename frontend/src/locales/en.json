@@ -394,7 +394,17 @@
       "with_lyric_translation_desc": "Keep the translated lyric line alongside the original.",
       "with_lyric_translation_needs_lyrics": "Turn on lyrics first — there is nothing to translate without them.",
       "with_cover": "Cover art",
-      "with_cover_desc": "Embed the cover image into the downloaded file."
+      "with_cover_desc": "Embed the cover image into the downloaded file.",
+      "dedupe": "Remove duplicate cache",
+      "dedupe_desc": "Cleans duplicate, already-imported and untracked stream caches, keeping the highest-quality copy.",
+      "dedupe_scan": "Scan",
+      "dedupe_scanning": "Scanning…",
+      "dedupe_report": "Would delete {count} cache entries, about {size}.",
+      "dedupe_clean": "Clean",
+      "dedupe_done": "Deleted {count} cache entries and freed {size}.",
+      "dedupe_skipped": "Skipped {count}.",
+      "dedupe_nothing": "No cache to clean.",
+      "dedupe_failed": "Cleanup failed. Try again later."
     },
     "plugins": {
       "title": "Plugins",

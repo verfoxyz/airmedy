@@ -297,6 +297,23 @@ never touched. Each table keeps at most 500 finished rows (trimmed after every
 completion), and clearing does not rewrite `tracks`: a cleared failed job simply stops
 producing the search row's `failed` chip, while an `in_library` row is unaffected.
 
+## Duplicate-cache cleanup
+
+`ScanDuplicateCache` / `CleanDuplicateCache` (exposed on `DownloadService`) share one
+plan, so the report and the deletion cannot disagree. It covers four kinds: duplicate
+groups (normalized title + artist equal, duration within 5 s when both report one),
+entries whose identity already maps to a local track, promoted/discard-flagged
+leftovers, and `.audio` files with no row. A group keeps the best copy by quality
+(`flac > 320k > 128k`), then `complete`, then `last_used`; if the top two tie on all
+three, the group is skipped rather than guessed. `pending_promote` entries and busy
+sessions are skipped too.
+
+`CleanDuplicateCache` pauses playback only when the loaded track owns one of the
+candidates (`CacheCleanupPlayer`), releases the stream session, deletes entry by entry
+and orphan by orphan (one failure is reported and the batch continues), then resumes
+the same track and position. The queue, repeat/shuffle and current track are never
+touched. Both calls are read-only until confirm; a clean emits `task:updated`.
+
 ## Failure handling worth remembering
 
 - A queue that fails to start must not take the player down: the fx hook logs and

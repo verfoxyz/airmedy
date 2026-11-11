@@ -1912,6 +1912,65 @@ func TestRemapTrack_SwitchesCurrentAndQueueToTheSurvivor(t *testing.T) {
 	}
 }
 
+// TestPauseAndResumeForCacheCleanupKeepsQueueAndPosition: the cleanup pauses to
+// release the cache file, then continues the same track at the same position
+// without touching the queue or playback modes.
+func TestPauseAndResumeForCacheCleanupKeepsQueueAndPosition(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1}}
+	s, _ := newTestService(t, fp)
+	cache := newFakeStreamCache()
+	s.streamCache = cache
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID: "remote-1", Path: domain.RemotePath("wy", "42"), Title: "歌",
+		Provider: "wy", ExternalID: "42", Availability: domain.AvailabilityRemote, Duration: 120,
+	}}
+	other := &domain.TrackDTO{Track: domain.Track{ID: "local-2", Path: `C:\Music\next.flac`, Duration: 90}}
+	s.queue.SetQueue([]*domain.TrackDTO{remote, other}, 0)
+	if err := s.loadAndPlay(remote); err != nil {
+		t.Fatalf("loadAndPlay: %v", err)
+	}
+	fp.mu.Lock()
+	fp.status.Position = 42
+	fp.status.PlaybackState = domain.PlaybackStatePlaying
+	fp.mu.Unlock()
+
+	provider, externalID, ok := s.PlayingIdentity(context.Background())
+	if !ok || provider != "wy" || externalID != "42" {
+		t.Fatalf("PlayingIdentity = %q/%q/%v, want wy/42/true", provider, externalID, ok)
+	}
+
+	if err := s.PauseForCacheCleanup(context.Background()); err != nil {
+		t.Fatalf("PauseForCacheCleanup: %v", err)
+	}
+	if status := fp.GetStatus(); status.PlaybackState != domain.PlaybackStatePaused {
+		t.Fatalf("state = %q, want paused", status.PlaybackState)
+	}
+	cache.mu.Lock()
+	closed := len(cache.closed)
+	cache.mu.Unlock()
+	if closed == 0 {
+		t.Fatal("the stream session was not released for the cleanup")
+	}
+	if queue := s.GetQueue(); len(queue) != 2 {
+		t.Fatalf("queue length = %d, want it untouched", len(queue))
+	}
+
+	if err := s.ResumeAfterCacheCleanup(context.Background()); err != nil {
+		t.Fatalf("ResumeAfterCacheCleanup: %v", err)
+	}
+	status := fp.GetStatus()
+	if status.PlaybackState != domain.PlaybackStatePlaying {
+		t.Fatalf("state = %q, want playing again", status.PlaybackState)
+	}
+	if status.Position != 42 {
+		t.Fatalf("position = %v, want the same 42", status.Position)
+	}
+	if queue := s.GetQueue(); len(queue) != 2 || queue[0].ID != remote.ID {
+		t.Fatalf("queue changed during the cleanup: %+v", queue)
+	}
+}
+
 func TestPlayTracks_StreamsARemoteRowThroughTheCache(t *testing.T) {
 	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1.0}}
 	s, _ := newTestService(t, fp)

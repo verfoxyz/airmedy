@@ -172,3 +172,16 @@ func (s *DownloadService) ListTasks() ([]domain.TaskRun, error) {
 func (s *DownloadService) ClearTaskHistory() error {
 	return s.svc.ClearTaskHistory(context.Background())
 }
+
+// ScanDuplicateCache reports what a stream-cache cleanup would remove. It never
+// deletes anything; the settings page shows the report before asking.
+func (s *DownloadService) ScanDuplicateCache() (domain.DuplicateCacheReport, error) {
+	return s.svc.ScanDuplicateCache(context.Background())
+}
+
+// CleanDuplicateCache deletes duplicate, already-imported and orphaned stream
+// caches. Playback pauses and resumes automatically when the loaded track's
+// cache is among them.
+func (s *DownloadService) CleanDuplicateCache() (domain.DuplicateCacheReport, error) {
+	return s.svc.CleanDuplicateCache(context.Background())
+}

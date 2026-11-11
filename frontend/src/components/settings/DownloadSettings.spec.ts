@@ -5,6 +5,10 @@ import DownloadSettings from './DownloadSettings.vue'
 import { useAppStore } from '@/stores/app'
 
 const api = vi.hoisted(() => ({ SelectFolder: vi.fn().mockResolvedValue('') }))
+const downloadApi = vi.hoisted(() => ({
+  ScanDuplicateCache: vi.fn(),
+  CleanDuplicateCache: vi.fn(),
+}))
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({ t: (key: string) => key }),
 }))
@@ -15,6 +19,21 @@ vi.mock('@wailsio/runtime', async (importOriginal) => ({
   Events: { On: vi.fn(() => () => {}) },
 }))
 vi.mock('../../../bindings/airmedy/internal/infra/wails/libraryservice', () => api)
+vi.mock('../../../bindings/airmedy/internal/infra/wails/downloadservice', () => downloadApi)
+
+// ConfirmDialog pulls the Modal primitive in; stub it so the test drives the
+// scan/confirm flow without a real overlay.
+vi.mock('../ConfirmDialog.vue', () => ({
+  default: {
+    props: ['open', 'title', 'message', 'confirmLabel'],
+    emits: ['confirm', 'cancel', 'update:open'],
+    template: `<div v-if="open" data-test="confirm-dialog">
+      <span data-test="confirm-message">{{ message }}</span>
+      <button data-test="confirm" @click="$emit('confirm')">ok</button>
+      <button data-test="cancel" @click="$emit('cancel')">no</button>
+    </div>`,
+  },
+}))
 
 // The store persists through SettingsService; stub it so the component test only
 // checks the UI wiring.
@@ -52,6 +71,14 @@ describe('DownloadSettings', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     api.SelectFolder.mockResolvedValue('')
+    downloadApi.ScanDuplicateCache.mockResolvedValue({
+      duplicate_groups: 0, removable: 0, removable_bytes: 0,
+      orphan_files: 0, promoted_leftovers: 0, skipped: [],
+    })
+    downloadApi.CleanDuplicateCache.mockResolvedValue({
+      duplicate_groups: 0, removable: 0, removable_bytes: 0,
+      orphan_files: 0, promoted_leftovers: 0, skipped: [],
+    })
   })
 
   it('renders the audio preferences and the content switches', () => {
@@ -162,5 +189,70 @@ describe('DownloadSettings', () => {
     await flushPromises()
 
     expect(saveSettings).not.toHaveBeenCalled()
+  })
+
+  it('scans duplicate caches and asks before deleting anything', async () => {
+    downloadApi.ScanDuplicateCache.mockResolvedValue({
+      duplicate_groups: 2, removable: 3, removable_bytes: 3 * 1024 * 1024,
+      orphan_files: 1, promoted_leftovers: 1, skipped: [],
+    })
+    const wrapper = mountSettings()
+
+    expect(wrapper.find('[data-test="dedupe-scan"]').exists()).toBe(true)
+    await wrapper.find('[data-test="dedupe-scan"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="confirm-dialog"]').exists()).toBe(true)
+    expect(wrapper.get('[data-test="confirm-message"]').text()).toContain('settings.download.dedupe_report')
+    expect(downloadApi.CleanDuplicateCache).not.toHaveBeenCalled()
+
+    await wrapper.find('[data-test="cancel"]').trigger('click')
+    await flushPromises()
+    expect(downloadApi.CleanDuplicateCache).not.toHaveBeenCalled()
+  })
+
+  it('cleans after confirmation and reports the result', async () => {
+    downloadApi.ScanDuplicateCache.mockResolvedValue({
+      duplicate_groups: 1, removable: 2, removable_bytes: 2048,
+      orphan_files: 1, promoted_leftovers: 0, skipped: [],
+    })
+    downloadApi.CleanDuplicateCache.mockResolvedValue({
+      duplicate_groups: 1, removable: 2, removable_bytes: 2048,
+      orphan_files: 1, promoted_leftovers: 0, skipped: ['active_session: Song'],
+    })
+    const wrapper = mountSettings()
+
+    await wrapper.find('[data-test="dedupe-scan"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="confirm"]').trigger('click')
+    await flushPromises()
+
+    expect(downloadApi.CleanDuplicateCache).toHaveBeenCalledTimes(1)
+    const status = wrapper.get('[data-test="dedupe-status"]').text()
+    expect(status).toContain('settings.download.dedupe_done')
+    expect(status).toContain('settings.download.dedupe_skipped')
+  })
+
+  it('shows "nothing to clean" without opening the dialog', async () => {
+    const wrapper = mountSettings()
+
+    await wrapper.find('[data-test="dedupe-scan"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="confirm-dialog"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="dedupe-status"]').text()).toBe('settings.download.dedupe_nothing')
+  })
+
+  it('disables the button while the scan is running', async () => {
+    let resolveScan: ((value: unknown) => void) | undefined
+    downloadApi.ScanDuplicateCache.mockReturnValue(new Promise((resolve) => { resolveScan = resolve }))
+    const wrapper = mountSettings()
+
+    await wrapper.find('[data-test="dedupe-scan"]').trigger('click')
+    expect(wrapper.find('[data-test="dedupe-scan"]').attributes('disabled')).toBeDefined()
+
+    resolveScan?.({ duplicate_groups: 0, removable: 0, removable_bytes: 0, orphan_files: 0, promoted_leftovers: 0, skipped: [] })
+    await flushPromises()
+    expect(wrapper.find('[data-test="dedupe-scan"]').attributes('disabled')).toBeUndefined()
   })
 })

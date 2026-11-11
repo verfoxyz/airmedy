@@ -718,6 +718,54 @@ func (c *Cache) AllEntries(ctx context.Context) ([]*domain.StreamCacheEntry, err
 	return c.repo.ListForEviction(ctx)
 }
 
+// OrphanFiles lists .audio files in the cache directory that no entry
+// references. Deleting them frees disk without touching any row.
+func (c *Cache) OrphanFiles(ctx context.Context) ([]domain.StreamCacheOrphan, error) {
+	entries, err := c.repo.ListForEviction(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list stream cache entries: %w", err)
+	}
+	known := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry != nil && entry.AudioPath != "" {
+			known[entry.AudioPath] = struct{}{}
+		}
+	}
+
+	dirEntries, err := os.ReadDir(c.dir)
+	if err != nil {
+		return nil, fmt.Errorf("read stream cache directory: %w", err)
+	}
+	orphans := make([]domain.StreamCacheOrphan, 0)
+	for _, dirEntry := range dirEntries {
+		name := dirEntry.Name()
+		if dirEntry.IsDir() || !strings.HasSuffix(name, ".audio") {
+			continue
+		}
+		if _, ok := known[name]; ok {
+			continue
+		}
+		size := int64(0)
+		if info, infoErr := dirEntry.Info(); infoErr == nil {
+			size = info.Size()
+		}
+		orphans = append(orphans, domain.StreamCacheOrphan{Name: name, Bytes: size})
+	}
+	return orphans, nil
+}
+
+// DeleteFile removes one cache file by its flat name. The name must be a plain
+// file inside the cache directory, so a caller cannot delete outside it.
+func (c *Cache) DeleteFile(name string) error {
+	if name == "" || filepath.Base(name) != name || !strings.HasSuffix(name, ".audio") {
+		return fmt.Errorf("stream cache: invalid file name %q", name)
+	}
+	if err := os.Remove(filepath.Join(c.dir, name)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete stream cache file %s: %w", name, err)
+	}
+	return nil
+}
+
 // HasActiveSession reports whether a playback or background session still holds
 // the entry. Promotion moves the file, so it must wait for this to be false.
 func (c *Cache) HasActiveSession(provider, externalID string) bool {

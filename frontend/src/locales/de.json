@@ -394,7 +394,17 @@
       "with_lyric_translation_desc": "Die übersetzte Songtextzeile neben dem Original behalten.",
       "with_lyric_translation_needs_lyrics": "Zuerst Songtexte einschalten – ohne sie gibt es nichts zu übersetzen.",
       "with_cover": "Cover",
-      "with_cover_desc": "Das Cover-Bild in die heruntergeladene Datei einbetten."
+      "with_cover_desc": "Das Cover-Bild in die heruntergeladene Datei einbetten.",
+      "dedupe": "Cache-Duplikate entfernen",
+      "dedupe_desc": "Bereinigt doppelte, bereits importierte und verwaiste Stream-Caches und behält die beste Qualität.",
+      "dedupe_scan": "Scannen",
+      "dedupe_scanning": "Wird gescannt…",
+      "dedupe_report": "{count} Cache-Einträge, etwa {size}, können gelöscht werden.",
+      "dedupe_clean": "Bereinigen",
+      "dedupe_done": "{count} Cache-Einträge gelöscht, {size} freigegeben.",
+      "dedupe_skipped": "{count} übersprungen.",
+      "dedupe_nothing": "Kein Cache zu bereinigen.",
+      "dedupe_failed": "Bereinigung fehlgeschlagen. Später erneut versuchen."
     },
     "plugins": {
       "title": "Plugins",

@@ -24,6 +24,7 @@
 - [Chip Input (`components/settings/DelimiterInput.vue`)](#chip-input-componentssettingsdelimiterinputvue)
 - [Settings Panels](#settings-panels)
   - [Library Settings (`components/settings/LibrarySettings.vue`)](#library-settings-componentssettingslibrarysettingsvue)
+  - [Download Settings (`components/settings/DownloadSettings.vue`)](#download-settings-componentssettingsdownloadsettingsvue)
   - [Playback Settings (`components/settings/PlaybackSettings.vue`)](#playback-settings-componentssettingsplaybacksettingsvue)
   - [About Settings (`components/settings/AboutSettings.vue`)](#about-settings-componentssettingsaboutsettingsvue)
 - [UI Primitives (`@airmedy/ui`)](#ui-primitives-airmedyui)
@@ -575,6 +576,15 @@ from overwriting newer event-driven state.
 The worker-count slider uses a "live while dragging, persist on release"
 pattern: `workerCountLive` updates during drag, but the store action only fires
 on `mouseup` / `touchend`, avoiding backend writes on every drag frame.
+
+### Download Settings (`components/settings/DownloadSettings.vue`)
+
+Owns the download folder/quality/naming switches, the stream-cache size and
+quality, and the content switches. Its **remove duplicate cache** row is a
+two-step action: `ScanDuplicateCache` opens `ConfirmDialog` with the report
+(“would delete N entries, about X”), and only the confirm calls
+`CleanDuplicateCache`. The button is disabled while either call runs; the result
+(or a skip count) renders inline under the button. Nothing is deleted on cancel.
 
 ### Playback Settings (`components/settings/PlaybackSettings.vue`)
 

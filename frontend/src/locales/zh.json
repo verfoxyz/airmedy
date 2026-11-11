@@ -394,7 +394,17 @@
       "with_lyric_translation_desc": "同时保留翻译后的歌词行。",
       "with_lyric_translation_needs_lyrics": "请先开启歌词——没有歌词就没有可翻译的内容。",
       "with_cover": "封面",
-      "with_cover_desc": "把封面图写入下载文件。"
+      "with_cover_desc": "把封面图写入下载文件。",
+      "dedupe": "删除重复缓存",
+      "dedupe_desc": "清理重复、已入库和没有记录的缓存文件，保留质量最高的一份。",
+      "dedupe_scan": "扫描",
+      "dedupe_scanning": "扫描中…",
+      "dedupe_report": "可删除 {count} 条缓存，约 {size}。",
+      "dedupe_clean": "清理",
+      "dedupe_done": "已删除 {count} 条缓存，释放 {size}。",
+      "dedupe_skipped": "跳过 {count} 条。",
+      "dedupe_nothing": "没有可清理的缓存。",
+      "dedupe_failed": "清理失败，请稍后重试。"
     },
     "plugins": {
       "title": "插件",
