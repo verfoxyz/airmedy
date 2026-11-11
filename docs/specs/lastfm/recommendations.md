@@ -38,7 +38,7 @@
 | 收藏 | `user.getLovedTracks`（limit 50） | 取前 20 |
 
 - 按 `NormalizationKey(artist) + NormalizationKey(title)` 去重；
-- 去掉本地已存在的曲目（可在匹配阶段做，避免重复显示）；
+- 本地已有的曲目**保留**：在匹配阶段直接标记为可播（见 §4），不额外过滤；
 - 最终种子上限 50。
 
 ### 3.2 推荐生成
