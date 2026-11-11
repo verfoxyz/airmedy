@@ -129,7 +129,10 @@
       "connected_as": "已连接为",
       "connect": "连接",
       "connecting": "正在连接...",
-      "disconnect": "断开连接"
+      "disconnect": "断开连接",
+      "connect_failed": "无法连接 Last.fm，请重试。",
+      "port_in_use": "端口 53682 已被占用，请关闭占用该端口的程序后重试。",
+      "timed_out": "Last.fm 授权超时，请重试。"
     },
     "integrations": {
       "title": "集成",

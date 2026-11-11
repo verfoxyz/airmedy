@@ -129,7 +129,10 @@
       "connected_as": "연결됨:",
       "connect": "연결",
       "connecting": "연결 중...",
-      "disconnect": "연결 해제"
+      "disconnect": "연결 해제",
+      "connect_failed": "Last.fm에 연결하지 못했습니다. 다시 시도하세요.",
+      "port_in_use": "포트 53682이(가) 사용 중입니다. 해당 포트를 사용하는 프로그램을 닫고 다시 시도하세요.",
+      "timed_out": "Last.fm 인증 시간이 초과되었습니다. 다시 시도하세요."
     },
     "integrations": {
       "title": "연동",

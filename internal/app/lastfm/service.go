@@ -46,6 +46,17 @@ type LastFmService struct {
 	// page's read burst.
 	http    *http.Client
 	limiter *rateLimiter
+
+	// Loopback login. openURL, callbackPort, callbackPath and authTimeout are
+	// fields rather than hard-coded calls so a test can bind a random port and a
+	// short timeout; production uses the registered callback string.
+	openURL      func(string) error
+	callbackPort int
+	callbackPath string
+	authTimeout  time.Duration
+
+	authMu     sync.Mutex
+	authActive bool
 }
 
 func NewLastFmService(
@@ -54,13 +65,17 @@ func NewLastFmService(
 	logger *slog.Logger,
 ) *LastFmService {
 	s := &LastFmService{
-		settings:  settings,
-		player:    player,
-		logger:    logger,
-		apiKey:    config.LastFmAPIKey,
-		apiSecret: config.LastFmAPISecret,
-		http:      &http.Client{Timeout: requestTimeout},
-		limiter:   newRateLimiter(maxConcurrentRequests, minRequestGap),
+		settings:     settings,
+		player:       player,
+		logger:       logger,
+		apiKey:       config.LastFmAPIKey,
+		apiSecret:    config.LastFmAPISecret,
+		http:         &http.Client{Timeout: requestTimeout},
+		limiter:      newRateLimiter(maxConcurrentRequests, minRequestGap),
+		openURL:      browser.OpenURL,
+		callbackPort: lastFmCallbackPort,
+		callbackPath: lastFmCallbackPath,
+		authTimeout:  authCallbackTimeout,
 	}
 
 	// Load session from keyring
@@ -79,21 +94,39 @@ func NewLastFmService(
 	return s
 }
 
+// Connect starts the loopback login and blocks until Last.fm redirects back.
+//
+// The callback port and path are the ones registered on Last.fm, so the browser
+// returns to a listener this process owns; the one-time token is then exchanged
+// for a session by CompleteAuth. The old airmedy:// deep-link handler still
+// exists for backward compatibility, but this flow no longer uses it.
 func (s *LastFmService) Connect(ctx context.Context) error {
 	if s.apiKey == "" || s.apiSecret == "" {
 		return fmt.Errorf("last.fm API keys not configured")
 	}
-	cbURL := "airmedy://auth"
+
+	callbackURL := s.callbackURL()
 	authURL := fmt.Sprintf("https://www.last.fm/api/auth/?api_key=%s&cb=%s",
-		s.apiKey, url.QueryEscape(cbURL))
+		s.apiKey, url.QueryEscape(callbackURL))
 
-	s.logger.Debug("starting lastfm auth flow with deep link", "callback_url", cbURL, "auth_url", authURL)
+	s.logger.Debug("starting lastfm auth flow with loopback callback",
+		"callback_url", callbackURL, "auth_url", authURL)
 
-	if err := browser.OpenURL(authURL); err != nil {
-		return fmt.Errorf("failed to open browser: %w", err)
+	opener := s.openURL
+	if opener == nil {
+		opener = browser.OpenURL
+	}
+	token, err := s.awaitCallback(ctx, func() error {
+		if err := opener(authURL); err != nil {
+			return fmt.Errorf("failed to open browser: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
-	return nil
+	return s.CompleteAuth(ctx, token)
 }
 
 func (s *LastFmService) CompleteAuth(ctx context.Context, token string) error {

@@ -129,7 +129,10 @@
       "connected_as": "接続済み：",
       "connect": "接続",
       "connecting": "接続中...",
-      "disconnect": "接続解除"
+      "disconnect": "接続解除",
+      "connect_failed": "Last.fm に接続できませんでした。もう一度お試しください。",
+      "port_in_use": "ポート 53682 は使用中です。使用しているプログラムを閉じて、もう一度お試しください。",
+      "timed_out": "Last.fm の認証がタイムアウトしました。もう一度お試しください。"
     },
     "integrations": {
       "title": "連携",

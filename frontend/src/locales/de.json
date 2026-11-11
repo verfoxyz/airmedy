@@ -129,7 +129,10 @@
       "connected_as": "Verbunden als",
       "connect": "Verbinden",
       "connecting": "Verbinde...",
-      "disconnect": "Trennen"
+      "disconnect": "Trennen",
+      "connect_failed": "Last.fm konnte nicht verbunden werden. Versuche es erneut.",
+      "port_in_use": "Port 53682 ist belegt. Schließe das Programm, das ihn verwendet, und versuche es erneut.",
+      "timed_out": "Die Last.fm-Autorisierung ist abgelaufen. Versuche es erneut."
     },
     "integrations": {
       "title": "Integrationen",

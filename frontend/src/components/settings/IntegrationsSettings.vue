@@ -71,6 +71,8 @@ watch(() => appStore.lyricsSubfolderName, (name) => {
 const lastfmStatus = ref({ connected: false, username: '', avatar_url: '' })
 const lastfmAvatar = ref('')
 const isConnecting = ref(false)
+/** lastfmError is a machine key the description slot words. */
+const lastfmError = ref('')
 
 const fetchLastFmStatus = async () => {
   try {
@@ -89,18 +91,37 @@ const fetchLastFmStatus = async () => {
   }
 }
 
+/**
+ * lastFmErrorKey maps the backend failure onto a locale key.
+ *
+ * The port message is the actionable one for the fixed loopback callback; a
+ * timeout is the other state the user can retry immediately.
+ */
+function lastFmErrorKey(message: string): string {
+  if (message.includes('already in use')) return 'port_in_use'
+  if (message.includes('timed out') || message.includes('deadline exceeded')) return 'timed_out'
+  return 'connect_failed'
+}
+
 const connectLastFm = async () => {
   isConnecting.value = true
+  lastfmError.value = ''
   try {
+    // Connect resolves only after the loopback callback delivers a token; the
+    // backend also emits lastfm:connected once the session is saved.
     await LastFmService.Connect()
-    // Flow continues via deep link -> backend event -> frontend listener
+    await fetchLastFmStatus()
   } catch (err) {
-    console.error('Failed to start Last.fm connection:', err)
+    console.error('Failed to connect to Last.fm:', err)
+    const message = err instanceof Error ? err.message : String(err)
+    lastfmError.value = lastFmErrorKey(message)
+  } finally {
     isConnecting.value = false
   }
 }
 
 const disconnectLastFm = async () => {
+  lastfmError.value = ''
   try {
     await LastFmService.Disconnect()
     lastfmAvatar.value = ''
@@ -154,6 +175,9 @@ onMounted(() => {
               lastfmStatus.username }}</span>
           </template>
           <template v-else>{{ t('settings.lastfm.scrobble_desc') }}</template>
+          <p v-if="lastfmError" class="mt-1 text-xs text-destructive" data-test="lastfm-error">
+            {{ t(`settings.lastfm.${lastfmError}`) }}
+          </p>
         </template>
 
         <div class="flex items-center gap-2">

@@ -230,7 +230,13 @@ the player footer quick-settings menu uses this shortcut.
 
 ## Last.fm Integration
 
-Authentication is handled via Wails v3 custom protocol (`airmedy://auth`). When a user authorizes the app, Last.fm redirects to this deep link, which is captured by the Go backend to exchange the token for a permanent session key.
+Authentication uses a loopback HTTP callback. `Connect()` binds
+`127.0.0.1:53682`, opens Last.fm's auth page with
+`http://127.0.0.1:53682/auth` as the registered callback, and waits up to five
+minutes for the browser redirect. The one-time token is exchanged for a
+permanent session key and the listener closes on success, failure, timeout or
+cancellation. The legacy `airmedy://auth` deep link is still handled by
+`main.go` but is no longer used by this flow.
 
 - **Scrobbling**: Automatic when a track playback exceeds 50% duration or 4 minutes.
 - **Now Playing**: Updated immediately on track start.

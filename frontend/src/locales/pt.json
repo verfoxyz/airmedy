@@ -129,7 +129,10 @@
       "connected_as": "Conectado como",
       "connect": "Conectar",
       "connecting": "Conectando...",
-      "disconnect": "Desconectar"
+      "disconnect": "Desconectar",
+      "connect_failed": "Não foi possível conectar ao Last.fm. Tente novamente.",
+      "port_in_use": "A porta 53682 está em uso. Feche o programa que a utiliza e tente novamente.",
+      "timed_out": "A autorização do Last.fm expirou. Tente novamente."
     },
     "integrations": {
       "title": "Integrações",

@@ -129,7 +129,10 @@
       "connected_as": "Đã kết nối với tên",
       "connect": "Kết nối",
       "connecting": "Đang kết nối...",
-      "disconnect": "Ngắt kết nối"
+      "disconnect": "Ngắt kết nối",
+      "connect_failed": "Không thể kết nối với Last.fm. Hãy thử lại.",
+      "port_in_use": "Cổng 53682 đang được sử dụng. Hãy đóng chương trình đang dùng cổng này và thử lại.",
+      "timed_out": "Quá thời gian xác thực Last.fm. Hãy thử lại."
     },
     "integrations": {
       "title": "Tích hợp",
