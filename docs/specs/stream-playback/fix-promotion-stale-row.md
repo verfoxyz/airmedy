@@ -53,9 +53,9 @@ const _offTrackUpdated = Events.On('library:track-updated', (ev) => {
 
 ### 3.3 保存返回值与 chip
 
-- `OnRemoteTrackSaved` 在“有缓存、只创建提升任务”分支返回 `CatalogRowStatePromoting`（不是 `saved`）；
-- `CatalogResults.vue` 的 `stateKey()` 增加 `promoting` 分支，文案 `cloud_search.promoting`（与 row-task-state 文档一致）；
-- 保存后立即显示「提升」，事件到达后刷新为「已在库」。
+- `OnRemoteTrackSaved` 在“有缓存、只创建提升任务”分支返回 `CatalogRowStateDownloading`（对外统一表示“已创建任务”，见 row-task-state 文档）；
+- `CatalogResults.vue` 的 `downloading` chip 文案统一为「已创建任务」；
+- 保存后立即显示「已创建任务」，事件到达后刷新为「已在库中」。
 
 ## 4. 测试
 
@@ -63,7 +63,7 @@ const _offTrackUpdated = Events.On('library:track-updated', (ev) => {
 
 - 提升成功路径 emit `task:updated` 与 `library:track-updated`（用 fake event sink 断言）；
 - 提升失败路径 emit `task:updated`（failed）；
-- `OnRemoteTrackSaved` 缓存命中返回 `promoting`；
+- `OnRemoteTrackSaved` 缓存命中返回 `downloading`（统一任务态）；
 - 下载完成路径仍 emit `download:done`（回归）。
 
 **前端**
@@ -75,7 +75,7 @@ const _offTrackUpdated = Events.On('library:track-updated', (ev) => {
 
 **人工**
 
-1. 在线播放一首 → 保存 → chip 显示「提升」→ 完成后变为「已在库」；
+1. 在线播放一首 → 保存 → chip 显示「已创建任务」→ 完成后变为「已在库中」；
 2. 下载路径 → chip 从「下载」变为「已在库」；
 3. 提升失败 → chip 变为「已保存」或「下载失败」并可在任务页看到错误；
 4. 页面停留 5 分钟不重新搜索，状态也能自动更新。

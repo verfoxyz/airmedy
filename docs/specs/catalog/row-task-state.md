@@ -1,133 +1,113 @@
-# 任务：搜索行区分「提升」与「下载」状态
+# 任务：搜索行只保留「已在库中」与「已创建任务」两个 chip
 
 > 状态：待开工
-> 前置：搜索行状态（`CatalogRowStateResolver`）、提升任务（`promotion_tasks`，见 [downloads-tasks.md](../library/downloads-tasks.md)）已存在
-> 范围：搜索结果的 row chip 文案与状态来源；不改保存/播放逻辑
+> 前置：搜索行状态（`CatalogRowStateResolver`）、提升任务（`promotion_tasks`）已存在
+> 本篇取代 `row-task-state.md` 早期版本里「提升 / 下载」分开显示的方案
 
 ---
 
 ## 1. 目标
 
-搜索结果每一行的状态标签（chip）区分当前真正在发生的事：
+搜索结果每一行最多只显示两个状态 chip：
 
 | 状态 | chip 文案 |
 |---|---|
-| 已有本地文件 | 已在库 |
-| 下载任务 queued/active | **下载** |
-| 提升任务 queued/running（且没有活动下载） | **提升** |
-| 上次下载失败、无活动任务 | 下载失败 |
-| 已注册但空闲 | 已保存 |
+| 本地已有文件 | **已在库中** |
+| 存在排队/执行中的任务（下载**或**提升） | **已创建任务** |
+| 上次失败且无活动任务 | 下载失败（保留） |
+| 已注册但空闲（原 `saved`） | **不显示 chip** |
+| 其它（无状态） | 不显示 |
 
-即：**正在提升就显示「提升」，正在下载就显示「下载」**，不再统一显示「下载中」。
+即：
+
+- 删除「已保存」chip；
+- 删除「下载中」文案；
+- **不再区分**「下载 / 提升」，排队或执行中统一显示「已创建任务」；
+- `in_library` 文案由「已在库」改为「已在库中」。
 
 ## 2. 现状
 
-- 行状态来自 `domain.CatalogRowStateResolver`：`in_library` / `downloading` / `failed` / `saved`；
-- `internal/app/download/catalog_state.go` 只查下载任务：有活动 job → `downloading`；
-- 提升任务目前不参与行状态，所以用户点了提升，搜索行要么没变化、要么显示「已保存」；
-- 前端 `CatalogResults.vue` 的 `stateKey()` 把状态映射到 chip；文案 key 在 `cloud_search.*`。
+- 后端状态：`in_library` / `downloading` / `failed` / `saved`（提升任务目前不参与行状态）；
+- 前端 `CatalogResults.vue` 的 `stateKey()` 映射 `in_library` / `saved` / `downloading` / `failed`；
+- 文案 key：`cloud_search.in_library`（已在库）、`downloading`（下载中）、`saved`（已保存）、`failed`（下载失败）。
 
 ## 3. 后端
 
-### 3.1 新状态
+### 3.1 状态取值
 
-`internal/domain/catalog_search.go`：
+保持四个后端状态不变（便于 resolver 与任务页统计），但如果提升任务要参与判断：
 
-```go
-// CatalogRowStatePromoting means a promotion task is queued or running for
-// this identity. A remote row being moved into the library has no download job,
-// so this is distinct from CatalogRowStateDownloading.
-CatalogRowStatePromoting = "promoting"
-```
+- 有活动下载任务 → `downloading`；
+- 无下载、有排队/执行中的提升任务 → 也返回 `downloading`（**不再返回独立的 `promoting`**，因为 UI 不区分）；
+- 无任务 → `failed` 或 `saved`。
 
-判定优先级（从高到低）：
+> 若此前实现已引入 `CatalogRowStatePromoting`，可以保留该常量但 resolver 不返回它；或直接删除，二者取其一，保持一致即可。
 
-1. 本地行 → `in_library`；
-2. 活动下载 job → `downloading`（提升转下载时也走这里）；
-3. 活动提升任务（`queued`/`running`）→ `promoting`；
-4. 上次下载失败且无活动任务 → `failed`；
-5. 其余 remote 行 → `saved`。
+### 3.2 查询
 
-### 3.2 查询提升任务
-
-新增窄接口（放在 `internal/app/download` 需要的端口处，实现放 sqlite）：
+`CatalogRowStates` 需要在下载任务判断之外补一次提升任务查询（批量）：
 
 ```go
-// ActivePromotions reports which identities currently have a queued or running
-// promotion task. Batch by identity: the search page resolves a whole page of
-// rows per request, so this must not be one query per row.
-ActivePromotions(ctx context.Context, identities []domain.CatalogIdentity) (map[domain.CatalogIdentity]bool, error)
+ActivePromotions(ctx, identities) (map[domain.CatalogIdentity]bool, error)
 ```
 
-- 实现：`SELECT provider, external_id FROM promotion_tasks WHERE state IN ('queued','running')`，按 identity 过滤；
-- 表结构见 [downloads-tasks.md](../library/downloads-tasks.md)（迁移 `000095`）；
-- 绑定到 download 服务（`CatalogRowStates` 的调用方），不新增循环依赖。
-
-### 3.3 修改 `CatalogRowStates`
-
-`internal/app/download/catalog_state.go` 的循环里，在 `job` 判断之后、`failed` 之前插入：
-
-```go
-case promoted[key] && (job == nil || !domain.IsActiveState(job.State)):
-    states[key] = domain.CatalogRowStatePromoting
-```
-
-（活动下载优先；提升任务在交给下载后会变成 `done`，所以不会同时出现。）
+- 数据来自 `promotion_tasks`（`queued`/`running`，迁移 `000095`）；
+- 命中后与 `downloading` 合并，不再区分来源；
+- 批量查询，避免逐行 N+1。
 
 ## 4. 前端
 
 ### 4.1 `CatalogResults.vue`
 
-- `stateKey()` 增加 `'promoting'`；
-- 新增 chip 分支（样式沿用现有 chip）：`data-test="catalog-state"`，文案 `$t('cloud_search.promoting')`；
-- 已有 `downloading` chip 的文案改为「下载」（值变化，key 不变）。
+- `stateKey()` 只返回 `'in_library' | 'downloading' | 'failed' | null`；
+- `saved` → `null`（不渲染 chip，也不渲染 blocked 文案）；
+- `downloading` chip 文案改为「已创建任务」；
+- `promoting`（若后端仍可能返回）按 `downloading` 渲染，同一文案；
+- `in_library` 文案改为「已在库中」。
 
 ### 4.2 i18n（12 语言同改）
 
-- 新增 `cloud_search.promoting`：
-  - zh: `提升`，en: `Promoting`
-- 修改 `cloud_search.downloading` 的值：
-  - zh: `下载`（原「下载中」），en: `Downloading` → `Download`
-  - 其它语言同理，取「下载」而非「下载中」
-- `in_library` / `saved` / `failed` 不变。
+| key | 新值（zh） | 备注 |
+|---|---|---|
+| `cloud_search.in_library` | `已在库中` | 原「已在库」 |
+| `cloud_search.downloading` | `已创建任务` | 原「下载中」 |
+| `cloud_search.saved` | 保留 key，不再使用 | 可保留英文/旧值 |
+| `cloud_search.promoting` | 若存在则改为 `已创建任务` | 或删除 |
 
-### 4.3 状态刷新
-
-- 提升任务开始/结束时后端 emit `task:updated`（已有约定）；
-- 搜索页监听该事件时重新拉取当前页行状态（或与现有 `library:track-updated` 一起节流刷新），保证 chip 从「提升」切到「已在库」。
+英文对应：`In Library` / `Task created`。
 
 ## 5. 测试
 
 **Go**
 
-- 活动提升 + 无下载 → `promoting`；
-- 活动提升 + 活动下载 → `downloading`；
-- 已在库 → 不变；
-- 提升完成（任务 `done`）→ 不再 `promoting`（落回 `saved` 或 `in_library`）；
-- 批量查询不会对每个 identity 各发一条 SQL（可用 count 断言或注入 fake 计数）。
+- 活动下载 → `downloading`；
+- 活动提升（无下载）→ `downloading`（不再返回 `promoting`）；
+- 已注册无任务 → `saved`；
+- 本地文件 → `in_library`；
+- 批量查询不会逐行发 SQL。
 
 **前端**
 
-- `CatalogResults.spec.ts`：`state: 'promoting'` 渲染 `cloud_search.promoting` chip；
-- `state: 'downloading'` 渲染新文案 key（key 不变，断言 key）。
+- `stateKey` 对 `saved` 返回 null（不渲染 chip）；
+- `downloading`/`promoting` 渲染同一文案 key；
+- `in_library` 渲染新文案 key；
+- 现有 chip 测试同步更新。
+
+**人工**
+
+1. 保存一首未播放过的歌 → 出现「已创建任务」（不显示「已保存」）；
+2. 在线播放后保存 → 显示「已创建任务」，完成后「已在库中」；
+3. 本地曲目 → 「已在库中」；
+4. 失败 → 「下载失败」。
 
 ## 6. 验收
 
-- 自动：§5 全绿，`go build ./...` 与 `vue-tsc --noEmit` 通过；
-- 人工：
-  1. 搜索结果点保存（触发提升）→ 行显示「提升」；
-  2. 提升需要转成下载（下载音质更高）→ chip 变为「下载」；
-  3. 完成后 → 变为「已在库」；
-  4. 普通下载 → 全程显示「下载」。
+- 自动：§5 全绿；
+- 人工：§5 四条成立；
+- 搜索页不再出现「已保存」「下载中」文案。
 
-## 7. 不做
+## 7. 风险
 
-- 不改行的播放/保存按钮行为；
-- 不做进度百分比（chip 只显示状态词）；
-- 不改「已保存」的含义。
-
-## 8. 风险
-
-- 提升任务与下载任务并发时以下载为准（提升在交给下载后即标记 `done`），需要保证这个顺序，否则会短暂显示「提升」；
-- 搜索页若只刷新当前页，跨页的行要等下次搜索才更新（可接受）；
-- 12 个语言的 `downloading` 文案变化会影响已有测试里的断言（测试用 key，不受影响）。
+- 不再区分下载与提升后，用户无法从搜索行判断任务类型；任务类型在「下载/任务」页可见；
+- `saved` 行没有 chip 后，用户可能误以为行没有动作；保存按钮态仍显示已保存；
+- 12 语言文案必须同步，否则部分语言仍显示旧词。
