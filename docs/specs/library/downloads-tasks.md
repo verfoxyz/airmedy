@@ -45,7 +45,7 @@ CREATE TABLE promotion_tasks (
 CREATE INDEX idx_promotion_tasks_state ON promotion_tasks(state, created_at DESC);
 ```
 
-> 迁移编号约定：`000094` 归 [task-promotion-worker.md](../stream-playback/task-promotion-worker.md)（`stream_cache.promoted`），本任务的表用 `000095`，两者互不冲突。
+> 迁移编号约定：`000094` 归 [task-promotion-worker.md](../stream-playback/task-promotion-worker.md)（`stream_cache.promoted` / `discard_pending`），本任务的表用 `000095`，两者互不冲突。
 
 ## 3. 后端
 
