@@ -1,6 +1,6 @@
 # 任务：艺术家别名（如 Camellia / かめりあ）参与匹配
 
-> 状态：待开工
+> 状态：✅ 已完成（迁移 000099、手动管理与禁用开关已实现）
 > 现象：`crystallized - Camellia` 与本地 `crystallized - かめりあ` 永远匹配不到，导致重复行/去云端
 > 关联：`fix-artist-variant-duplicates.md`（艺人集合归一化与本地优先）
 

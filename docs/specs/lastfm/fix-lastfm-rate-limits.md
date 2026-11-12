@@ -1,6 +1,6 @@
 # Bug：Last.fm 请求被限流/连接被重置，导致只剩相似艺人
 
-> 状态：待开工
+> 状态：🗑️ 已废弃（实际原因为 JSON 解析问题，已在 fix-top-tracks-empty 中修复；限流不是根因）
 > 现象：Last.fm 页顶部提示「部分请求失败，仅显示已返回的结果」，只有相似艺人，没有歌曲
 > 关联：[fix-slow-matching.md](fix-slow-matching.md)（两段式返回已实现，本 bug 在更上游）
 
