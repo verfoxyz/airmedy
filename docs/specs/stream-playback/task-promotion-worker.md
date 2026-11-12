@@ -178,6 +178,7 @@ if err := s.cached.DiscardEntry(ctx, track); err != nil {
 - 重新播放 `discard_pending` 且文件仍在的条目：清标记、复用缓存；
 - 质量更高：`Enqueue` 被调用，`pending_promote` 被清掉；
 - 迁移：`000094` 保持原样，`000096` up/down；
+- 清理互斥：构造 `pending_promote` / `discard_pending` / `promoted` 行，跑“删除重复缓存”和启动清理，断言文件与行都保留；
 - 历史：queued→running→done/failed 各有对应 `promotion_tasks` 行；重复点提升不新增 `queued` 行；每次写入后 emit `task:updated`。
 
 **人工**
