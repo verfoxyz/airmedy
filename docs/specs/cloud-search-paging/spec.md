@@ -1,6 +1,6 @@
 # Spec：云端搜索分页（5 + 10）与封面懒加载
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 取代：`fix-cover-trigger.md`（frontier 分批）与 `fix-search-covers.md` §4.2/§4.3 的配额+哨兵机制；
 > `cover_batch`、`max_display` 两个插件设置一并删除。
 > 后续修订：单源没有「加载更多」的 hasMore 判定见 [`fix-single-source-hasmore.md`](fix-single-source-hasmore.md)。

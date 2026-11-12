@@ -1,6 +1,6 @@
 # 任务：设置 → 下载 →「删除重复缓存」
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 位置：设置 → 下载
 > 范围：只清理 `<DataDir>/stream-cache/` 的音频与 `stream_cache` 行；不碰 `cover-cache`、不碰永久音乐目录
 

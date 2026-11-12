@@ -4,7 +4,7 @@
 > 见 [`docs/specs/cloud-search-paging/spec.md`](../cloud-search-paging/spec.md)。
 > 以下内容仅保留作历史记录，不要再按本文实施。
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 来源：人工验收（2026-11-07）—"5 张之后要滚到列表最下面才开始加载下一批"
 > 前置：`fix-search-covers.md` 的哨兵方案已合入
 > 约束：AI 不做图形化验证

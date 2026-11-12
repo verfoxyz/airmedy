@@ -1,6 +1,6 @@
 # 修复/增强：Last.fm 歌单卡片——路由、单曲刷源、渐进加载
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 关联：[recommendation-lists.md](recommendation-lists.md)、[single-request-top-tracks.md](single-request-top-tracks.md)
 > 三个问题都来自同一轮人工验收
 

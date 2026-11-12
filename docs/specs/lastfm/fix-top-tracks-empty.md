@@ -1,6 +1,6 @@
 # Bug：常听曲目列表为空（Last.fm 的 artist 字段有两种 JSON 形状）
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 现象：Last.fm 页显示「数据不足，暂时没有推荐」，但 `user.getTopTracks` 实际返回 200 且有数据
 > 范围：Last.fm 客户端解析；不改页面/匹配
 

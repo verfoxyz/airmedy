@@ -1,6 +1,6 @@
 # 修复：单源搜索没有「加载更多」
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 前置：`docs/specs/cloud-search-paging/spec.md` 已实现
 > 约束：AI 不做图形化验证
 

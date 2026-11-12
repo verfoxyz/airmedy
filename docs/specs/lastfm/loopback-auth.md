@@ -1,6 +1,6 @@
 # 任务：Last.fm 登录改为本地回环回调
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 背景：Last.fm 应用表单不接受 `airmedy://auth`（自定义 scheme 被判为无效 URL），已注册回调 `http://127.0.0.1:53682/auth`
 > 范围：只改 Last.fm 登录流程；不改 scrobble/推荐
 

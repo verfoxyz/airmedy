@@ -1,6 +1,6 @@
 # 修复：tx（QQ 音乐）搜索返回 0 行
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 前置：`docs/specs/cloud-search-sources/spec.md` 已实现
 > 发现方式：本地联调（2026-11-07 22:26），非人工图形化验证
 

@@ -1,6 +1,6 @@
 # 任务：提升任务持久化 + 待清理缓存 worker（覆盖提升与普通下载两条路径）
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 前置：M5 已实现（`promote.go`、`stream_cache.pending_promote`）
 > 联动：`promotion_tasks` 历史表与「下载/任务」页见 [downloads-tasks.md](../library/downloads-tasks.md)（本任务负责写这张表，不另建历史机制）
 > 现象：播放中的曲目被提升/下载完成后，原缓存文件没有被删除

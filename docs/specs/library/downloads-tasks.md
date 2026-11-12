@@ -1,6 +1,6 @@
 # 任务：把「下载」改为「下载/任务」页（进行中 / 已完成 / 出错 + 清空记录）
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 前置：`/downloads` 页面已存在（`DownloadsView.vue`）；下载任务已保留历史（`download_jobs`，迁移 `000086`）
 > 联动：[task-promotion-worker.md](../stream-playback/task-promotion-worker.md)（提升任务也写入本页的历史表，见 §4.2）
 

@@ -1,6 +1,6 @@
 # Spec：云端搜索源扩展（kw / tx / mg）
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 参考实现：`reference/any-listen-extension-online-metadata`（本地已 clone，逐源对照）
 > 前置：`docs/specs/cloud-search-paging/spec.md` 已实现（5+10 分页、行级懒加载、`MAX_LIMIT=100`）
 > 后续修订：tx 搜索返回 0 行（响应层级读错）见 [`fix-tx-response-shape.md`](fix-tx-response-shape.md)。

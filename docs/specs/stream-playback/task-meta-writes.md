@@ -1,6 +1,6 @@
 # 任务：降低 stream-cache 元数据写盘频率
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 前置：M2（StreamCache）已完成
 > 范围：只改 `internal/app/stream/cache.go` 与其测试
 

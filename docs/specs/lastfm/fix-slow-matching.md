@@ -1,6 +1,6 @@
 # Bug：兜底后仍然没有推荐歌曲（改为先出列表、匹配慢慢补）
 
-> 状态：待开工
+> 状态：🗑️ 已废弃（单请求 + 五源队列（single-request-top-tracks.md）已取代）
 > 现象：Last.fm 页能显示相似艺人，但四份推荐仍然为空
 > 设计方案：**先返回 Last.fm 的歌曲列表，源匹配在后台渐进补全，通过事件把结果推给页面**
 > 关联：[recommendations.md](recommendations.md)、[fix-empty-recommendations.md](fix-empty-recommendations.md)

@@ -1,6 +1,6 @@
 # 任务：Last.fm 推荐改为持久化的「歌单卡片」
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 目的：Last.fm 页不再平铺所有行，而是把每个推荐集合做成**歌单卡片**；推荐内容持久化，只有刷新才会变，支持单个歌单刷新
 > 关联：`single-request-top-tracks.md`、`similar-tracks-recommendations.md`
 

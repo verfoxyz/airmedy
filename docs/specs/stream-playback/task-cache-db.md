@@ -1,6 +1,6 @@
 # 任务：stream-cache 元数据迁到数据库（支持跨源匹配）
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 前置：M2 / M3 已完成
 > 目标：目录里只保留 `<key>.audio`；元数据进 `airmedy.db`；同一首歌跨源可复用缓存
 

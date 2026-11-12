@@ -1,6 +1,6 @@
 # 任务：可靠的 scrobble（失败重试 + 本地待上传队列）
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 现象：网络抖动/Last.fm 限流时 scrobble 直接失败并丢失（日志只有 `lastfm post failed`）
 > 范围：只改 scrobble（现在播放/Now Playing 失败可忽略）
 

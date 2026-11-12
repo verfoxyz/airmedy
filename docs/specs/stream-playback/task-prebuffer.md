@@ -1,6 +1,6 @@
 # 任务：StreamCache 启动预缓冲（M2.5）
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 前置：M2（StreamCache 最小版）已完成
 > 目的：在 M3（播放器接入）之前，消除“播放刚开始时解码器读阻塞”的干扰项
 > 范围：只改 `internal/app/stream/cache.go` 与其测试；不动播放器、不做 UI

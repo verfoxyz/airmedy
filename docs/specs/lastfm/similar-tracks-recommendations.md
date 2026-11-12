@@ -1,6 +1,6 @@
 # 任务：Last.fm 页增加「相似歌曲推荐」（`track.getSimilar` 优先 + 艺人兜底）
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 目的：在现有「常听曲目」之外，给用户推荐**没听过**的相似歌曲
 > 关联：`single-request-top-tracks.md`（现有页面与匹配队列）、`fix-recommendation-covers.md`、`fix-recommendation-playback-cover.md`
 

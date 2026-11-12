@@ -1,6 +1,6 @@
 # Bug：共享专辑封面只记住一个 identity，导致个别曲目拿不到封面
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 现象：在线播放「Heart of Android : Even If It's Only By Mechanism」时没有封面，其它曲目正常
 > 范围：封面缓存的 identity 关联；不改播放/缓存音频逻辑
 

@@ -1,6 +1,6 @@
 # 任务：五源「原生」歌词（lyric.fetch 扩展）
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 前置：`docs/specs/cloud-search-sources/spec.md` 已实现（5 个搜索源）
 > 参考实现：`reference/any-listen-extension-online-metadata/src/onlineResource/*/lyric.ts`
 > 约束：AI 不做图形化验证

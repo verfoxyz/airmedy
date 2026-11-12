@@ -1,6 +1,6 @@
 # Bug：提升完成后搜索行仍显示「下载中」
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 现象：在线播放过、保存后已提升入库（文件已移动、缓存已删除），搜索行仍一直显示「下载中」
 > 关联：[fix-save-prefers-promotion.md](fix-save-prefers-promotion.md)、[row-task-state.md](../catalog/row-task-state.md)
 

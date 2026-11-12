@@ -1,6 +1,6 @@
 # Bug：缓存已完整且文件有效，播放仍报 `ma_player_load failed: -10`
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 案例：`Flamewall`（wy/1482677427）
 > 关联：`task-prebuffer.md`、`spec.md`（StreamCache 代理）
 

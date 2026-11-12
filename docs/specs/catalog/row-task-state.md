@@ -1,6 +1,6 @@
 # 任务：搜索行只保留「已在库中」与「已创建任务」两个 chip
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 前置：搜索行状态（`CatalogRowStateResolver`）、提升任务（`promotion_tasks`）已存在
 > 本篇取代 `row-task-state.md` 早期版本里「提升 / 下载」分开显示的方案
 

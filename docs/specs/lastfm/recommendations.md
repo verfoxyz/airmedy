@@ -1,6 +1,6 @@
 # 任务：左侧栏新增 Last.fm 页（推荐 + 相似艺人）
 
-> 状态：待开工
+> 状态：🗑️ 已废弃（页面已改为歌单卡片（recommendation-lists.md）与单请求常听（single-request-top-tracks.md））
 > 位置：左侧栏「搜索」下方
 > 目的：基于 Last.fm 数据生成可播放的推荐
 > 范围：新页面 + 只读 Last.fm API；不改现有 scrobble/love

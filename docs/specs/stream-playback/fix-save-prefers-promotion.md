@@ -1,6 +1,6 @@
 # 修复：保存在线曲目优先用流缓存提升（事件驱动）
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 现象：在线播放过（缓存已完整）的曲目，在搜索页保存/收藏后走的是普通下载，而不是提升
 > 关联：[task-promotion-worker.md](task-promotion-worker.md)（持久任务与 worker）、[row-task-state.md](../catalog/row-task-state.md)（行状态）
 > 设计取向：**尽量事件驱动**，保存动作不再直接决定“下载还是提升”

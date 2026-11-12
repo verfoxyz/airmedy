@@ -1,6 +1,6 @@
 # Bug：提升后缓存文件仍残留（提升在播放器仍加载该曲目时执行）
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 现象：提升完成后 `stream-cache` 里仍留着该曲目的 `.audio`
 > 案例：`Speed Complexxx (feat.Srezcat)`（`eae2ebb0…audio`）
 
