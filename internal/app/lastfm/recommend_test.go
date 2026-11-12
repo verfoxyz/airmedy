@@ -174,6 +174,8 @@ type fakeMatcher struct {
 	// answer, or make a source return no match.
 	sourceRows map[string]map[string][]domain.CatalogSearchResult
 	sourceErrs map[string]map[string]error
+	// localRows answers MatchLocalTrack, keyed by artist+"\x00"+title.
+	localRows map[string]*domain.TrackDTO
 	// block, when set, holds every search until the test closes it. It proves
 	// GetRecommendations returns before matching completes.
 	block chan struct{}
@@ -184,6 +186,24 @@ type fakeMatcher struct {
 
 func (f *fakeMatcher) Sources(context.Context) ([]domain.CatalogSearchSource, error) {
 	return append([]domain.CatalogSearchSource{}, f.sources...), nil
+}
+
+// MatchLocalTrack answers the local-first lookup. localRows is keyed by
+// artist+title, the same key MatchTrack uses.
+func (f *fakeMatcher) MatchLocalTrack(
+	_ context.Context, title string, artists []string, _ int,
+) (*domain.TrackDTO, error) {
+	artist := ""
+	if len(artists) > 0 {
+		artist = artists[0]
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := artist + "\x00" + title
+	if track, ok := f.localRows[key]; ok {
+		return track, nil
+	}
+	return nil, nil
 }
 
 func (f *fakeMatcher) MatchTrack(

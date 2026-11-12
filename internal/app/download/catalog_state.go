@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"airmedy/internal/domain"
@@ -112,9 +113,9 @@ func (s *Service) CatalogRowStates(
 	return states, nil
 }
 
-// catalogLocalTolerance is the ±3s window used to recognise an imported file as
+// catalogLocalTolerance is the ±5s window used to recognise an imported file as
 // the same song as a search hit.
-const catalogLocalTolerance = 3
+const catalogLocalTolerance = 5
 
 // CatalogLocalMatches implements domain.CatalogRowStateResolver.
 //
@@ -122,8 +123,8 @@ const catalogLocalTolerance = 3
 // cannot see it and the search row would offer a second download of the same
 // song. This answers the other question: does an on-disk track already look
 // like this row? The rule matches the merge heuristic — same normalised title,
-// same primary artist and duration within ±3s — because a looser rule would
-// pair a live version or a cover with the studio track.
+// same artist set and duration within ±5s — because a looser rule would pair a
+// live version or a cover with the studio track.
 func (s *Service) CatalogLocalMatches(
 	ctx context.Context, queries []domain.CatalogLocalQuery,
 ) (map[domain.CatalogIdentity]string, error) {
@@ -161,10 +162,7 @@ func (s *Service) CatalogLocalMatches(
 
 	for _, c := range valid {
 		bestID, bestDistance := "", -1
-		wantedArtist := ""
-		if len(c.query.Artists) > 0 {
-			wantedArtist = domain.NormalizationKey(c.query.Artists[0])
-		}
+		wantedArtists := domain.ArtistSetKey(c.query.Artists)
 		for _, track := range tracks {
 			if track == nil {
 				continue
@@ -179,8 +177,7 @@ func (s *Service) CatalogLocalMatches(
 			if !sameCatalogTitle(track.Title, c.query.Title) {
 				continue
 			}
-			artist := domain.NormalizationKey(primaryArtist(track))
-			if wantedArtist != "" && artist != "" && artist != wantedArtist {
+			if wantedArtists != "" && domain.ArtistSetKey(artistNames(track)) != wantedArtists {
 				continue
 			}
 			if bestID == "" || distance < bestDistance {
@@ -192,6 +189,65 @@ func (s *Service) CatalogLocalMatches(
 		}
 	}
 	return matches, nil
+}
+
+// MatchLocalTrack finds an on-disk row that already represents one song.
+//
+// It is the local-first half of every "is this song already in the library?"
+// question: title + artist set are compared against playable files, with the
+// duration narrowed to ±5s when the caller knows it. No network access. A hit
+// lets the caller skip the cloud search and reuse the row that has a real path
+// and artwork.
+func (s *Service) MatchLocalTrack(
+	ctx context.Context, title string, artists []string, duration int,
+) (*domain.TrackDTO, error) {
+	titleKey := domain.NormalizationKey(strings.TrimSpace(title))
+	wantedArtists := domain.ArtistSetKey(artists)
+	if titleKey == "" || wantedArtists == "" {
+		return nil, nil
+	}
+
+	// Without a duration the whole playable range is a candidate; the title and
+	// artist set still make the match safe.
+	lower, upper := 0, math.MaxInt32
+	if duration > 0 {
+		lower, upper = duration-catalogLocalTolerance, duration+catalogLocalTolerance
+	}
+	candidates, err := s.tracks.FindPlayableByDuration(ctx, lower, upper)
+	if err != nil {
+		return nil, fmt.Errorf("match local track: load candidates: %w", err)
+	}
+
+	var best *domain.TrackDTO
+	bestDistance := -1
+	for _, track := range candidates {
+		if track == nil || track.IsRemote() {
+			continue
+		}
+		if domain.NormalizationKey(track.Title) != titleKey {
+			continue
+		}
+		if domain.ArtistSetKey(artistNames(track)) != wantedArtists {
+			continue
+		}
+		if duration > 0 {
+			distance := track.Duration - duration
+			if distance < 0 {
+				distance = -distance
+			}
+			if distance > catalogLocalTolerance {
+				continue
+			}
+			if best == nil || distance < bestDistance {
+				best, bestDistance = track, distance
+			}
+			continue
+		}
+		if best == nil {
+			best = track
+		}
+	}
+	return best, nil
 }
 
 // GetTrack exposes one library row for the catalogue action path, which needs

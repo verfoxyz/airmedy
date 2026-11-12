@@ -99,6 +99,28 @@ func TestMatchTrackAcceptsAnyCreditedArtist(t *testing.T) {
 	}
 }
 
+func TestMatchTrackIgnoresArtistOrderAndSeparators(t *testing.T) {
+	sources := fakeSources{"wy": wySource()}
+	searcher := &fakeSearcher{results: map[string]domain.PluginSearchResult{
+		"wy": {
+			Rows: []domain.PluginSearchResultRow{
+				{ExternalID: "reordered", Title: "Synthetic Fracture",
+					Artists: []string{"Gardens, Sad Keyboard Guy"}},
+			},
+		},
+	}}
+	svc := newTestService(sources, searcher, fakeResolver{"wy": true}, Config{})
+
+	rows, err := svc.MatchTrack(context.Background(), "Synthetic Fracture",
+		"Sad Keyboard Guy;Gardens", 0, []string{"wy"})
+	if err != nil {
+		t.Fatalf("MatchTrack: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ExternalID != "reordered" {
+		t.Fatalf("matches = %+v, want the reordered credit to match", rows)
+	}
+}
+
 func TestMatchTrackIgnoresBlankIdentity(t *testing.T) {
 	svc := newTestService(fakeSources{"wy": wySource()}, &fakeSearcher{
 		results: map[string]domain.PluginSearchResult{

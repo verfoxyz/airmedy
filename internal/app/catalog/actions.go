@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"airmedy/internal/domain"
 )
@@ -37,6 +38,13 @@ type SettingsReader interface {
 // already has on disk instead of registering a second remote identity.
 type LocalTracks interface {
 	GetTrack(ctx context.Context, trackID string) (*domain.TrackDTO, error)
+}
+
+// LocalTrackMatcher finds an existing on-disk row by title + artist set
+// (+ duration tolerance). It is the local-first half of every match: a hit
+// means the provider's row must not be registered at all.
+type LocalTrackMatcher interface {
+	MatchLocalTrack(ctx context.Context, title string, artists []string, duration int) (*domain.TrackDTO, error)
 }
 
 // FavoritesWriter flags a track as a favorite.
@@ -99,18 +107,34 @@ func (s *Service) EnsureStreamableTrack(ctx context.Context, request ActionReque
 	if s.library == nil {
 		return nil, fmt.Errorf("catalog action: no download pipeline is available")
 	}
-	provider := domain.NormalizeProvider(request.Provider)
-	externalID := strings.TrimSpace(request.ExternalID)
-	if provider == "" || externalID == "" {
-		return nil, fmt.Errorf("%w: provider and external id are required", domain.ErrCatalogActionInvalid)
-	}
 
+	// A known local row is playable on its own; it needs no provider identity.
 	if request.LocalTrackID != "" && s.localTracks != nil {
 		local, err := s.localTracks.GetTrack(ctx, request.LocalTrackID)
 		if err != nil {
 			return nil, fmt.Errorf("catalog action: load local track %s: %w", request.LocalTrackID, err)
 		}
 		if local != nil && !local.IsRemote() {
+			return local, nil
+		}
+	}
+
+	provider := domain.NormalizeProvider(request.Provider)
+	externalID := strings.TrimSpace(request.ExternalID)
+	if provider == "" || externalID == "" {
+		return nil, fmt.Errorf("%w: provider and external id are required", domain.ErrCatalogActionInvalid)
+	}
+
+	// Local-first: a file the user already owns represents this song, so the
+	// provider identity must not create a second row. This runs before the
+	// registration path so a hit never reaches the cloud. ForceDownload opts out:
+	// the user explicitly asked for the provider's file.
+	if s.localMatcher != nil && !request.ForceDownload {
+		local, err := s.localMatcher.MatchLocalTrack(ctx, request.Title,
+			normaliseArtists(request.Artists), request.Duration)
+		if err != nil {
+			s.logger.Warn("catalog: local track match failed", "error", err)
+		} else if local != nil && !local.IsRemote() {
 			return local, nil
 		}
 	}
@@ -134,6 +158,7 @@ func (s *Service) EnsureStreamableTrack(ctx context.Context, request ActionReque
 		AlbumName:  strings.TrimSpace(request.AlbumName),
 		Duration:   request.Duration,
 		CoverURL:   coverURL,
+		Force:      request.ForceDownload,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("catalog action: register %s/%s: %w", provider, externalID, err)
@@ -141,7 +166,34 @@ func (s *Service) EnsureStreamableTrack(ctx context.Context, request ActionReque
 	if track == nil {
 		return nil, fmt.Errorf("catalog action: %s/%s registered without a row", provider, externalID)
 	}
+	if !track.IsRemote() {
+		// An on-disk row already owns its artwork.
+		return track, nil
+	}
+
+	// Warm the identity → cover mapping so the player and the track info drawer
+	// resolve artwork by identity without a catalogue page request. Best-effort:
+	// a failed download must not block playback.
+	s.warmCover(ctx, coverURL, provider, externalID)
 	return track, nil
+}
+
+// coverWarmTimeout bounds the pre-playback cover download. It is shorter than
+// the cache's own budget because pressing play must not wait on an image host.
+const coverWarmTimeout = 5 * time.Second
+
+func (s *Service) warmCover(ctx context.Context, coverURL, provider, externalID string) {
+	coverURL = strings.TrimSpace(coverURL)
+	if coverURL == "" || s.covers == nil {
+		return
+	}
+	warmCtx, cancel := context.WithTimeout(ctx, coverWarmTimeout)
+	defer cancel()
+	if _, err := s.covers.Get(warmCtx, coverURL, provider, externalID,
+		s.coverCacheLimitBytes(warmCtx, provider)); err != nil {
+		s.logger.Debug("catalog: cannot warm the cover cache",
+			"provider", provider, "external_id", externalID, "error", err)
+	}
 }
 
 // Act performs the two things a search row can do: put the track in the library
@@ -239,6 +291,7 @@ func (s *Service) Act(ctx context.Context, request ActionRequest) (ActionOutcome
 		AlbumName:  strings.TrimSpace(request.AlbumName),
 		Duration:   request.Duration,
 		CoverURL:   coverURL,
+		Force:      request.ForceDownload,
 	}
 
 	track, err := s.library.EnsureRemoteTrack(ctx, spec)

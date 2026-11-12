@@ -270,6 +270,29 @@ func primaryArtist(t *domain.TrackDTO) string {
 	return t.RawArtistNames
 }
 
+// artistNames returns the credited artist names, falling back to the raw tag
+// list split on the multi-value separator. It is the input to the set-based
+// match key, so order and separators stop mattering.
+func artistNames(t *domain.TrackDTO) []string {
+	if t == nil {
+		return nil
+	}
+	names := make([]string, 0, len(t.Artists))
+	for _, artist := range t.Artists {
+		if artist != nil && strings.TrimSpace(artist.Name) != "" {
+			names = append(names, strings.TrimSpace(artist.Name))
+		}
+	}
+	if len(names) > 0 {
+		return names
+	}
+	raw := strings.TrimSpace(t.RawArtistNames)
+	if raw == "" {
+		return nil
+	}
+	return strings.Split(raw, ";")
+}
+
 // foldInto moves the remote row's playlist entries, favorite flag and play count
 // onto survivorID and deletes the remote row, all in one transaction.
 //

@@ -2,6 +2,7 @@ package lastfm
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
@@ -400,6 +401,314 @@ func TestPlaybackFailureWithoutAnotherSourceMarksNoSource(t *testing.T) {
 	}
 	if len(page.Items) != 1 || !page.Items[0].NoSource || page.Items[0].Matching {
 		t.Fatalf("refreshed item = %+v, want no_source", page.Items)
+	}
+}
+
+type fakeCoverAssets struct{ asset string }
+
+func (f fakeCoverAssets) AssetForIdentity(context.Context, string, string) (string, error) {
+	return f.asset, nil
+}
+
+func (f fakeCoverAssets) RemoteForIdentity(context.Context, string, string) (string, error) {
+	return "", nil
+}
+
+func (f fakeCoverAssets) BytesForIdentity(context.Context, string, string) ([]byte, string, error) {
+	return nil, "", nil
+}
+
+func TestApplyTopTrackMatchCoverPriority(t *testing.T) {
+	row := domain.CatalogSearchResult{
+		Provider: "wy", ExternalID: "42", Title: "Song",
+		CoverURL: "https://wy/cover.jpg", CoverURLLarge: "https://wy/cover-large.jpg",
+	}
+
+	t.Run("Last.fm image wins", func(t *testing.T) {
+		r := &Recommender{coverAssets: fakeCoverAssets{asset: "/cover-cache/id.jpg"}}
+		item := TopTrackItem{Title: "Song", CoverURL: "https://lastfm/cover.jpg"}
+		r.applyTopTrackMatch(&item, &row)
+		if item.CoverURL != "https://lastfm/cover.jpg" {
+			t.Fatalf("CoverURL = %q, want the Last.fm image", item.CoverURL)
+		}
+	})
+
+	t.Run("source large cover when Last.fm has none", func(t *testing.T) {
+		r := &Recommender{coverAssets: fakeCoverAssets{asset: "/cover-cache/id.jpg"}}
+		item := TopTrackItem{Title: "Song"}
+		r.applyTopTrackMatch(&item, &row)
+		if item.CoverURL != "https://wy/cover-large.jpg" {
+			t.Fatalf("CoverURL = %q, want the source's large cover", item.CoverURL)
+		}
+	})
+
+	t.Run("cached identity cover when neither reports one", func(t *testing.T) {
+		r := &Recommender{coverAssets: fakeCoverAssets{asset: "/cover-cache/id.jpg"}}
+		item := TopTrackItem{Title: "Song"}
+		bare := row
+		bare.CoverURL = ""
+		bare.CoverURLLarge = ""
+		r.applyTopTrackMatch(&item, &bare)
+		if item.CoverURL != "/cover-cache/id.jpg" {
+			t.Fatalf("CoverURL = %q, want the cached cover", item.CoverURL)
+		}
+	})
+
+	t.Run("empty when nothing is known", func(t *testing.T) {
+		r := &Recommender{}
+		item := TopTrackItem{Title: "Song"}
+		bare := row
+		bare.CoverURL = ""
+		bare.CoverURLLarge = ""
+		r.applyTopTrackMatch(&item, &bare)
+		if item.CoverURL != "" {
+			t.Fatalf("CoverURL = %q, want empty so the page renders its placeholder", item.CoverURL)
+		}
+	})
+}
+
+func TestMatchedRecommendedKeepsTheLastFmCover(t *testing.T) {
+	r := &Recommender{}
+	base := RecommendedTrack{CoverURL: "https://lastfm/cover.jpg", Score: 0.9, MatchKey: "k"}
+	row := &domain.CatalogSearchResult{Provider: "wy", ExternalID: "42", CoverURL: "https://wy/cover.jpg"}
+	got := r.matchedRecommended(base, row)
+	if got.CoverURL != "https://lastfm/cover.jpg" {
+		t.Fatalf("CoverURL = %q, want the Last.fm image to win", got.CoverURL)
+	}
+	if got.Score != base.Score || got.MatchKey != base.MatchKey {
+		t.Fatal("recommendation-only fields must be preserved")
+	}
+}
+
+// TestRunTopTracksPrefersTheLocalFile: a library copy short-circuits the
+// workers, so no source is searched for that row.
+func TestRunTopTracksPrefersTheLocalFile(t *testing.T) {
+	source := connectedSource(nil)
+	source.top[topTrackPeriod] = []LastFmTrack{track("Sad Keyboard Guy", "Synthetic Fracture")}
+
+	matcher := &fakeMatcher{
+		sources: []domain.CatalogSearchSource{{ID: "wy"}},
+		localRows: map[string]*domain.TrackDTO{
+			"Sad Keyboard Guy\x00Synthetic Fracture": {Track: domain.Track{
+				ID: "local-1", Title: "Synthetic Fracture", Duration: 200,
+			}},
+		},
+	}
+	recommender, capture := newTopTrackRecommender(source, matcher)
+
+	if _, err := recommender.GetTopTrackRecommendations(context.Background()); err != nil {
+		t.Fatalf("GetTopTrackRecommendations: %v", err)
+	}
+
+	items := capture.waitDone(t)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if items[0].LocalTrackID != "local-1" || items[0].Provider != "" {
+		t.Fatalf("item = %+v, want the local row", items[0])
+	}
+	if got := len(matcher.sourcesCalled()); got != 0 {
+		t.Fatalf("source calls = %d, want none when a local file exists", got)
+	}
+}
+
+// --- "For you" (similar tracks) ----------------------------------------------
+
+func similarTracksKey(artist, title string) string {
+	return artist + "\x00" + title
+}
+
+func findSimilarItem(items []TopTrackItem, title string) *TopTrackItem {
+	for index := range items {
+		if items[index].Title == title {
+			return &items[index]
+		}
+	}
+	return nil
+}
+
+func TestSimilarRecommendationsUseTrackGetSimilar(t *testing.T) {
+	source := connectedSource(nil)
+	source.top[topTrackPeriod] = []LastFmTrack{track("Seed", "Seed Song")}
+	source.similarTracks[similarTracksKey("Seed", "Seed Song")] = []LastFmTrack{
+		track("Other", "Recommended"),
+		track("Seed", "Seed Song"), // a seed is never its own recommendation
+	}
+	recommender, events := newTopTrackRecommender(source, &fakeMatcher{
+		sources: []domain.CatalogSearchSource{{ID: "wy"}},
+	})
+
+	page, err := recommender.GetTopTrackRecommendations(context.Background())
+	if err != nil {
+		t.Fatalf("GetTopTrackRecommendations: %v", err)
+	}
+	if source.similarTrackCalls != 1 {
+		t.Fatalf("track.getSimilar calls = %d, want 1", source.similarTrackCalls)
+	}
+	if source.similarArtistCalls != 0 || source.artistTopTracksCalls != 0 {
+		t.Fatalf("artist fallback ran for a seed with similar tracks: %d/%d",
+			source.similarArtistCalls, source.artistTopTracksCalls)
+	}
+	if len(page.SimilarItems) != 1 || page.SimilarItems[0].Title != "Recommended" {
+		t.Fatalf("similar items = %+v, want only the recommendation", page.SimilarItems)
+	}
+	events.waitDone(t)
+}
+
+func TestSimilarRecommendationsFallBackToSimilarArtists(t *testing.T) {
+	source := connectedSource(nil)
+	source.top[topTrackPeriod] = []LastFmTrack{track("Seed", "Cold Seed")}
+	source.similarArtists["Seed"] = []LastFmArtist{{Name: "Neighbour"}}
+	source.artistTopTracks["Neighbour"] = []LastFmTrack{track("Neighbour", "Fresh Song")}
+	recommender, events := newTopTrackRecommender(source, &fakeMatcher{
+		sources: []domain.CatalogSearchSource{{ID: "wy"}},
+	})
+
+	page, err := recommender.GetTopTrackRecommendations(context.Background())
+	if err != nil {
+		t.Fatalf("GetTopTrackRecommendations: %v", err)
+	}
+	if source.similarArtistCalls != 1 || source.artistTopTracksCalls != 1 {
+		t.Fatalf("fallback calls = %d/%d, want 1/1",
+			source.similarArtistCalls, source.artistTopTracksCalls)
+	}
+	if findSimilarItem(page.SimilarItems, "Fresh Song") == nil {
+		t.Fatalf("similar items = %+v, want the neighbour artist's top track", page.SimilarItems)
+	}
+	events.waitDone(t)
+}
+
+func TestSimilarRecommendationsRespectTheRequestBudget(t *testing.T) {
+	source := connectedSource(nil)
+	for index := 0; index < similarSeedLimit; index++ {
+		artist := "Seed " + strconv.Itoa(index)
+		source.top[topTrackPeriod] = append(source.top[topTrackPeriod], track(artist, "Song"))
+		for neighbour := 0; neighbour < 5; neighbour++ {
+			name := artist + " neighbour " + strconv.Itoa(neighbour)
+			source.similarArtists[artist] = append(source.similarArtists[artist], LastFmArtist{Name: name})
+			source.artistTopTracks[name] = []LastFmTrack{track(name, "Track")}
+		}
+	}
+	recommender, events := newTopTrackRecommender(source, &fakeMatcher{
+		sources: []domain.CatalogSearchSource{{ID: "wy"}},
+	})
+
+	if _, err := recommender.GetTopTrackRecommendations(context.Background()); err != nil {
+		t.Fatalf("GetTopTrackRecommendations: %v", err)
+	}
+	if source.similarTrackCalls > similarSeedLimit {
+		t.Fatalf("track.getSimilar calls = %d, want at most %d", source.similarTrackCalls, similarSeedLimit)
+	}
+	if source.similarArtistCalls > similarSeedLimit {
+		t.Fatalf("artist.getSimilar calls = %d, want at most %d", source.similarArtistCalls, similarSeedLimit)
+	}
+	if source.artistTopTracksCalls > similarSeedLimit*fallbackSimilarArtistLimit {
+		t.Fatalf("artist.getTopTracks calls = %d, want at most %d",
+			source.artistTopTracksCalls, similarSeedLimit*fallbackSimilarArtistLimit)
+	}
+	events.waitDone(t)
+}
+
+// TestSimilarRecommendationsKeepLocalTracks: a recommendation the user already
+// owns must stay in the list and become playable through the local-first pass.
+func TestSimilarRecommendationsKeepLocalTracks(t *testing.T) {
+	source := connectedSource(nil)
+	source.top[topTrackPeriod] = []LastFmTrack{track("Seed", "Seed Song")}
+	source.similarTracks[similarTracksKey("Seed", "Seed Song")] = []LastFmTrack{
+		track("Gardens", "Owned Song"),
+	}
+	matcher := &fakeMatcher{
+		sources: []domain.CatalogSearchSource{{ID: "wy"}},
+		localRows: map[string]*domain.TrackDTO{
+			similarTracksKey("Gardens", "Owned Song"): {Track: domain.Track{
+				ID: "local-1", Title: "Owned Song", Duration: 200,
+			}},
+		},
+	}
+	recommender, events := newTopTrackRecommender(source, matcher)
+
+	page, err := recommender.GetTopTrackRecommendations(context.Background())
+	if err != nil {
+		t.Fatalf("GetTopTrackRecommendations: %v", err)
+	}
+	if len(page.SimilarItems) != 1 {
+		t.Fatalf("similar items = %+v, want the local track kept", page.SimilarItems)
+	}
+
+	var matched *TopTrackItem
+	for _, update := range events.waitDone(t) {
+		item := update
+		if item.Title == "Owned Song" {
+			matched = &item
+		}
+	}
+	if matched == nil || matched.LocalTrackID != "local-1" || !matched.Matched {
+		t.Fatalf("matched update = %+v, want the local row with local_track_id", matched)
+	}
+}
+
+func TestSimilarRecommendationsDeduplicateAcrossSeeds(t *testing.T) {
+	source := connectedSource(nil)
+	source.top[topTrackPeriod] = []LastFmTrack{track("Seed A", "A"), track("Seed B", "B")}
+	shared := track("Shared", "Same Song")
+	source.similarTracks[similarTracksKey("Seed A", "A")] = []LastFmTrack{shared}
+	source.similarTracks[similarTracksKey("Seed B", "B")] = []LastFmTrack{shared}
+	recommender, events := newTopTrackRecommender(source, &fakeMatcher{
+		sources: []domain.CatalogSearchSource{{ID: "wy"}},
+	})
+
+	page, err := recommender.GetTopTrackRecommendations(context.Background())
+	if err != nil {
+		t.Fatalf("GetTopTrackRecommendations: %v", err)
+	}
+	if len(page.SimilarItems) != 1 {
+		t.Fatalf("similar items = %+v, want one row for the shared song", page.SimilarItems)
+	}
+	events.waitDone(t)
+}
+
+func TestSimilarRecommendationsPartialFailureKeepsTheRest(t *testing.T) {
+	source := connectedSource(nil)
+	source.top[topTrackPeriod] = []LastFmTrack{track("Broken", "A"), track("Working", "B")}
+	source.similarTrackErr[similarTracksKey("Broken", "A")] = errors.New("rate limited")
+	source.similarTracks[similarTracksKey("Working", "B")] = []LastFmTrack{track("Other", "Kept")}
+	recommender, events := newTopTrackRecommender(source, &fakeMatcher{
+		sources: []domain.CatalogSearchSource{{ID: "wy"}},
+	})
+
+	page, err := recommender.GetTopTrackRecommendations(context.Background())
+	if err != nil {
+		t.Fatalf("GetTopTrackRecommendations: %v", err)
+	}
+	if page.Status != StatusPartial {
+		t.Fatalf("status = %q, want %q", page.Status, StatusPartial)
+	}
+	if findSimilarItem(page.SimilarItems, "Kept") == nil {
+		t.Fatalf("similar items = %+v, want the successful seed's row", page.SimilarItems)
+	}
+	events.waitDone(t)
+}
+
+func TestSimilarRecommendationsAreCached(t *testing.T) {
+	source := connectedSource(nil)
+	source.top[topTrackPeriod] = []LastFmTrack{track("Seed", "Song")}
+	source.similarTracks[similarTracksKey("Seed", "Song")] = []LastFmTrack{track("Other", "Rec")}
+	recommender, events := newTopTrackRecommender(source, &fakeMatcher{
+		sources: []domain.CatalogSearchSource{{ID: "wy"}},
+	})
+
+	if _, err := recommender.GetTopTrackRecommendations(context.Background()); err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+	events.waitDone(t)
+	calls := source.similarTrackCalls
+
+	if _, err := recommender.GetTopTrackRecommendations(context.Background()); err != nil {
+		t.Fatalf("second load: %v", err)
+	}
+	if source.similarTrackCalls != calls {
+		t.Fatalf("track.getSimilar calls = %d after refresh, want the cached %d",
+			source.similarTrackCalls, calls)
 	}
 }
 

@@ -3,6 +3,7 @@ package domain
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -14,6 +15,13 @@ import (
 var (
 	articlesRegexp = regexp.MustCompile(`^(?i)(the|a|an)\s+`)
 	numberRegexp   = regexp.MustCompile(`\d+`)
+
+	// artistCreditDelimiter splits a credit string on the separators sources and
+	// tags use for multi-artist values.
+	artistCreditDelimiter = regexp.MustCompile(`[;,\x{3001}/&]`)
+	// artistCreditWordDelimiter splits the featured-credit wording ("feat.",
+	// "ft.", "with") that only acts as a separator between artists.
+	artistCreditWordDelimiter = regexp.MustCompile(`(?i)\s+(?:feat\.?|ft\.?|with)\s+`)
 )
 
 // NormalizeSort creates a string suitable for alphabetical sorting.
@@ -70,6 +78,91 @@ func FoldUnicode(s string) string {
 	res = strings.ReplaceAll(res, "Đ", "D")
 
 	return res
+}
+
+// ArtistSetKey turns a credit list into a comparable key: every artist string is
+// split on the common delimiters, each part is normalised, duplicates are
+// removed, the set is sorted and joined. Order and separators no longer matter,
+// so "Sad Keyboard Guy;Gardens" and "Gardens, Sad Keyboard Guy" produce the same
+// key.
+func ArtistSetKey(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(names))
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		for _, chunk := range artistCreditDelimiter.Split(name, -1) {
+			for _, piece := range artistCreditWordDelimiter.Split(chunk, -1) {
+				key := NormalizationKey(piece)
+				if key == "" {
+					continue
+				}
+				if _, duplicate := seen[key]; duplicate {
+					continue
+				}
+				seen[key] = struct{}{}
+				parts = append(parts, key)
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "\x1f")
+}
+
+// ArtistSetsCompatible reports whether two credit lists can describe the same
+// song.
+//
+// A source often reports only the primary artist while the local file credits
+// the featured one too ("Gardens" vs "Gardens" + "Sad Keyboard Guy"), so equality
+// is too strict. The sets are compatible when they share at least one artist and
+// one contains the other; a title and duration still have to match separately.
+func ArtistSetsCompatible(left, right []string) bool {
+	leftKey := ArtistSetKey(left)
+	rightKey := ArtistSetKey(right)
+	if leftKey == "" || rightKey == "" {
+		return false
+	}
+	if leftKey == rightKey {
+		return true
+	}
+	leftParts := strings.Split(leftKey, "\x1f")
+	rightParts := strings.Split(rightKey, "\x1f")
+	if !artistSetsIntersect(leftParts, rightParts) {
+		return false
+	}
+	return artistSetContains(leftParts, rightParts) || artistSetContains(rightParts, leftParts)
+}
+
+func artistSetsIntersect(left, right []string) bool {
+	for _, want := range left {
+		for _, have := range right {
+			if want == have {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// artistSetContains reports whether every part of subset appears in superset.
+func artistSetContains(subset, superset []string) bool {
+	for _, want := range subset {
+		found := false
+		for _, have := range superset {
+			if want == have {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // DefaultDelimiters returns the built-in delimiter set used when the user has

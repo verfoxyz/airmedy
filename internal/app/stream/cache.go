@@ -422,7 +422,7 @@ func (c *Cache) resolveEntry(ctx context.Context, provider string, track *domain
 	title := strings.TrimSpace(track.Title)
 	artist := primaryArtist(track)
 	titleKey := domain.NormalizationKey(title)
-	artistKey := domain.NormalizationKey(artist)
+	artistKey := domain.ArtistSetKey(artistNames(track))
 
 	key := cacheKeyFor(provider, track.ExternalID)
 	entry = &domain.StreamCacheEntry{
@@ -485,7 +485,7 @@ func (c *Cache) lookupEntry(ctx context.Context, provider string, track *domain.
 		return entry, nil
 	}
 	titleKey := domain.NormalizationKey(strings.TrimSpace(track.Title))
-	artistKey := domain.NormalizationKey(primaryArtist(track))
+	artistKey := domain.ArtistSetKey(artistNames(track))
 	if titleKey == "" || artistKey == "" {
 		return nil, nil
 	}
@@ -510,6 +510,26 @@ func primaryArtist(track *domain.TrackDTO) string {
 		return ""
 	}
 	return strings.TrimSpace(strings.SplitN(raw, ";", 2)[0])
+}
+
+// artistNames is the credit list used for matching: the resolved artists, or the
+// raw tag value split on the multi-value separator when relations were not
+// loaded.
+func artistNames(track *domain.TrackDTO) []string {
+	names := make([]string, 0, len(track.Artists))
+	for _, artist := range track.Artists {
+		if artist != nil && strings.TrimSpace(artist.Name) != "" {
+			names = append(names, strings.TrimSpace(artist.Name))
+		}
+	}
+	if len(names) > 0 {
+		return names
+	}
+	raw := strings.TrimSpace(track.RawArtistNames)
+	if raw == "" {
+		return nil
+	}
+	return strings.Split(raw, ";")
 }
 
 // artistList is the display-only, all-artists string stored on the entry.

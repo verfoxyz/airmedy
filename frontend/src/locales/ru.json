@@ -917,6 +917,8 @@
     "matching": "Поиск источника…",
     "no_source": "Не найдено воспроизводимого источника",
     "no_match": "Нет совпадений",
-    "matched_from": "из {source}"
+    "matched_from": "из {source}",
+    "similar_tracks": "Для вас",
+    "similar_empty": "Пока нет рекомендаций."
   }
 }

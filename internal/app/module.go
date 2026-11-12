@@ -141,6 +141,9 @@ var Module = fx.Module("app",
 		// narrow port so app/catalog imports none of them.
 		func(svc *download.Service) catalog.RemoteTracks { return svc },
 		func(svc *download.Service) catalog.LocalTracks { return svc },
+		// Local-first matching: the download service owns the SQLite query that
+		// finds an on-disk row for a provider row before anything is registered.
+		func(svc *download.Service) catalog.LocalTrackMatcher { return svc },
 		// Saving a row is decided in one place: the download coordinator promotes
 		// a cached stream copy or queues a download.
 		func(svc *download.Service) catalog.SavedTracks { return svc },

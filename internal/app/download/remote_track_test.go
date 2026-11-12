@@ -62,6 +62,99 @@ func TestEnsureRemoteTrack_BackfillsTheAlbumOnARegisteredRow(t *testing.T) {
 	assert.Equal(t, "叶惠美", again.RawAlbumName)
 }
 
+// TestEnsureRemoteTrack_ReusesAnOnDiskRow: the same song registered from a
+// provider must not become a second row when a file already exists. The
+// identity moves onto the local row so later lookups find it.
+func TestEnsureRemoteTrack_ReusesAnOnDiskRow(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	require.NoError(t, h.tracks.Upsert(ctx, &domain.Track{
+		ID:             "local-1",
+		Path:           "/library/Synthetic Fracture.flac",
+		Title:          "Synthetic Fracture",
+		Duration:       200,
+		RawArtistNames: "Gardens; Sad Keyboard Guy",
+		Availability:   domain.AvailabilityReady,
+	}))
+
+	track, err := h.svc.EnsureRemoteTrack(ctx, domain.RemoteTrackSpec{
+		Provider:   "wy",
+		ExternalID: "1941192069",
+		Title:      "Synthetic Fracture",
+		Artists:    []string{"Sad Keyboard Guy", "Gardens"},
+		Duration:   202,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "local-1", track.ID, "the on-disk row must be reused")
+	assert.Equal(t, "wy", track.Provider, "the identity must be carried onto it")
+	assert.Equal(t, "1941192069", track.ExternalID)
+
+	var remotes int
+	require.NoError(t, h.db.GetContext(ctx, &remotes,
+		`SELECT COUNT(*) FROM tracks WHERE path LIKE 'remote://%'`))
+	assert.Equal(t, 0, remotes, "no virtual remote row may be registered for the same identity")
+}
+
+// TestEnsureRemoteTrack_RegistersOutsideTheDurationTolerance: a different
+// recording of the same title must still get its own row.
+func TestEnsureRemoteTrack_RegistersOutsideTheDurationTolerance(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	require.NoError(t, h.tracks.Upsert(ctx, &domain.Track{
+		ID:             "local-1",
+		Path:           "/library/Synthetic Fracture.flac",
+		Title:          "Synthetic Fracture",
+		Duration:       200,
+		RawArtistNames: "Sad Keyboard Guy; Gardens",
+		Availability:   domain.AvailabilityReady,
+	}))
+
+	track, err := h.svc.EnsureRemoteTrack(ctx, domain.RemoteTrackSpec{
+		Provider:   "wy",
+		ExternalID: "1941192069",
+		Title:      "Synthetic Fracture",
+		Artists:    []string{"Sad Keyboard Guy", "Gardens"},
+		Duration:   260,
+	})
+	require.NoError(t, err)
+
+	assert.NotEqual(t, "local-1", track.ID)
+	assert.True(t, track.IsRemote())
+}
+
+// TestEnsureRemoteTrack_ForceRegistersANewRow: "download anyway" and re-download
+// must ignore the on-disk copy the user explicitly overrode.
+func TestEnsureRemoteTrack_ForceRegistersANewRow(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	require.NoError(t, h.tracks.Upsert(ctx, &domain.Track{
+		ID:             "local-1",
+		Path:           "/library/Synthetic Fracture.flac",
+		Title:          "Synthetic Fracture",
+		Duration:       200,
+		RawArtistNames: "Sad Keyboard Guy; Gardens",
+		Availability:   domain.AvailabilityReady,
+	}))
+
+	track, err := h.svc.EnsureRemoteTrack(ctx, domain.RemoteTrackSpec{
+		Provider:   "wy",
+		ExternalID: "1941192069",
+		Title:      "Synthetic Fracture",
+		Artists:    []string{"Gardens", "Sad Keyboard Guy"},
+		Duration:   200,
+		Force:      true,
+	})
+	require.NoError(t, err)
+
+	assert.NotEqual(t, "local-1", track.ID)
+	assert.True(t, track.IsRemote(), "the provider row must be registered when Force is set")
+}
+
+// TestEnsureRemoteTrack_IsIdempotent covers the identity lookup.
 func TestEnsureRemoteTrack_IsIdempotent(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

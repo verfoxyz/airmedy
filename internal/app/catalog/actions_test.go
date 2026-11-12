@@ -8,6 +8,9 @@ import (
 	"testing"
 
 	"airmedy/internal/domain"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeRemoteTracks records what an action asked the download pipeline to do.
@@ -610,6 +613,141 @@ func TestEnsureStreamableTrack_ReusesALocalFile(t *testing.T) {
 	}
 	if specs, _ := tracks.recorded(); len(specs) != 0 {
 		t.Fatalf("registered %+v, want the on-disk row without a new remote row", specs)
+	}
+}
+
+// fakeLocalMatcher answers the local-first lookup and records it.
+type fakeLocalMatcher struct {
+	track *domain.TrackDTO
+	err   error
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *fakeLocalMatcher) MatchLocalTrack(
+	context.Context, string, []string, int,
+) (*domain.TrackDTO, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return f.track, f.err
+}
+
+func (f *fakeLocalMatcher) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// TestEnsureStreamableTrack_PrefersALocalMatch: when the library already has the
+// song, playing it must reuse that row and register nothing.
+func TestEnsureStreamableTrack_PrefersALocalMatch(t *testing.T) {
+	tracks := &fakeRemoteTracks{track: remoteTrack("remote-1")}
+	service := newActionService(tracks, &fakeFavorites{}, &fakePlaylists{}, nil)
+	matcher := &fakeLocalMatcher{track: &domain.TrackDTO{Track: domain.Track{
+		ID: "local-1", Path: `C:\Music\Synthetic Fracture.flac`, Title: "Synthetic Fracture",
+	}}}
+	service.localMatcher = matcher
+
+	track, err := service.EnsureStreamableTrack(context.Background(), ActionRequest{
+		Provider: "wy", ExternalID: "1941192069", Title: "Synthetic Fracture",
+		Artists: []string{"Sad Keyboard Guy", "Gardens"}, Duration: 200,
+	})
+	if err != nil {
+		t.Fatalf("EnsureStreamableTrack: %v", err)
+	}
+	if track.ID != "local-1" {
+		t.Fatalf("track = %+v, want the on-disk row", track)
+	}
+	if specs, _ := tracks.recorded(); len(specs) != 0 {
+		t.Fatalf("registered %+v, want no remote row when a local file exists", specs)
+	}
+	if matcher.callCount() == 0 {
+		t.Fatal("the local matcher was never asked")
+	}
+}
+
+// TestEnsureStreamableTrack_FallsBackToRegistration: no local match means the
+// provider row is registered as before.
+func TestEnsureStreamableTrack_FallsBackToRegistration(t *testing.T) {
+	tracks := &fakeRemoteTracks{track: remoteTrack("remote-1")}
+	service := newActionService(tracks, &fakeFavorites{}, &fakePlaylists{}, nil)
+	service.localMatcher = &fakeLocalMatcher{}
+
+	track, err := service.EnsureStreamableTrack(context.Background(), ActionRequest{
+		Provider: "wy", ExternalID: "42", Title: "Song", Duration: 200,
+	})
+	if err != nil {
+		t.Fatalf("EnsureStreamableTrack: %v", err)
+	}
+	if track.ID != "remote-1" {
+		t.Fatalf("track = %+v, want the registered remote row", track)
+	}
+	if specs, _ := tracks.recorded(); len(specs) != 1 {
+		t.Fatalf("registered %+v, want one remote row", specs)
+	}
+}
+
+// TestEnsureStreamableTrack_WarmsTheCoverCache: the player and the info drawer
+// resolve artwork by identity, so pressing play must populate the cache.
+func TestEnsureStreamableTrack_WarmsTheCoverCache(t *testing.T) {
+	covers := &fakeCoverCache{asset: "/cover-cache/a.jpg"}
+	service := NewService(Deps{
+		Library:  &fakeRemoteTracks{track: remoteTrack("remote-1")},
+		Resolver: fakeResolver{"wy": true},
+		Covers:   covers,
+		Logger:   quietLogger(),
+	})
+
+	_, err := service.EnsureStreamableTrack(context.Background(), ActionRequest{
+		Provider: "wy", ExternalID: "42", Title: "Song",
+		CoverURL: " https://cdn.example/a.jpg ",
+	})
+	if err != nil {
+		t.Fatalf("EnsureStreamableTrack: %v", err)
+	}
+
+	require.Len(t, covers.calls, 1)
+	assert.Equal(t, "https://cdn.example/a.jpg", covers.calls[0].url)
+	assert.Equal(t, "wy", covers.calls[0].provider)
+	assert.Equal(t, "42", covers.calls[0].externalID)
+}
+
+func TestEnsureStreamableTrack_SkipsTheCoverWarmWithoutAURL(t *testing.T) {
+	covers := &fakeCoverCache{asset: "/cover-cache/a.jpg"}
+	service := NewService(Deps{
+		Library:  &fakeRemoteTracks{track: remoteTrack("remote-1")},
+		Resolver: fakeResolver{"wy": true},
+		Covers:   covers,
+		Logger:   quietLogger(),
+	})
+
+	if _, err := service.EnsureStreamableTrack(context.Background(), ActionRequest{
+		Provider: "wy", ExternalID: "42", Title: "Song",
+	}); err != nil {
+		t.Fatalf("EnsureStreamableTrack: %v", err)
+	}
+	assert.Empty(t, covers.calls)
+}
+
+func TestEnsureStreamableTrack_CoverWarmFailureDoesNotFailPlayback(t *testing.T) {
+	covers := &fakeCoverCache{err: errors.New("network down")}
+	service := NewService(Deps{
+		Library:  &fakeRemoteTracks{track: remoteTrack("remote-1")},
+		Resolver: fakeResolver{"wy": true},
+		Covers:   covers,
+		Logger:   quietLogger(),
+	})
+
+	track, err := service.EnsureStreamableTrack(context.Background(), ActionRequest{
+		Provider: "wy", ExternalID: "42", Title: "Song", CoverURL: "https://cdn.example/a.jpg",
+	})
+	if err != nil {
+		t.Fatalf("EnsureStreamableTrack must not fail when the cover cannot be cached: %v", err)
+	}
+	if track.ID != "remote-1" {
+		t.Fatalf("track = %+v, want the registered row", track)
 	}
 }
 

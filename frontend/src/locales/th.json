@@ -917,6 +917,8 @@
     "matching": "กำลังจับคู่…",
     "no_source": "ไม่พบแหล่งที่เล่นได้",
     "no_match": "ไม่พบที่ตรงกัน",
-    "matched_from": "จาก {source}"
+    "matched_from": "จาก {source}",
+    "similar_tracks": "แนะนำสำหรับคุณ",
+    "similar_empty": "ยังไม่มีคำแนะนำ"
   }
 }

@@ -28,6 +28,15 @@ var Module = fx.Module("lastfm",
 			recommender.HandlePlaybackFailure(track.Provider, track.ExternalID)
 		})
 	}),
+	// A matched row whose source reports no artwork falls back to the cached
+	// cover for its identity, so the page can show a real image or a placeholder
+	// instead of a broken URL.
+	fx.Invoke(fx.Annotate(
+		func(recommender *Recommender, assets domain.CoverIdentityAssets) {
+			recommender.SetCoverAssets(assets)
+		},
+		fx.ParamTags(``, `optional:"true"`),
+	)),
 	fx.Invoke(func(lc fx.Lifecycle, s *LastFmService, logger *slog.Logger) {
 		lc.Append(fx.Hook{
 			OnStart: func(ctx context.Context) error {

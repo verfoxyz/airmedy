@@ -41,6 +41,10 @@ type RemoteTrackSpec struct {
 	AlbumName  string
 	Duration   int // seconds; 0 when the source does not know it
 	CoverURL   string
+	// Force registers the provider identity even when an on-disk row already
+	// represents the song. Set by "download anyway" and re-download, where the
+	// user explicitly asked for the provider's own copy.
+	Force bool
 }
 
 // IsRemote reports whether the track's audio is not currently on disk. A remote

@@ -531,6 +531,9 @@ func (s *Service) Redownload(ctx context.Context, trackID string) error {
 		Title:      track.Title,
 		Artists:    domain.SplitNames(track.RawArtistNames, []string{domain.RawTagSeparator}),
 		AlbumName:  track.RawAlbumName,
+		// Re-download means a fresh copy of the provider's file, even if another
+		// on-disk row already represents the same song.
+		Force: true,
 	}
 	if err := s.remover.DeleteTrackFile(ctx, trackID); err != nil {
 		return fmt.Errorf("redownload: remove %s: %w", trackID, err)

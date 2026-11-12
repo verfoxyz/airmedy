@@ -917,6 +917,8 @@
     "matching": "匹配中…",
     "no_source": "未找到可播放源",
     "no_match": "无匹配",
-    "matched_from": "来自 {source}"
+    "matched_from": "来自 {source}",
+    "similar_tracks": "为你推荐",
+    "similar_empty": "暂时没有推荐。"
   }
 }

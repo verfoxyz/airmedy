@@ -79,8 +79,12 @@ function item(title: string, state: RowState = 'matching') {
   }
 }
 
-function page(items: ReturnType<typeof item>[], status = 'ok') {
-  return { status, items }
+function page(
+  items: ReturnType<typeof item>[],
+  status = 'ok',
+  similar: ReturnType<typeof item>[] = [],
+) {
+  return { status, items, similar_items: similar }
 }
 
 async function mountView() {
@@ -248,6 +252,50 @@ describe('LastFmView (top tracks MVP)', () => {
     await empty.find('button').trigger('click')
     await flushPromises()
     expect(mocks.getTopTracks).toHaveBeenCalledTimes(2)
+  })
+
+  it('renders the recommendations section above the top tracks', async () => {
+    mocks.getTopTracks.mockResolvedValue(
+      page([item('Top')], 'ok', [item('Suggested', 'matched')]),
+    )
+    const wrapper = await mountView()
+
+    const sections = wrapper.findAll('section')
+    expect(sections[0].attributes('data-test')).toBe('lastfm-similar')
+    expect(sections[1].attributes('data-test')).toBe('lastfm-top-tracks')
+
+    const rows = wrapper
+      .find('[data-test="lastfm-similar"]')
+      .findAll('[data-test="top-track-row"]')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].find('[data-test="top-track-status"]').attributes('data-state')).toBe('matched')
+    expect(rows[0].find('[data-test="top-track-play"]').exists()).toBe(true)
+  })
+
+  it('shows the recommendations empty state without hiding the top tracks', async () => {
+    mocks.getTopTracks.mockResolvedValue(page([item('Top')], 'ok', []))
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="lastfm-similar-empty"]').exists()).toBe(true)
+    const topRows = wrapper
+      .find('[data-test="lastfm-top-tracks"]')
+      .findAll('[data-test="top-track-row"]')
+    expect(topRows).toHaveLength(1)
+  })
+
+  it('updates a recommendation row from the shared match stream', async () => {
+    mocks.getTopTracks.mockResolvedValue(
+      page([item('Top')], 'ok', [item('Suggested', 'matching')]),
+    )
+    const wrapper = await mountView()
+
+    await emitMatch({ items: [item('Suggested', 'matched')], done: false })
+
+    const row = wrapper
+      .find('[data-test="lastfm-similar"]')
+      .find('[data-test="top-track-row"]')
+    expect(row.find('[data-test="top-track-status"]').attributes('data-state')).toBe('matched')
+    expect(row.find('[data-test="top-track-play"]').exists()).toBe(true)
   })
 
   it('releases the match listener on unmount', async () => {

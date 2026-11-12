@@ -917,6 +917,8 @@
     "matching": "Matching…",
     "no_source": "No playable source",
     "no_match": "No match",
-    "matched_from": "from {source}"
+    "matched_from": "from {source}",
+    "similar_tracks": "For you",
+    "similar_empty": "No recommendations yet."
   }
 }

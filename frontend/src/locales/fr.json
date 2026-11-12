@@ -917,6 +917,8 @@
     "matching": "Recherche de correspondance…",
     "no_source": "Aucune source lisible trouvée",
     "no_match": "Aucune correspondance",
-    "matched_from": "depuis {source}"
+    "matched_from": "depuis {source}",
+    "similar_tracks": "Pour vous",
+    "similar_empty": "Pas encore de recommandations."
   }
 }

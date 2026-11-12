@@ -311,9 +311,9 @@ type CoverIdentityAssets interface {
 }
 
 // CatalogLocalQuery asks whether an on-disk track already represents a search
-// row. Matching is deliberately strict (same normalised title, same primary
-// artist, duration within ±3s) so a live version or a cover is not mistaken for
-// the studio track.
+// row. Matching is deliberately strict (same normalised title, same artist set,
+// duration within ±5s) so a live version or a cover is not mistaken for the
+// studio track.
 type CatalogLocalQuery struct {
 	Identity CatalogIdentity
 	Title    string

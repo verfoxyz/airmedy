@@ -140,6 +140,11 @@ type CatalogMatcher interface {
 	MatchTrack(
 		ctx context.Context, title, artist string, duration int, sources []string,
 	) ([]domain.CatalogSearchResult, error)
+	// MatchLocalTrack answers "is this song already on disk?" without a network
+	// call, so a library copy is reused before any source is searched.
+	MatchLocalTrack(
+		ctx context.Context, title string, artists []string, duration int,
+	) (*domain.TrackDTO, error)
 	Sources(ctx context.Context) ([]domain.CatalogSearchSource, error)
 }
 
@@ -255,6 +260,12 @@ type Recommender struct {
 	// Every later run skips them, so a page refresh cannot send the user back to
 	// the same broken source.
 	topFailedSources map[string]map[string]bool
+	// coverAssets resolves a cached cover by identity when neither Last.fm nor
+	// the matched source reported one. Optional.
+	coverAssets domain.CoverIdentityAssets
+	// similarRecs caches the "for you" answer per seed set for 30 minutes, so a
+	// refresh does not spend the track.getSimilar request budget again.
+	similarRecs map[string]cachedSimilarRecommendation
 }
 
 type cachedPage struct {
@@ -299,7 +310,36 @@ func NewRecommender(
 		topQueue:         make(map[string][]queuedTopTrackRun),
 		topRows:          make(map[string]TopTrackItem),
 		topFailedSources: make(map[string]map[string]bool),
+		similarRecs:      make(map[string]cachedSimilarRecommendation),
 	}
+}
+
+// SetCoverAssets installs the identity cover resolver. Optional: without it a
+// row that has no Last.fm or source cover keeps the placeholder.
+func (r *Recommender) SetCoverAssets(assets domain.CoverIdentityAssets) {
+	r.mu.Lock()
+	r.coverAssets = assets
+	r.mu.Unlock()
+}
+
+// coverForIdentity returns the cached cover URL for a provider identity, or "".
+func (r *Recommender) coverForIdentity(provider, externalID string) string {
+	r.mu.Lock()
+	assets := r.coverAssets
+	r.mu.Unlock()
+	if assets == nil {
+		return ""
+	}
+	provider = domain.NormalizeProvider(provider)
+	externalID = strings.TrimSpace(externalID)
+	if provider == "" || externalID == "" {
+		return ""
+	}
+	assetURL, err := assets.AssetForIdentity(context.Background(), provider, externalID)
+	if err != nil {
+		return ""
+	}
+	return assetURL
 }
 
 // GetRecommendations builds (or reuses) the page for the connected account.
@@ -1142,7 +1182,7 @@ func (r *Recommender) decoratePage(page RecommendationPage) (RecommendationPage,
 				failed[key] = struct{}{}
 				continue
 			}
-			matched[key] = matchedRecommended(row, cached)
+			matched[key] = r.matchedRecommended(row, cached)
 		}
 	}
 	if len(pending) > maxMatchCandidates {
@@ -1265,7 +1305,7 @@ func (r *Recommender) runMatching(
 				return
 			}
 
-			item := matchedRecommended(row, match)
+			item := r.matchedRecommended(row, match)
 			bufferMu.Lock()
 			buffer = append(buffer, item)
 			shouldFlush := len(buffer) >= matchEventBatch
@@ -1380,14 +1420,11 @@ func streamCached(ctx context.Context, streams domain.StreamCacheRepository, row
 		return true
 	}
 	titleKey := domain.NormalizationKey(row.Title)
-	artist := ""
-	if len(row.Artists) > 0 {
-		artist = domain.NormalizationKey(row.Artists[0])
-	}
-	if titleKey == "" || artist == "" {
+	artistKey := domain.ArtistSetKey(row.Artists)
+	if titleKey == "" || artistKey == "" {
 		return false
 	}
-	entry, err := streams.MatchByTitleArtist(ctx, titleKey, artist, int64(row.Duration)*1000, 5000)
+	entry, err := streams.MatchByTitleArtist(ctx, titleKey, artistKey, int64(row.Duration)*1000, 5000)
 	return err == nil && entry != nil
 }
 
@@ -1422,7 +1459,24 @@ func rawRecommended(entry *candidate, score float64) RecommendedTrack {
 
 // matchedRecommended copies the catalogue identity onto the Last.fm row while
 // preserving the recommendation-only fields (score, source, match key).
-func matchedRecommended(base RecommendedTrack, row *domain.CatalogSearchResult) RecommendedTrack {
+//
+// Cover priority: a real Last.fm image wins, then the matched source's cover,
+// then whatever the cover cache has for the identity. Nothing found leaves the
+// field empty, and the page renders its placeholder.
+func (r *Recommender) matchedRecommended(base RecommendedTrack, row *domain.CatalogSearchResult) RecommendedTrack {
+	cover := strings.TrimSpace(base.CoverURL)
+	large := strings.TrimSpace(base.CoverURLLarge)
+	if cover == "" {
+		// The source's display cover is its large image when it has one.
+		cover = strings.TrimSpace(row.CoverURLLarge)
+		large = cover
+		if cover == "" {
+			cover = strings.TrimSpace(row.CoverURL)
+		}
+		if cover == "" {
+			cover = r.coverForIdentity(row.Provider, row.ExternalID)
+		}
+	}
 	return RecommendedTrack{
 		Provider:              row.Provider,
 		ExternalID:            row.ExternalID,
@@ -1430,8 +1484,8 @@ func matchedRecommended(base RecommendedTrack, row *domain.CatalogSearchResult) 
 		Artists:               append([]string{}, row.Artists...),
 		AlbumName:             row.AlbumName,
 		Duration:              row.Duration,
-		CoverURL:              row.CoverURL,
-		CoverURLLarge:         row.CoverURLLarge,
+		CoverURL:              cover,
+		CoverURLLarge:         large,
 		Downloadable:          row.Downloadable,
 		DownloadBlockedReason: row.DownloadBlockedReason,
 		State:                 row.State,

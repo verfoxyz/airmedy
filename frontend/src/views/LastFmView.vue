@@ -44,7 +44,10 @@ const requeued = new Set<string>()
 const status = computed(() => page.value?.status ?? '')
 const notConnected = computed(() => status.value === 'not_connected')
 const items = computed(() => page.value?.items ?? [])
-const isEmpty = computed(() => !!page.value && items.value.length === 0)
+const similarItems = computed(() => page.value?.similar_items ?? [])
+const isEmpty = computed(
+  () => !!page.value && items.value.length === 0 && similarItems.value.length === 0,
+)
 
 async function load() {
   if (loading.value) return
@@ -57,9 +60,9 @@ async function load() {
     page.value = await LastFmService.GetTopTrackRecommendations()
     if (page.value) {
       if (pendingItems.length > 0) {
-        page.value = { ...page.value, items: applyItems(page.value.items, pendingItems, pendingDone) }
+        page.value = applyPageItems(page.value, pendingItems, pendingDone)
       } else if (pendingDone) {
-        page.value = { ...page.value, items: finishItems(page.value.items) }
+        page.value = finishPage(page.value)
       }
     }
     pendingItems = []
@@ -78,12 +81,18 @@ interface TopTrackUpdate {
   done?: boolean
 }
 
-/** applyItems replaces rows by match key; Done finishes any stragglers. */
-function applyItems(
-  current: TopTrackItemDTO[],
+/**
+ * applyPageItems applies one batch to both sections.
+ *
+ * The backend runs the two lists through the same five-source queue, so a batch
+ * can contain rows for either list; a row is replaced in whichever list owns its
+ * match key. Done finishes stragglers in both.
+ */
+function applyPageItems(
+  current: TopTrackPageDTO,
   updates: TopTrackItemDTO[],
   done: boolean,
-): TopTrackItemDTO[] {
+): TopTrackPageDTO {
   const byKey = new Map<string, TopTrackItemDTO>()
   for (const update of updates) {
     if (!update.match_key) continue
@@ -93,11 +102,26 @@ function applyItems(
     if (update.matching && !update.provider) requeued.add(update.match_key)
     else requeued.delete(update.match_key)
   }
-  const next = current.map((row) => {
-    const update = row.match_key ? byKey.get(row.match_key) : undefined
-    return update ? { ...row, ...update } : row
-  })
-  return done ? finishItems(next) : next
+  const merge = (rows: TopTrackItemDTO[]): TopTrackItemDTO[] => {
+    const next = rows.map((row) => {
+      const update = row.match_key ? byKey.get(row.match_key) : undefined
+      return update ? { ...row, ...update } : row
+    })
+    return done ? finishItems(next) : next
+  }
+  return {
+    ...current,
+    items: merge(current.items),
+    similar_items: merge(current.similar_items ?? []),
+  }
+}
+
+function finishPage(current: TopTrackPageDTO): TopTrackPageDTO {
+  return {
+    ...current,
+    items: finishItems(current.items),
+    similar_items: finishItems(current.similar_items ?? []),
+  }
 }
 
 function finishItems(rows: TopTrackItemDTO[]): TopTrackItemDTO[] {
@@ -123,10 +147,7 @@ function onRecommendationsMatched(event: Events.WailsEvent) {
     pendingDone = pendingDone || update.done === true
     return
   }
-  page.value = {
-    ...page.value,
-    items: applyItems(page.value.items, updates, update.done === true),
-  }
+  page.value = applyPageItems(page.value, updates, update.done === true)
 }
 
 /**
@@ -199,7 +220,7 @@ onActivated(() => {
           </div>
           <h1 class="text-4xl font-bold tracking-tight">{{ $t('lastfm.title') }}</h1>
         </div>
-        <p class="mt-2 text-xl text-dim">{{ $t('lastfm.top') }}</p>
+        <p class="mt-2 text-xl text-dim">{{ $t('lastfm.subtitle') }}</p>
       </div>
 
       <IconButton
@@ -273,18 +294,41 @@ onActivated(() => {
         </button>
       </div>
 
-      <!-- Top tracks -->
-      <section v-else class="mt-10" data-test="lastfm-top-tracks">
-        <div class="space-y-1">
-          <TopTrackRow
-            v-for="item in items"
-            :key="item.match_key"
-            :item="item"
-            @play="playTrack"
-            @save="saveTrack"
-          />
-        </div>
-      </section>
+      <!-- For you + top tracks share the row component and the match stream -->
+      <template v-else>
+        <section class="mt-10" data-test="lastfm-similar">
+          <h2 class="mb-3 text-lg font-semibold text-foreground">
+            {{ $t('lastfm.similar_tracks') }}
+          </h2>
+          <div v-if="similarItems.length > 0" class="space-y-1">
+            <TopTrackRow
+              v-for="item in similarItems"
+              :key="item.match_key"
+              :item="item"
+              @play="playTrack"
+              @save="saveTrack"
+            />
+          </div>
+          <p v-else class="text-sm text-dim" data-test="lastfm-similar-empty">
+            {{ $t('lastfm.similar_empty') }}
+          </p>
+        </section>
+
+        <section class="mt-10" data-test="lastfm-top-tracks">
+          <h2 class="mb-3 text-lg font-semibold text-foreground">
+            {{ $t('lastfm.top') }}
+          </h2>
+          <div class="space-y-1">
+            <TopTrackRow
+              v-for="item in items"
+              :key="item.match_key"
+              :item="item"
+              @play="playTrack"
+              @save="saveTrack"
+            />
+          </div>
+        </section>
+      </template>
     </template>
   </div>
 </template>

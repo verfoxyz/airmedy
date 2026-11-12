@@ -43,6 +43,8 @@ const EXPECTED_KEYS = [
   'save',
   'search_artist',
   'similar_artists',
+  'similar_empty',
+  'similar_tracks',
   'subtitle',
   'subtitle_account',
   'title',

@@ -48,6 +48,43 @@ func TestNormalizationKey(t *testing.T) {
 	}
 }
 
+func TestArtistSetKeyIgnoresOrderSeparatorsAndDuplicates(t *testing.T) {
+	variants := [][]string{
+		{"Sad Keyboard Guy;Gardens"},
+		{"Gardens, Sad Keyboard Guy"},
+		{"Gardens & Sad Keyboard Guy"},
+		{"Gardens", "Sad Keyboard Guy"},
+		{"Sad Keyboard Guy feat. Gardens"},
+		{"Sad Keyboard Guy ft. Gardens"},
+		{"Sad Keyboard Guy with Gardens"},
+		{"  Gardens  ", "Sad Keyboard Guy", "gardens"},
+	}
+	want := ArtistSetKey(variants[0])
+	if want == "" {
+		t.Fatal("ArtistSetKey is empty for a two-artist credit")
+	}
+	for _, names := range variants {
+		if got := ArtistSetKey(names); got != want {
+			t.Errorf("ArtistSetKey(%q) = %q, want %q", names, got, want)
+		}
+	}
+}
+
+func TestArtistSetKeyKeepsDifferentSetsApart(t *testing.T) {
+	left := ArtistSetKey([]string{"Artist A", "Artist B"})
+	right := ArtistSetKey([]string{"Artist A", "Artist C"})
+	single := ArtistSetKey([]string{"Artist A"})
+	if left == right {
+		t.Fatal("two different artist sets share a key")
+	}
+	if left == single {
+		t.Fatal("a two-artist set matches a single artist")
+	}
+	if ArtistSetKey(nil) != "" || ArtistSetKey([]string{"  ", ""}) != "" {
+		t.Fatal("an empty credit list must produce an empty key")
+	}
+}
+
 func TestSplitNames(t *testing.T) {
 	def := DefaultDelimiters() // [";", "\\\\", ","]
 	onlyHard := []string{";", "\\\\"}

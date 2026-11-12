@@ -307,7 +307,7 @@ func (s *LastFmService) GetSimilarArtists(ctx context.Context, artist string, li
 		}
 		artists = append(artists, LastFmArtist{
 			Name:      name,
-			ImageURL:  usableArtistImage(largestImage(wire.Image)),
+			ImageURL:  usableImage(largestImage(wire.Image)),
 			Listeners: int(wire.Listeners),
 			URL:       strings.TrimSpace(wire.URL),
 		})
@@ -469,12 +469,14 @@ func parseTagList(wireTags flexList[lastFmTagWire]) []LastFmTag {
 	return tags
 }
 
-// lastFmPlaceholderImageMarker identifies Last.fm's default artist star image.
-// The API returns it for artists without artwork, and the browser renders it as
-// a broken or blank avatar if the URL is used directly.
+// lastFmPlaceholderImageMarker identifies Last.fm's default star image. The API
+// returns it for artists and albums without artwork, and the browser renders it
+// as a broken or blank block if the URL is used directly.
 const lastFmPlaceholderImageMarker = "2a96cbd8b46e442fc41c2b86b821562f"
 
-func usableArtistImage(url string) string {
+// usableImage drops empty URLs and Last.fm's default star placeholder, so the
+// callers treat "no artwork" uniformly instead of rendering the placeholder.
+func usableImage(url string) string {
 	trimmed := strings.TrimSpace(url)
 	if trimmed == "" || strings.Contains(trimmed, lastFmPlaceholderImageMarker) {
 		return ""
@@ -597,7 +599,7 @@ func (w lastFmTrackWire) toTrack() LastFmTrack {
 		Artist:    artist,
 		Title:     strings.TrimSpace(w.Name),
 		Album:     strings.TrimSpace(w.Album.Text),
-		ImageURL:  largestImage(w.Image),
+		ImageURL:  usableImage(largestImage(w.Image)),
 		Duration:  int(w.Duration),
 		PlayCount: int(w.PlayCount),
 		MBID:      strings.TrimSpace(w.MBID),

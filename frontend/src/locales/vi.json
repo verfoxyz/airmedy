@@ -917,6 +917,8 @@
     "matching": "Đang khớp nguồn…",
     "no_source": "Không tìm thấy nguồn phát được",
     "no_match": "Không khớp",
-    "matched_from": "từ {source}"
+    "matched_from": "từ {source}",
+    "similar_tracks": "Dành cho bạn",
+    "similar_empty": "Chưa có gợi ý nào."
   }
 }

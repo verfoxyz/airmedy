@@ -190,13 +190,30 @@ Page-level failures travel as machine kinds in `error_kind` (`no_sources`,
 
 ## Last.fm Page (`/lastfm`)
 
-`views/LastFmView.vue` is the sidebar entry directly below Search. It renders a
-single "top tracks" list from `LastFmService.GetTopTrackRecommendations()`, which
-makes one Last.fm request (`user.getTopTracks`, `overall`, limit 50) and returns
-every row immediately.
+`views/LastFmView.vue` is the sidebar entry directly below Search. It renders two
+lists from `LastFmService.GetTopTrackRecommendations()`:
+
+- **For you** (`similar_items`), above the top tracks: the first ten usable top
+  tracks seed `track.getSimilar` (limit 10 each). A seed whose answer is empty falls
+  back to `artist.getSimilar` (limit 3) and then each similar artist's
+  `artist.getTopTracks` (limit 5), so the worst case is about fifty requests. The
+  result is merged by title + artist set, ordered by how many seeds recommended a
+  row and then by Last.fm popularity, and capped at 50. The answer is cached per
+  seed set for 30 minutes. Seeds are never their own recommendation; local files
+  are **kept** and become playable through the shared queue.
+- **Top tracks** (`items`): one `user.getTopTracks` request (`overall`, limit 50).
+
+Both lists are returned immediately and then run through the same five-source
+queue, so a row is searched at most once per source regardless of which section it
+belongs to. Status is `ok`, `partial` (some similar requests failed but the lists
+still render) or `not_connected`.
 
 Matching runs five workers, one per source (`wy`, `kg`, `tx`, `kw`, `mg` in
-priority order). A worker searches only its own source; a miss puts the row back
+priority order). Before any worker starts, the page asks the local matcher
+(`MatchLocalTrack`) whether the song is already on disk; a hit is reported as
+in-library with its `local_track_id` and no source is searched for that row. That
+lookup is title + artist set (order and separators ignored), duration ±5s.
+Otherwise a worker searches only its own source; a miss puts the row back
 for the other workers, and a per-row tried set guarantees each row/source pair is
 searched once. A row becomes `no_source` only after every source failed. Source
 outcomes are cached for 30 minutes per (artist+title, source), so a refresh shows
@@ -204,10 +221,18 @@ the previous matches immediately and searches only the missing pairs.
 
 Rows are updated through `lastfm:recommendations-matched` with `{items, done}`,
 batched every 300–500 ms. The page replaces rows by `match_key` (artist + `\0` +
-title); a row is `matching` until a source hits, then shows its provider and the
-shared play/save actions. `done` is authoritative: no row stays `matching`, and
-unresolved rows read "no match". Local files are not filtered out — a matched
-local row is immediately playable.
+title) in whichever list owns the key; a row is `matching` until a source hits,
+then shows its provider and the shared play/save actions. `done` is authoritative:
+no row stays `matching` in either list, and unresolved rows read "no match". Local
+files are not filtered out — a matched local row reads "in library" and is
+immediately playable.
+
+Cover priority is fixed: a real Last.fm image (`LastFmTrack.ImageURL`, placeholder
+already filtered out by the client) wins, then the matched source's `cover_url`,
+then the cover cache for the provider identity. An empty result renders
+`TopTrackRow`'s music-note placeholder; the row also treats the Last.fm star
+placeholder URL as empty. A failover reset restores the remembered Last.fm row,
+cover included, before the next source is searched.
 
 A remote row whose audio fails to load reports the failed provider identity to
 the recommender (`PlayerService.AddPlaybackFailureListener`). That provider is
@@ -217,8 +242,7 @@ are searched. The page keeps such a re-queued row `matching` through an earlier
 worker run's `done` frame; another hit restores the actions, and exhausting every
 source ends in `no_source`.
 
-Status is `ok` or `not_connected`; an unconnected page routes to
-`/settings/integrations`.
+An unconnected page routes to `/settings/integrations`.
 
 `SearchView` still consumes `/search?q=` on mount and activation for the search
 shortcut.
@@ -387,6 +411,10 @@ row's own `artwork_key`; a remote row that has none asks
 the answer per track id, so reopening the drawer needs no second call. The backend
 resolves it by the row's remote identity (the cover cache's local asset, or one
 re-download from the stored URL) and returns `""` when there is no cover.
+`EnsureStreamableTrack` (pressing play) also warms that identity → cover mapping
+before returning, with a 5 s budget and best-effort semantics, so a streamed row
+has artwork in the player and the drawer without a catalogue request. The
+resolver is the same `CoverIdentityAssets` adapter the player uses.
 
 ### Dynamic Variables (Artwork-Derived)
 

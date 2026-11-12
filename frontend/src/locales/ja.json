@@ -917,6 +917,8 @@
     "matching": "照合中…",
     "no_source": "再生可能なソースが見つかりません",
     "no_match": "一致なし",
-    "matched_from": "{source} から"
+    "matched_from": "{source} から",
+    "similar_tracks": "あなたへのおすすめ",
+    "similar_empty": "おすすめはまだありません。"
   }
 }

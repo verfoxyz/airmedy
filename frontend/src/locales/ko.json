@@ -917,6 +917,8 @@
     "matching": "매칭 중…",
     "no_source": "재생 가능한 소스를 찾지 못했습니다",
     "no_match": "일치 없음",
-    "matched_from": "{source}에서"
+    "matched_from": "{source}에서",
+    "similar_tracks": "추천 곡",
+    "similar_empty": "아직 추천이 없습니다."
   }
 }

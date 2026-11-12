@@ -194,6 +194,9 @@ type TopTrackItemDTO struct {
 type TopTrackPageDTO struct {
 	Status string            `json:"status"`
 	Items  []TopTrackItemDTO `json:"items"`
+	// SimilarItems is the "for you" list derived from the top tracks. It uses
+	// the same row shape and the same match-update stream.
+	SimilarItems []TopTrackItemDTO `json:"similar_items"`
 }
 
 // GetTopTrackRecommendations returns the user's all-time most played tracks and
@@ -208,12 +211,17 @@ func (s *LastFmService) GetTopTrackRecommendations() (TopTrackPageDTO, error) {
 }
 
 func toTopTrackPageDTO(page lastfm.TopTrackPage) TopTrackPageDTO {
-	result := TopTrackPageDTO{
-		Status: page.Status,
-		Items:  make([]TopTrackItemDTO, 0, len(page.Items)),
+	return TopTrackPageDTO{
+		Status:       page.Status,
+		Items:        toTopTrackItemDTOs(page.Items),
+		SimilarItems: toTopTrackItemDTOs(page.SimilarItems),
 	}
-	for _, item := range page.Items {
-		result.Items = append(result.Items, TopTrackItemDTO{
+}
+
+func toTopTrackItemDTOs(items []lastfm.TopTrackItem) []TopTrackItemDTO {
+	result := make([]TopTrackItemDTO, 0, len(items))
+	for _, item := range items {
+		result = append(result, TopTrackItemDTO{
 			Title:         item.Title,
 			Artist:        item.Artist,
 			Album:         item.Album,

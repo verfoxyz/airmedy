@@ -51,6 +51,31 @@ func cacheEntry(cacheKey, provider, externalID, quality string, complete bool, l
 	}
 }
 
+// TestDuplicateCacheCleanup_GroupsVariantArtistSpellings: entries cached from
+// different sources store the same artist-set key even when the credit string
+// is ordered or separated differently, so they form one duplicate group.
+func TestDuplicateCacheCleanup_GroupsVariantArtistSpellings(t *testing.T) {
+	h := newHarness(t)
+	left := cacheEntry("a", "wy", "1", domain.Quality320k, true, 20)
+	left.Title = "Synthetic Fracture"
+	left.TitleKey = domain.NormalizationKey(left.Title)
+	left.Artist = "Sad Keyboard Guy; Gardens"
+
+	right := cacheEntry("b", "kg", "2", domain.Quality128k, true, 10)
+	right.Title = "Synthetic Fracture"
+	right.TitleKey = domain.NormalizationKey(right.Title)
+	right.Artist = "Gardens, Sad Keyboard Guy"
+
+	key := domain.ArtistSetKey([]string{"Sad Keyboard Guy", "Gardens"})
+	left.ArtistKey, right.ArtistKey = key, key
+	h.cached.entries = []*domain.StreamCacheEntry{left, right}
+
+	scan, err := h.svc.ScanDuplicateCache(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, scan.DuplicateGroups)
+	assert.Equal(t, 1, scan.Removable)
+}
+
 func TestDuplicateCacheCleanup_KeepsTheHighestQuality(t *testing.T) {
 	h := newHarness(t)
 	h.cached.entries = []*domain.StreamCacheEntry{

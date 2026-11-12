@@ -847,6 +847,49 @@ func TestOpenMatchesWhenEitherDurationIsUnknown(t *testing.T) {
 	}
 }
 
+func TestOpenMatchesReorderedArtistCredits(t *testing.T) {
+	repo := newFakeStreamCacheRepo()
+	cache := newTestCacheWithRepo(t, &fakeResolver{err: fmt.Errorf("must not resolve")}, repo)
+
+	data := bytes.Repeat([]byte{5}, 2<<20)
+	key := cacheKeyFor("wy", "42")
+	if err := os.WriteFile(filepath.Join(cache.dir, key+".audio"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	title := "Synthetic Fracture"
+	if err := repo.Upsert(context.Background(), &domain.StreamCacheEntry{
+		CacheKey:      key,
+		Provider:      "wy",
+		ExternalID:    "42",
+		Title:         title,
+		TitleKey:      domain.NormalizationKey(title),
+		Artist:        "Sad Keyboard Guy; Gardens",
+		ArtistKey:     domain.ArtistSetKey([]string{"Sad Keyboard Guy", "Gardens"}),
+		DurationMs:    200000,
+		AudioPath:     key + ".audio",
+		TotalBytes:    int64(len(data)),
+		ReceivedBytes: int64(len(data)),
+		Complete:      true,
+		CreatedAt:     1,
+		LastUsed:      1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	kgTrack := &domain.TrackDTO{Track: domain.Track{
+		ID: "t2", Title: title, Provider: "kg", ExternalID: "999", Duration: 200,
+	}, Artists: []*domain.Artist{{Name: "Gardens"}, {Name: "Sad Keyboard Guy"}}}
+
+	session, err := cache.Open(context.Background(), kgTrack)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+	if session.ID != key {
+		t.Fatalf("session id = %s, want the wy entry %s despite the reordered credits", session.ID, key)
+	}
+}
+
 func TestOpenDoesNotMatchOutsideDurationTolerance(t *testing.T) {
 	upstream := &chunkedUpstream{body: bytes.Repeat([]byte{3}, 2<<20), chunk: 64 << 10}
 	srv := httptest.NewServer(upstream)

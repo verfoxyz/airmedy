@@ -917,6 +917,8 @@
     "matching": "Buscando coincidencias…",
     "no_source": "No se encontró una fuente reproducible",
     "no_match": "Sin coincidencia",
-    "matched_from": "desde {source}"
+    "matched_from": "desde {source}",
+    "similar_tracks": "Para ti",
+    "similar_empty": "Aún no hay recomendaciones."
   }
 }

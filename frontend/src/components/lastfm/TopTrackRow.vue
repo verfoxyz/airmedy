@@ -22,8 +22,18 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
+// Last.fm still returns its default star image for many tracks. It is not
+// artwork, so treat it as absent and let the placeholder render instead of a
+// blank or broken block.
+const LASTFM_PLACEHOLDER_IMAGE = '2a96cbd8b46e442fc41c2b86b821562f'
+
+const coverSrc = computed(() => {
+  const url = (props.item.cover_url ?? '').trim()
+  return url === '' || url.includes(LASTFM_PLACEHOLDER_IMAGE) ? '' : url
+})
+
 const imageFailed = ref(false)
-watch(() => props.item.cover_url, () => {
+watch(coverSrc, () => {
   imageFailed.value = false
 })
 
@@ -34,6 +44,11 @@ const matching = computed(() => props.item.matching === true)
 const noMatch = computed(() => !matching.value && props.item.no_source === true)
 const matched = computed(
   () => !matching.value && !noMatch.value && (!!props.item.provider || !!props.item.local_track_id),
+)
+const matchedLabel = computed(() =>
+  props.item.provider
+    ? t('lastfm.matched_from', { source: props.item.provider })
+    : t('lastfm.in_library'),
 )
 const canPlay = computed(() => matched.value)
 const canSave = computed(
@@ -48,8 +63,8 @@ const canSave = computed(
   >
     <div class="h-10 w-10 flex-shrink-0 overflow-hidden rounded-lg bg-foreground/[0.06] ring-1 ring-foreground/[0.06]">
       <LazyImg
-        v-if="item.cover_url && !imageFailed"
-        :src="item.cover_url"
+        v-if="coverSrc && !imageFailed"
+        :src="coverSrc"
         :alt="item.title"
         class="h-full w-full object-cover"
         @error="imageFailed = true"
@@ -87,7 +102,7 @@ const canSave = computed(
       data-test="top-track-status"
       data-state="matched"
     >
-      {{ t('lastfm.matched_from', { source: item.provider }) }}
+      {{ matchedLabel }}
     </span>
 
     <div v-if="canPlay || canSave" class="flex shrink-0 items-center gap-1">

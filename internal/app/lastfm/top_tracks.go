@@ -2,6 +2,9 @@ package lastfm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +23,11 @@ const (
 	// topTrackSourceLimit is the number of source workers. Each worker owns one
 	// source and searches only that source.
 	topTrackSourceLimit = 5
+	// similarSeedLimit is how many of the top tracks seed "for you". Each seed
+	// costs one track.getSimilar request, so the seed count is the request budget.
+	similarSeedLimit = 10
+	// similarRecommendationTake bounds the rendered "for you" list.
+	similarRecommendationTake = 50
 )
 
 // TopTrackItem is one row of the MVP Last.fm page.
@@ -53,10 +61,12 @@ type TopTrackItem struct {
 }
 
 // TopTrackPage is the immediate response: every Last.fm top track, plus the
-// status chips already known from the match cache.
+// status chips already known from the match cache. SimilarItems is the
+// "for you" list derived from the top tracks.
 type TopTrackPage struct {
-	Status string         `json:"status"`
-	Items  []TopTrackItem `json:"items"`
+	Status       string         `json:"status"`
+	Items        []TopTrackItem `json:"items"`
+	SimilarItems []TopTrackItem `json:"similar_items"`
 }
 
 // TopTrackUpdate is the payload of lastfm:recommendations-matched for this MVP.
@@ -74,6 +84,15 @@ type topTrackState struct {
 
 type cachedSourceMatch struct {
 	row       *domain.CatalogSearchResult
+	expiresAt time.Time
+}
+
+// cachedSimilarRecommendation is one seed set's "for you" answer. Only the raw
+// Last.fm rows are cached, so each page load re-applies the current match cache
+// instead of freezing a stale provider identity.
+type cachedSimilarRecommendation struct {
+	tracks    []LastFmTrack
+	partial   bool
 	expiresAt time.Time
 }
 
@@ -121,21 +140,208 @@ func (r *Recommender) GetTopTrackRecommendations(ctx context.Context) (TopTrackP
 	}
 
 	sources := r.topTrackSources(ctx)
-	r.rememberTopRows(items)
-	states := r.seedTopTrackStates(items, sources)
-	pageItems := make([]TopTrackItem, len(states))
+
+	// "For you" reuses the same top tracks as seeds: track.getSimilar first, the
+	// similar-artist fallback only for the seeds that returned nothing. Local
+	// files are deliberately kept — a recommendation the user already owns is
+	// playable and shows "in library".
+	seeds := usableSeeds(tracks, similarSeedLimit)
+	similarTracks, similarPartial := r.collectSimilarRecommendations(ctx, seeds)
+	similarItems := buildSimilarItems(seeds, similarTracks)
+
+	r.rememberTopRows(append(append([]TopTrackItem{}, similarItems...), items...))
+	topStates := r.seedTopTrackStates(items, sources)
+	similarStates := r.seedTopTrackStates(similarItems, sources)
+	// Similar rows go first: the upper section should resolve before the long
+	// top-tracks list.
+	states := append(similarStates, topStates...)
+
+	pageItems := make([]TopTrackItem, len(topStates))
+	similarPageItems := make([]TopTrackItem, len(similarStates))
 	pending := false
-	for index, state := range states {
+	for index, state := range topStates {
 		pageItems[index] = state.item
 		if !state.done {
 			pending = true
 		}
 	}
+	for index, state := range similarStates {
+		similarPageItems[index] = state.item
+		if !state.done {
+			pending = true
+		}
+	}
 
+	status := StatusOK
+	if similarPartial {
+		status = StatusPartial
+	}
 	if pending {
 		r.startTopTrackMatching(username, states, sources)
 	}
-	return TopTrackPage{Status: StatusOK, Items: pageItems}, nil
+	return TopTrackPage{Status: status, Items: pageItems, SimilarItems: similarPageItems}, nil
+}
+
+// usableSeeds takes the first usable top tracks, which are the "for you" seeds.
+func usableSeeds(tracks []LastFmTrack, limit int) []LastFmTrack {
+	seeds := make([]LastFmTrack, 0, limit)
+	for _, track := range tracks {
+		if !usableTrack(track) {
+			continue
+		}
+		seeds = append(seeds, track)
+		if len(seeds) >= limit {
+			break
+		}
+	}
+	return seeds
+}
+
+// buildSimilarItems turns the collected rows into page rows. Seeds never appear
+// as their own recommendation, and the same song (title + artist set) is
+// rendered once even when several seeds recommend it.
+func buildSimilarItems(seeds []LastFmTrack, tracks []LastFmTrack) []TopTrackItem {
+	if len(tracks) == 0 {
+		return []TopTrackItem{}
+	}
+	seedKeys := make(map[string]struct{}, len(seeds))
+	for _, seed := range seeds {
+		seedKeys[similarRecommendationKey(seed)] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(tracks))
+	items := make([]TopTrackItem, 0, len(tracks))
+	for _, track := range tracks {
+		if !usableTrack(track) {
+			continue
+		}
+		if _, isSeed := seedKeys[similarRecommendationKey(track)]; isSeed {
+			continue
+		}
+		key := candidateKey(track.Artist, track.Title)
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
+		items = append(items, TopTrackItem{
+			Title:    track.Title,
+			Artist:   track.Artist,
+			Album:    track.Album,
+			Duration: track.Duration,
+			Artists:  []string{track.Artist},
+			CoverURL: track.ImageURL,
+			Matching: true,
+			MatchKey: key,
+		})
+		if len(items) >= similarRecommendationTake {
+			break
+		}
+	}
+	return items
+}
+
+// collectSimilarRecommendations returns the ranked "for you" rows for a seed
+// set. The answer is cached per seed set for recommendationCacheTTL, so a
+// refresh does not spend the request budget again.
+func (r *Recommender) collectSimilarRecommendations(
+	ctx context.Context, seeds []LastFmTrack,
+) ([]LastFmTrack, bool) {
+	if len(seeds) == 0 {
+		return nil, false
+	}
+	cacheKey := similarRecommendationCacheKey(seeds)
+
+	r.mu.Lock()
+	if r.similarRecs == nil {
+		r.similarRecs = make(map[string]cachedSimilarRecommendation)
+	}
+	cached, ok := r.similarRecs[cacheKey]
+	r.mu.Unlock()
+	if ok && r.now().Before(cached.expiresAt) {
+		return append([]LastFmTrack{}, cached.tracks...), cached.partial
+	}
+
+	set := seedSet{all: make([]seed, 0, len(seeds))}
+	for _, track := range seeds {
+		set.all = append(set.all, seed{track: track, kind: seedTop})
+	}
+	candidates, failed := r.collectSimilarTracks(ctx, set)
+	tracks := rankSimilarRecommendations(candidates)
+
+	r.mu.Lock()
+	r.similarRecs[cacheKey] = cachedSimilarRecommendation{
+		tracks:    tracks,
+		partial:   failed,
+		expiresAt: r.now().Add(recommendationCacheTTL),
+	}
+	r.mu.Unlock()
+	return tracks, failed
+}
+
+// similarRecommendationCacheKey identifies one seed set.
+func similarRecommendationCacheKey(seeds []LastFmTrack) string {
+	keys := make([]string, 0, len(seeds))
+	for _, seed := range seeds {
+		keys = append(keys, candidateKey(seed.Artist, seed.Title))
+	}
+	sort.Strings(keys)
+	sum := sha256.Sum256([]byte(strings.Join(keys, "\x1e")))
+	return hex.EncodeToString(sum[:])
+}
+
+// similarRecommendationKey is the dedupe identity of one recommendation: the
+// normalised title plus the artist set, so order and separators do not matter.
+func similarRecommendationKey(track LastFmTrack) string {
+	return domain.NormalizationKey(track.Title) + "\x00" +
+		domain.ArtistSetKey([]string{track.Artist})
+}
+
+// rankSimilarRecommendations merges duplicates, then orders by how many seeds
+// recommended the row, then by Last.fm's own popularity.
+func rankSimilarRecommendations(candidates map[string]*candidate) []LastFmTrack {
+	type ranked struct {
+		track LastFmTrack
+		hits  int
+	}
+	merged := make(map[string]*ranked, len(candidates))
+	for _, entry := range candidates {
+		key := similarRecommendationKey(entry.track)
+		hits := entry.hits[seedTop]
+		existing := merged[key]
+		if existing == nil {
+			merged[key] = &ranked{track: entry.track, hits: hits}
+			continue
+		}
+		existing.hits += hits
+		if entry.track.PlayCount > existing.track.PlayCount {
+			existing.track = entry.track
+		}
+	}
+
+	rows := make([]*ranked, 0, len(merged))
+	for _, entry := range merged {
+		rows = append(rows, entry)
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].hits != rows[j].hits {
+			return rows[i].hits > rows[j].hits
+		}
+		if rows[i].track.PlayCount != rows[j].track.PlayCount {
+			return rows[i].track.PlayCount > rows[j].track.PlayCount
+		}
+		if rows[i].track.Title != rows[j].track.Title {
+			return rows[i].track.Title < rows[j].track.Title
+		}
+		return rows[i].track.Artist < rows[j].track.Artist
+	})
+	if len(rows) > similarRecommendationTake {
+		rows = rows[:similarRecommendationTake]
+	}
+
+	tracks := make([]LastFmTrack, 0, len(rows))
+	for _, entry := range rows {
+		tracks = append(tracks, entry.track)
+	}
+	return tracks
 }
 
 // rememberTopRows keeps the Last.fm-side rows of the current page. Failover
@@ -174,7 +380,7 @@ func (r *Recommender) seedTopTrackStates(items []TopTrackItem, sources []string)
 			}
 			state.tried[source] = true
 			if row != nil {
-				applyTopTrackMatch(&state.item, row)
+				r.applyTopTrackMatch(&state.item, row)
 				state.item.Matching = false
 				state.item.Matched = true
 				state.done = true
@@ -286,6 +492,22 @@ func (r *Recommender) runTopTrackMatching(username string, run queuedTopTrackRun
 		return
 	}
 
+	// Local-first: a file the user already owns wins over every source, and
+	// skipping the source calls is the whole point of the check.
+	for _, state := range states {
+		if state.done {
+			continue
+		}
+		if match := r.localMatch(state.item); match != nil {
+			r.applyTopTrackMatch(&state.item, match)
+			state.item.Matching = false
+			state.item.Matched = true
+			state.item.NoSource = false
+			state.done = true
+			buffer = append(buffer, state.item)
+		}
+	}
+
 	stop := make(chan struct{})
 	stopped := make(chan struct{})
 	go func() {
@@ -356,7 +578,7 @@ func (r *Recommender) runTopTrackMatching(username string, run queuedTopTrackRun
 
 				var update *TopTrackItem
 				if match != nil {
-					applyTopTrackMatch(&states[next].item, match)
+					r.applyTopTrackMatch(&states[next].item, match)
 					states[next].item.Matching = false
 					states[next].item.Matched = true
 					states[next].item.NoSource = false
@@ -553,8 +775,59 @@ func (r *Recommender) searchTopTrackSource(item TopTrackItem, source string) *do
 	return chooseMatch(ctx, r.streams, rows)
 }
 
+// localMatch returns a catalogue-shaped row for an on-disk copy, or nil.
+//
+// It never touches the network. A hit is reported as in_library so the page
+// shows the play action without waiting for any source.
+func (r *Recommender) localMatch(item TopTrackItem) *domain.CatalogSearchResult {
+	if r.matcher == nil {
+		return nil
+	}
+	artists := append([]string{}, item.Artists...)
+	if len(artists) == 0 && strings.TrimSpace(item.Artist) != "" {
+		artists = []string{strings.TrimSpace(item.Artist)}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), matchCandidateTimeout)
+	defer cancel()
+
+	local, err := r.matcher.MatchLocalTrack(ctx, item.Title, artists, item.Duration)
+	if err != nil {
+		r.logger.Debug("last.fm top tracks: local match failed",
+			"title", item.Title, "error", err)
+		return nil
+	}
+	if local == nil || local.IsRemote() {
+		return nil
+	}
+
+	names := make([]string, 0, len(local.Artists))
+	for _, artist := range local.Artists {
+		if artist != nil && strings.TrimSpace(artist.Name) != "" {
+			names = append(names, strings.TrimSpace(artist.Name))
+		}
+	}
+	album := strings.TrimSpace(local.RawAlbumName)
+	if local.Album != nil && strings.TrimSpace(local.Album.Title) != "" {
+		album = strings.TrimSpace(local.Album.Title)
+	}
+	return &domain.CatalogSearchResult{
+		Title:        local.Title,
+		Artists:      names,
+		AlbumName:    album,
+		Duration:     local.Duration,
+		State:        domain.CatalogRowStateInLibrary,
+		LocalTrackID: local.ID,
+	}
+}
+
 // applyTopTrackMatch copies the catalogue identity onto the Last.fm row.
-func applyTopTrackMatch(item *TopTrackItem, row *domain.CatalogSearchResult) {
+//
+// Cover priority: a real Last.fm image wins, then the matched source's cover,
+// then the cover cache for the identity. Nothing found leaves the field empty,
+// and the row renders its placeholder.
+func (r *Recommender) applyTopTrackMatch(item *TopTrackItem, row *domain.CatalogSearchResult) {
+	lastFmCover := strings.TrimSpace(item.CoverURL)
 	item.Provider = row.Provider
 	item.ExternalID = row.ExternalID
 	item.Title = row.Title
@@ -564,7 +837,18 @@ func applyTopTrackMatch(item *TopTrackItem, row *domain.CatalogSearchResult) {
 	if len(item.Artists) > 0 {
 		item.Artist = item.Artists[0]
 	}
-	item.CoverURL = row.CoverURL
+	if lastFmCover != "" {
+		item.CoverURL = lastFmCover
+	} else {
+		// The source's display cover is its large image when it has one.
+		item.CoverURL = strings.TrimSpace(row.CoverURLLarge)
+		if item.CoverURL == "" {
+			item.CoverURL = strings.TrimSpace(row.CoverURL)
+		}
+		if item.CoverURL == "" {
+			item.CoverURL = r.coverForIdentity(row.Provider, row.ExternalID)
+		}
+	}
 	item.CoverURLLarge = row.CoverURLLarge
 	item.Downloadable = row.Downloadable
 	item.State = row.State

@@ -917,6 +917,8 @@
     "matching": "Ricerca della corrispondenza…",
     "no_source": "Nessuna fonte riproducibile trovata",
     "no_match": "Nessuna corrispondenza",
-    "matched_from": "da {source}"
+    "matched_from": "da {source}",
+    "similar_tracks": "Per te",
+    "similar_empty": "Nessun consiglio per ora."
   }
 }

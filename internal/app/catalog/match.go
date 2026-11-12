@@ -42,13 +42,12 @@ func (s *Service) MatchTrack(
 	}
 
 	wantedTitle := domain.NormalizationKey(title)
-	wantedArtist := domain.NormalizationKey(artist)
 	matches := make([]domain.CatalogSearchResult, 0, 4)
 	for _, row := range page.Rows {
 		if domain.NormalizationKey(row.Title) != wantedTitle {
 			continue
 		}
-		if !hasArtist(row.Artists, wantedArtist) {
+		if !hasArtist(row.Artists, artist) {
 			continue
 		}
 		if duration > 0 && row.Duration > 0 {
@@ -65,18 +64,44 @@ func (s *Service) MatchTrack(
 	return matches, err
 }
 
-// hasArtist accepts a row whose credited artists include the wanted one.
+// MatchLocalTrack finds an on-disk row that already represents title + artists.
 //
-// Last.fm names the primary artist, while a source may list it as a featured
-// artist or append collaborators; comparing only the first credit dropped
-// playable matches that the page could otherwise offer.
+// It is the local-first step of recommendation matching: a hit is playable and
+// already has artwork, so the caller skips the cloud search entirely.
+func (s *Service) MatchLocalTrack(
+	ctx context.Context, title string, artists []string, duration int,
+) (*domain.TrackDTO, error) {
+	if s.localMatcher == nil {
+		return nil, nil
+	}
+	return s.localMatcher.MatchLocalTrack(ctx, title, artists, duration)
+}
+
+// hasArtist reports whether the row and the wanted artist describe the same
+// credit set.
+//
+// Sources disagree on order and separators ("Sad Keyboard Guy;Gardens" vs
+// "Gardens, Sad Keyboard Guy"), so the comparison is on the normalised set.
+// A row crediting several artists still matches when one of them is the wanted
+// artist: Last.fm names the primary artist while a source may list it as a
+// featured credit.
 func hasArtist(artists []string, wanted string) bool {
-	if wanted == "" {
+	wantedKey := domain.ArtistSetKey([]string{wanted})
+	if wantedKey == "" {
 		return false
 	}
-	for _, artist := range artists {
-		if domain.NormalizationKey(artist) == wanted {
-			return true
+	rowKey := domain.ArtistSetKey(artists)
+	if rowKey == "" {
+		return false
+	}
+	if rowKey == wantedKey {
+		return true
+	}
+	for _, want := range strings.Split(wantedKey, "\x1f") {
+		for _, have := range strings.Split(rowKey, "\x1f") {
+			if want == have {
+				return true
+			}
 		}
 	}
 	return false

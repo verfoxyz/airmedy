@@ -120,16 +120,16 @@ func TestLargestImageSkipsEmptyRenditions(t *testing.T) {
 	}
 }
 
-func TestUsableArtistImageDropsTheLastFmPlaceholder(t *testing.T) {
+func TestUsableImageDropsTheLastFmPlaceholder(t *testing.T) {
 	placeholder := "https://lastfm-img.freetls.fastly.net/i/u/64s/" + lastFmPlaceholderImageMarker + ".png"
-	if got := usableArtistImage(placeholder); got != "" {
-		t.Fatalf("usableArtistImage(placeholder) = %q, want empty", got)
+	if got := usableImage(placeholder); got != "" {
+		t.Fatalf("usableImage(placeholder) = %q, want empty", got)
 	}
-	if got := usableArtistImage("  "); got != "" {
-		t.Fatalf("usableArtistImage(blank) = %q, want empty", got)
+	if got := usableImage("  "); got != "" {
+		t.Fatalf("usableImage(blank) = %q, want empty", got)
 	}
-	if got := usableArtistImage("https://img/artist.jpg"); got != "https://img/artist.jpg" {
-		t.Fatalf("usableArtistImage(real) = %q, want the URL", got)
+	if got := usableImage("https://img/artist.jpg"); got != "https://img/artist.jpg" {
+		t.Fatalf("usableImage(real) = %q, want the URL", got)
 	}
 }
 

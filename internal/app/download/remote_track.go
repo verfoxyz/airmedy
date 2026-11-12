@@ -44,6 +44,30 @@ func (s *Service) EnsureRemoteTrack(ctx context.Context, spec domain.RemoteTrack
 		return existing, nil
 	}
 
+	// Local-first: the same song may already be on disk from an import or an
+	// earlier download. Registering a second remote row for it is exactly the
+	// duplicate the user sees in the library. The identity is carried onto the
+	// existing row when it has none; a row already bound to another provider
+	// keeps that identity. Force is the explicit "I want the provider's copy".
+	if !spec.Force {
+		if local, lookupErr := s.MatchLocalTrack(ctx, spec.Title, spec.Artists, spec.Duration); lookupErr != nil {
+			// A failed lookup is not a reason to refuse the registration.
+			s.logger.Warn("download: local track lookup failed",
+				"provider", provider, "external_id", externalID, "error", lookupErr)
+		} else if local != nil {
+			if local.Provider == "" {
+				if err := s.merger.repo.CarryIdentity(ctx, local.ID, provider, externalID); err != nil {
+					s.logger.Warn("download: cannot carry identity onto the local row",
+						"track_id", local.ID, "provider", provider, "external_id", externalID, "error", err)
+				} else {
+					local.Provider = provider
+					local.ExternalID = externalID
+				}
+			}
+			return local, nil
+		}
+	}
+
 	title := strings.TrimSpace(spec.Title)
 	if title == "" {
 		title = externalID

@@ -100,6 +100,21 @@ Used for entity deduplication. Produces a stable, comparable key:
 
 Example: `"Björk"` → `"bjork"`, `"The Beatles"` → `"the beatles"`
 
+### `ArtistSetKey(names []string) string`
+
+Used wherever two credit lists must be compared. Sources write the same artists in
+different orders and with different separators, so the key is a set, not a string:
+
+1. Split every entry on `;`, `,`, `、`, `/`, `&`, and on the featured-credit words
+   `feat.` / `ft.` / `with` when surrounded by spaces.
+2. `NormalizationKey` each part; drop empties and duplicates.
+3. Sort and join with `\x1f`.
+
+`"Sad Keyboard Guy;Gardens"`, `"Gardens, Sad Keyboard Guy"` and
+`["Gardens", "Sad Keyboard Guy"]` all produce the same key. Consumers: catalogue
+`MatchTrack`, the stream cache `artist_key`, download local matching, and the Last.fm
+matcher.
+
 ### `NormalizeSort(s string) string`
 
 Used for `sort_title` / `sort_name` — produces a user-friendly sort key:
