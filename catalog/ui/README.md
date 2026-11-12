@@ -107,7 +107,8 @@ Hash history mode (`createWebHashHistory`). All views lazy-loaded except HomeVie
 | `/composers`      | ComposersView        | Composer list                                  |
 | `/composers/:id`  | ComposerDetailView   | Composer tracks                                |
 | `/search`         | SearchView           | Local / cloud search, one mode at a time       |
-| `/lastfm`         | LastFmView           | Last.fm recommendations and similar artists    |
+| `/lastfm`         | LastFmView           | Persisted recommendation cards                 |
+| `/lastfm/lists/:kind` | LastFmListView   | One recommendation list                        |
 | `/playlists/:id`  | PlaylistDetailView   | Playlist hero + tracks                         |
 | `/settings`       | SettingsView         | Tabbed settings (General/Library/EQ/About)     |
 | `/mini-player`    | MiniPlayerWindowView | Separate Wails window                          |
@@ -190,42 +191,53 @@ Page-level failures travel as machine kinds in `error_kind` (`no_sources`,
 
 ## Last.fm Page (`/lastfm`)
 
-`views/LastFmView.vue` is the sidebar entry directly below Search. It renders two
-lists from `LastFmService.GetTopTrackRecommendations()`:
+`views/LastFmView.vue` is the sidebar entry directly below Search. It renders one
+card per persisted recommendation list and opens the detail at
+`/lastfm/lists/:kind` (`top_tracks` or `similar`), in that order: **For you**
+(`lastfm.similar_tracks`) above **Top tracks** (`lastfm.top`). A card shows the
+title, the track count and a 1–4 cover mosaic from `cover_urls`.
 
-- **For you** (`similar_items`), above the top tracks: the first ten usable top
-  tracks seed `track.getSimilar` (limit 10 each). A seed whose answer is empty falls
-  back to `artist.getSimilar` (limit 3) and then each similar artist's
-  `artist.getTopTracks` (limit 5), so the worst case is about fifty requests. The
-  result is merged by title + artist set, ordered by how many seeds recommended a
-  row and then by Last.fm popularity, and capped at 50. The answer is cached per
-  seed set for 30 minutes. Seeds are never their own recommendation; local files
-  are **kept** and become playable through the shared queue.
-- **Top tracks** (`items`): one `user.getTopTracks` request (`overall`, limit 50).
+The lists are **persisted**. `LastFmService.ListRecommendationLists()` reads the
+database; only a list that was never built (or a missing kind) triggers one build.
+`GetRecommendationList(kind)` returns the stored rows. Reopening the page or the
+app therefore costs no Last.fm request until the user refreshes.
 
-Both lists are returned immediately and then run through the same five-source
-queue, so a row is searched at most once per source regardless of which section it
-belongs to. Status is `ok`, `partial` (some similar requests failed but the lists
-still render) or `not_connected`.
+Refresh is explicit:
 
-Matching runs five workers, one per source (`wy`, `kg`, `tx`, `kw`, `mg` in
-priority order). Before any worker starts, the page asks the local matcher
-(`MatchLocalTrack`) whether the song is already on disk; a hit is reported as
-in-library with its `local_track_id` and no source is searched for that row. That
+- the header button calls `RefreshAllRecommendationLists()` (both lists);
+- a card's own button calls `RefreshRecommendationList(kind)` and touches only
+  that kind — the other list and its `updated_at` stay unchanged;
+- a failed Last.fm request keeps the stored rows;
+- a refresh bypasses the 30-minute similar-answer cache.
+
+Building keeps the previous rules: top tracks are one `user.getTopTracks`
+(`overall`, limit 50) request; the first ten usable rows seed `track.getSimilar`
+(limit 10 each), and an empty answer falls back to `artist.getSimilar` (limit 3)
+then each similar artist's `artist.getTopTracks` (limit 5). Rows merge by title +
+artist set, ordered by seed support then Last.fm popularity, capped at 50. Seeds
+never recommend themselves; local files are **kept** and become playable through
+the shared queue.
+
+Matching continues in the background and writes each result back to
+`lastfm_recommendation_items`, so the status survives a restart; the worker only
+processes rows with `matching = 1`. It runs five workers, one per source (`wy`,
+`kg`, `tx`, `kw`, `mg` in priority order). Before any worker starts, the local
+matcher (`MatchLocalTrack`) checks whether the song is already on disk; a hit is
+reported as in-library with its `local_track_id` and no source is searched. That
 lookup is title + artist set (order and separators ignored), duration ±5s.
-Otherwise a worker searches only its own source; a miss puts the row back
-for the other workers, and a per-row tried set guarantees each row/source pair is
+Otherwise a worker searches only its own source; a miss puts the row back for the
+other workers, and a per-row tried set guarantees each row/source pair is
 searched once. A row becomes `no_source` only after every source failed. Source
-outcomes are cached for 30 minutes per (artist+title, source), so a refresh shows
-the previous matches immediately and searches only the missing pairs.
+outcomes are cached for 30 minutes per (list kind + artist + title, source).
 
-Rows are updated through `lastfm:recommendations-matched` with `{items, done}`,
-batched every 300–500 ms. The page replaces rows by `match_key` (artist + `\0` +
-title) in whichever list owns the key; a row is `matching` until a source hits,
-then shows its provider and the shared play/save actions. `done` is authoritative:
-no row stays `matching` in either list, and unresolved rows read "no match". Local
-files are not filtered out — a matched local row reads "in library" and is
-immediately playable.
+Rows are updated through `lastfm:recommendations-matched` with `{kind, items,
+done}`, batched every 300–500 ms. `kind` is empty for the combined initial run and
+names the list for a single-list refresh, so a detail page ignores another list's
+updates. The page replaces rows by `match_key` (artist + `\0` + title); a row is
+`matching` until a source hits, then shows its provider and the shared play/save
+actions. `done` is authoritative for the current list: no row stays `matching`,
+and unresolved rows read "no match". The cards page reloads the summaries on
+`done`.
 
 Cover priority is fixed: a real Last.fm image (`LastFmTrack.ImageURL`, placeholder
 already filtered out by the client) wins, then the matched source's `cover_url`,
@@ -636,7 +648,8 @@ inline validation (trim, reject empty/duplicate, max 5 chars), allows removing t
 
 ### Library Settings (`components/settings/LibrarySettings.vue`)
 
-Owns watched-folder management, tag delimiters, and Library Analysis controls.
+Owns watched-folder management, tag delimiters, artist aliases, and Library
+Analysis controls.
 The Library Analysis section contains:
 
 - An enable switch.
@@ -654,6 +667,13 @@ from overwriting newer event-driven state.
 The worker-count slider uses a "live while dragging, persist on release"
 pattern: `workerCountLive` updates during drag, but the store action only fires
 on `mouseup` / `touchend`, avoiding backend writes on every drag frame.
+
+`components/settings/ArtistAliasSettings.vue` edits `artist_aliases`. It lists
+`alias → canonical` with `merge`/`manual` evidence, toggles `enabled`, deletes only
+manual pairs, and rejects empty, self-referencing and duplicate pairs. Reads go
+through `LibraryService.ListArtistAliases`; mutations use the matching
+`AddArtistAlias` / `RemoveArtistAlias` / `SetArtistAliasEnabled` bindings. No
+restart is needed: every matcher reads the table on each lookup.
 
 ### Download Settings (`components/settings/DownloadSettings.vue`)
 

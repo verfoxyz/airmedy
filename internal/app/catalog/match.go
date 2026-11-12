@@ -47,7 +47,7 @@ func (s *Service) MatchTrack(
 		if domain.NormalizationKey(row.Title) != wantedTitle {
 			continue
 		}
-		if !hasArtist(row.Artists, artist) {
+		if !s.hasArtist(ctx, row.Artists, artist) {
 			continue
 		}
 		if duration > 0 && row.Duration > 0 {
@@ -78,31 +78,13 @@ func (s *Service) MatchLocalTrack(
 }
 
 // hasArtist reports whether the row and the wanted artist describe the same
-// credit set.
+// credit set, expanding one hop through the alias store.
 //
 // Sources disagree on order and separators ("Sad Keyboard Guy;Gardens" vs
 // "Gardens, Sad Keyboard Guy"), so the comparison is on the normalised set.
 // A row crediting several artists still matches when one of them is the wanted
 // artist: Last.fm names the primary artist while a source may list it as a
 // featured credit.
-func hasArtist(artists []string, wanted string) bool {
-	wantedKey := domain.ArtistSetKey([]string{wanted})
-	if wantedKey == "" {
-		return false
-	}
-	rowKey := domain.ArtistSetKey(artists)
-	if rowKey == "" {
-		return false
-	}
-	if rowKey == wantedKey {
-		return true
-	}
-	for _, want := range strings.Split(wantedKey, "\x1f") {
-		for _, have := range strings.Split(rowKey, "\x1f") {
-			if want == have {
-				return true
-			}
-		}
-	}
-	return false
+func (s *Service) hasArtist(ctx context.Context, artists []string, wanted string) bool {
+	return domain.ArtistNamesCompatibleWithAliases(ctx, s.aliases, artists, []string{wanted})
 }

@@ -5,23 +5,15 @@ import LastFmView from './LastFmView.vue'
 
 const mocks = vi.hoisted(() => ({
   push: vi.fn(),
-  getTopTracks: vi.fn(),
-  preparePlayback: vi.fn(),
-  save: vi.fn(),
-  playTrackIds: vi.fn(),
+  list: vi.fn(),
+  refreshList: vi.fn(),
+  refreshAll: vi.fn(),
   handlers: new Map<string, (event: { data?: unknown }) => void>(),
   off: vi.fn(),
 }))
 
 vi.mock('vue-i18n', () => ({
-  useI18n: () => ({
-    t: (key: string, params?: Record<string, unknown>) => {
-      if (params?.artist) return `${key}:${params.artist}`
-      if (params?.username) return `${key}:${params.username}`
-      if (params?.source) return `${key}:${params.source}`
-      return key
-    },
-  }),
+  useI18n: () => ({ t: (key: string) => key }),
 }))
 
 vi.mock('vue-router', () => ({
@@ -39,67 +31,41 @@ vi.mock('@wailsio/runtime', async (importOriginal) => ({
 }))
 
 vi.mock('../../bindings/airmedy/internal/infra/wails/lastfmservice', () => ({
-  GetTopTrackRecommendations: mocks.getTopTracks,
+  ListRecommendationLists: mocks.list,
+  RefreshRecommendationList: mocks.refreshList,
+  RefreshAllRecommendationLists: mocks.refreshAll,
 }))
 
-vi.mock('@/stores/catalog', () => ({
-  useCatalogStore: () => ({
-    preparePlayback: mocks.preparePlayback,
-    save: mocks.save,
-    actionError: '',
-  }),
-}))
-
-vi.mock('@/stores/player', () => ({
-  usePlayerStore: () => ({ playTrackIds: mocks.playTrackIds }),
-}))
-
-type RowState = 'matching' | 'matched' | 'no_match'
-
-function item(title: string, state: RowState = 'matching') {
+function summary(kind: string, count: number, covers: string[] = []) {
   return {
-    title,
-    artist: 'Artist',
-    album: 'Album',
-    duration: 200,
-    artists: ['Artist'],
-    cover_url: '',
-    cover_url_large: '',
-    matching: state === 'matching',
-    matched: state === 'matched',
-    no_source: state === 'no_match',
-    provider: state === 'matched' ? 'wy' : '',
-    external_id: state === 'matched' ? `wy-${title}` : '',
-    state: '',
-    local_track_id: '',
-    blocked_reason: '',
-    sources: state === 'matched' ? ['wy'] : [],
-    downloadable: state === 'matched',
-    match_key: `artist\u0000${title.toLowerCase()}`,
+    kind,
+    title: kind === 'similar' ? 'lastfm.similar_tracks' : 'lastfm.top',
+    track_count: count,
+    matching_count: 0,
+    cover_urls: covers,
+    updated_at: '2026-01-01T00:00:00Z',
   }
 }
 
-function page(
-  items: ReturnType<typeof item>[],
-  status = 'ok',
-  similar: ReturnType<typeof item>[] = [],
-) {
-  return { status, items, similar_items: similar }
+function collection(status = 'ok') {
+  return {
+    status,
+    lists: status === 'not_connected'
+      ? []
+      : [summary('similar', 3, ['https://cover/a.jpg']), summary('top_tracks', 50)],
+  }
 }
 
 async function mountView() {
   const wrapper = mount(LastFmView, {
     global: {
-      mocks: {
-        $t: (key: string) => key,
-      },
+      mocks: { $t: (key: string) => key },
     },
   })
   await flushPromises()
   return wrapper
 }
 
-/** emitMatch delivers one lastfm:recommendations-matched batch. */
 async function emitMatch(data: unknown) {
   const handler = mocks.handlers.get('lastfm:recommendations-matched')
   expect(handler).toBeDefined()
@@ -107,22 +73,20 @@ async function emitMatch(data: unknown) {
   await nextTick()
 }
 
-describe('LastFmView (top tracks MVP)', () => {
+describe('LastFmView (persisted recommendation cards)', () => {
   beforeEach(() => {
     mocks.push.mockReset()
-    mocks.getTopTracks.mockReset()
-    mocks.preparePlayback.mockReset()
-    mocks.save.mockReset()
-    mocks.playTrackIds.mockReset()
+    mocks.list.mockReset()
+    mocks.refreshList.mockReset()
+    mocks.refreshAll.mockReset()
     mocks.handlers.clear()
     mocks.off.mockReset()
-    mocks.preparePlayback.mockResolvedValue('track-1')
-    mocks.save.mockResolvedValue(true)
-    mocks.playTrackIds.mockResolvedValue(undefined)
+    mocks.refreshList.mockResolvedValue(undefined)
+    mocks.refreshAll.mockResolvedValue(undefined)
   })
 
   it('guides the user to settings when Last.fm is not connected', async () => {
-    mocks.getTopTracks.mockResolvedValue(page([], 'not_connected'))
+    mocks.list.mockResolvedValue(collection('not_connected'))
     const wrapper = await mountView()
 
     expect(wrapper.find('[data-test="lastfm-not-connected"]').exists()).toBe(true)
@@ -130,176 +94,77 @@ describe('LastFmView (top tracks MVP)', () => {
     expect(mocks.push).toHaveBeenCalledWith('/settings/integrations')
   })
 
-  it('renders every row immediately in the matching state', async () => {
-    mocks.getTopTracks.mockResolvedValue(page([item('One'), item('Two'), item('Three')]))
+  it('renders one card per list with its count and covers', async () => {
+    mocks.list.mockResolvedValue(collection())
     const wrapper = await mountView()
 
-    const rows = wrapper.findAll('[data-test="top-track-row"]')
-    expect(rows).toHaveLength(3)
-    for (const row of rows) {
-      expect(row.find('[data-test="top-track-status"]').attributes('data-state')).toBe('matching')
-      expect(row.find('[data-test="top-track-play"]').exists()).toBe(false)
-      expect(row.find('[data-test="top-track-save"]').exists()).toBe(false)
-    }
+    const cards = wrapper.findAll('[data-test="lastfm-card"]')
+    expect(cards).toHaveLength(2)
+    expect(cards[0].attributes('data-kind')).toBe('similar')
+    expect(cards[0].text()).toContain('lastfm.similar_tracks')
+    expect(cards[0].find('[data-test="lastfm-card-count"]').text()).toBe('3')
+    expect(cards[1].attributes('data-kind')).toBe('top_tracks')
+    expect(cards[1].find('[data-test="lastfm-card-count"]').text()).toBe('50')
+    expect(cards[0].findAll('img')).toHaveLength(1)
   })
 
-  it('shows the three status chips', async () => {
-    mocks.getTopTracks.mockResolvedValue(page([
-      item('Pending', 'matching'),
-      item('Matched', 'matched'),
-      item('Missing', 'no_match'),
-    ]))
+  it('opens the list detail when a card is clicked', async () => {
+    mocks.list.mockResolvedValue(collection())
     const wrapper = await mountView()
 
-    const statuses = wrapper.findAll('[data-test="top-track-status"]')
-    expect(statuses.map((status) => status.attributes('data-state'))).toEqual([
-      'matching',
-      'matched',
-      'no-match',
-    ])
-    expect(statuses[1].text()).toBe('lastfm.matched_from:wy')
-    expect(statuses[2].text()).toBe('lastfm.no_match')
+    await wrapper.findAll('[data-test="lastfm-card"]')[1].trigger('click')
+    expect(mocks.push).toHaveBeenCalledWith('/lastfm/lists/top_tracks')
   })
 
-  it('updates a row in place when a match event arrives', async () => {
-    mocks.getTopTracks.mockResolvedValue(page([item('Hit', 'matching')]))
+  it('refreshes only the clicked card', async () => {
+    mocks.list.mockResolvedValue(collection())
     const wrapper = await mountView()
 
-    await emitMatch({ items: [item('Hit', 'matched')], done: false })
-
-    const row = wrapper.find('[data-test="top-track-row"]')
-    expect(row.find('[data-test="top-track-status"]').attributes('data-state')).toBe('matched')
-    expect(row.find('[data-test="top-track-play"]').exists()).toBe(true)
-    expect(row.find('[data-test="top-track-save"]').exists()).toBe(true)
-  })
-
-  it('marks unresolved rows after done', async () => {
-    mocks.getTopTracks.mockResolvedValue(page([item('Missing', 'matching')]))
-    const wrapper = await mountView()
-
-    await emitMatch({ items: [], done: true })
-
-    const row = wrapper.find('[data-test="top-track-row"]')
-    expect(row.find('[data-test="top-track-status"]').attributes('data-state')).toBe('no-match')
-    expect(row.find('[data-test="top-track-play"]').exists()).toBe(false)
-  })
-
-  it('plays and saves a matched row through the shared catalogue actions', async () => {
-    mocks.getTopTracks.mockResolvedValue(page([item('Hit', 'matched')]))
-    const wrapper = await mountView()
-
-    await wrapper.find('[data-test="top-track-play"]').trigger('click')
-    await flushPromises()
-    expect(mocks.preparePlayback).toHaveBeenCalledWith(expect.objectContaining({ title: 'Hit', provider: 'wy' }))
-    expect(mocks.playTrackIds).toHaveBeenCalledWith(['track-1'])
-
-    await wrapper.find('[data-test="top-track-save"]').trigger('click')
-    await flushPromises()
-    expect(mocks.save).toHaveBeenCalledWith(
-      expect.objectContaining({ title: 'Hit', provider: 'wy' }),
-      { favorite: true },
-    )
-  })
-
-  it('returns a failed row to matching and survives a done frame', async () => {
-    mocks.getTopTracks.mockResolvedValue(page([item('Hit', 'matched')]))
-    const wrapper = await mountView()
-
-    // The backend re-queues the row and, while it is searching, an older worker
-    // run sends Done. The row must stay in the matching state.
-    await emitMatch({ items: [item('Hit', 'matching')], done: true })
-
-    const row = wrapper.find('[data-test="top-track-row"]')
-    expect(row.find('[data-test="top-track-status"]').attributes('data-state')).toBe('matching')
-    expect(row.find('[data-test="top-track-play"]').exists()).toBe(false)
-
-    await emitMatch({ items: [item('Hit', 'matched')], done: false })
-    expect(row.find('[data-test="top-track-status"]').attributes('data-state')).toBe('matched')
-    expect(row.find('[data-test="top-track-play"]').exists()).toBe(true)
-  })
-
-  it('shows no match when the failover finds nothing', async () => {
-    mocks.getTopTracks.mockResolvedValue(page([item('Hit', 'matched')]))
-    const wrapper = await mountView()
-
-    await emitMatch({ items: [item('Hit', 'matching')], done: false })
-    await emitMatch({ items: [item('Hit', 'no_match')], done: false })
-
-    const row = wrapper.find('[data-test="top-track-row"]')
-    expect(row.find('[data-test="top-track-status"]').attributes('data-state')).toBe('no-match')
-    expect(row.find('[data-test="top-track-play"]').exists()).toBe(false)
-  })
-
-  it('refreshes the page and returns to the matching state', async () => {
-    mocks.getTopTracks.mockResolvedValue(page([item('Hit', 'matching')]))
-    const wrapper = await mountView()
-    await emitMatch({ items: [], done: true })
-    expect(wrapper.find('[data-test="top-track-status"]').attributes('data-state')).toBe('no-match')
-
-    await wrapper.find('[data-test="lastfm-refresh"]').trigger('click')
+    const buttons = wrapper.findAll('[data-test="lastfm-card-refresh"]')
+    await buttons[0].trigger('click')
     await flushPromises()
 
-    expect(mocks.getTopTracks).toHaveBeenCalledTimes(2)
-    expect(wrapper.find('[data-test="top-track-status"]').attributes('data-state')).toBe('matching')
+    expect(mocks.refreshList).toHaveBeenCalledTimes(1)
+    expect(mocks.refreshList).toHaveBeenCalledWith('similar')
+    expect(mocks.refreshAll).not.toHaveBeenCalled()
+    expect(mocks.list).toHaveBeenCalledTimes(2)
   })
 
-  it('shows the empty state and keeps the refresh button', async () => {
-    mocks.getTopTracks.mockResolvedValue(page([]))
+  it('refreshes every list from the header', async () => {
+    mocks.list.mockResolvedValue(collection())
+    const wrapper = await mountView()
+
+    await wrapper.find('[data-test="lastfm-refresh-all"]').trigger('click')
+    await flushPromises()
+
+    expect(mocks.refreshAll).toHaveBeenCalledTimes(1)
+    expect(mocks.list).toHaveBeenCalledTimes(2)
+  })
+
+  it('reloads the cards when a worker run finishes', async () => {
+    mocks.list.mockResolvedValue(collection())
+    await mountView()
+    expect(mocks.list).toHaveBeenCalledTimes(1)
+
+    await emitMatch({ kind: 'top_tracks', items: [], done: true })
+    await flushPromises()
+
+    expect(mocks.list).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows the empty state and keeps a refresh action', async () => {
+    mocks.list.mockResolvedValue({ status: 'ok', lists: [] })
     const wrapper = await mountView()
 
     const empty = wrapper.find('[data-test="lastfm-empty"]')
     expect(empty.exists()).toBe(true)
     await empty.find('button').trigger('click')
     await flushPromises()
-    expect(mocks.getTopTracks).toHaveBeenCalledTimes(2)
-  })
-
-  it('renders the recommendations section above the top tracks', async () => {
-    mocks.getTopTracks.mockResolvedValue(
-      page([item('Top')], 'ok', [item('Suggested', 'matched')]),
-    )
-    const wrapper = await mountView()
-
-    const sections = wrapper.findAll('section')
-    expect(sections[0].attributes('data-test')).toBe('lastfm-similar')
-    expect(sections[1].attributes('data-test')).toBe('lastfm-top-tracks')
-
-    const rows = wrapper
-      .find('[data-test="lastfm-similar"]')
-      .findAll('[data-test="top-track-row"]')
-    expect(rows).toHaveLength(1)
-    expect(rows[0].find('[data-test="top-track-status"]').attributes('data-state')).toBe('matched')
-    expect(rows[0].find('[data-test="top-track-play"]').exists()).toBe(true)
-  })
-
-  it('shows the recommendations empty state without hiding the top tracks', async () => {
-    mocks.getTopTracks.mockResolvedValue(page([item('Top')], 'ok', []))
-    const wrapper = await mountView()
-
-    expect(wrapper.find('[data-test="lastfm-similar-empty"]').exists()).toBe(true)
-    const topRows = wrapper
-      .find('[data-test="lastfm-top-tracks"]')
-      .findAll('[data-test="top-track-row"]')
-    expect(topRows).toHaveLength(1)
-  })
-
-  it('updates a recommendation row from the shared match stream', async () => {
-    mocks.getTopTracks.mockResolvedValue(
-      page([item('Top')], 'ok', [item('Suggested', 'matching')]),
-    )
-    const wrapper = await mountView()
-
-    await emitMatch({ items: [item('Suggested', 'matched')], done: false })
-
-    const row = wrapper
-      .find('[data-test="lastfm-similar"]')
-      .find('[data-test="top-track-row"]')
-    expect(row.find('[data-test="top-track-status"]').attributes('data-state')).toBe('matched')
-    expect(row.find('[data-test="top-track-play"]').exists()).toBe(true)
+    expect(mocks.refreshAll).toHaveBeenCalledTimes(1)
   })
 
   it('releases the match listener on unmount', async () => {
-    mocks.getTopTracks.mockResolvedValue(page([item('Hit')]))
+    mocks.list.mockResolvedValue(collection())
     const wrapper = await mountView()
 
     wrapper.unmount()

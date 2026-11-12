@@ -264,8 +264,14 @@ type Recommender struct {
 	// the matched source reported one. Optional.
 	coverAssets domain.CoverIdentityAssets
 	// similarRecs caches the "for you" answer per seed set for 30 minutes, so a
-	// refresh does not spend the track.getSimilar request budget again.
+	// reopen does not spend the track.getSimilar request budget again.
 	similarRecs map[string]cachedSimilarRecommendation
+	// recommendationStore persists the two lists and their match state. nil in
+	// tests that only exercise the in-memory build.
+	recommendationStore domain.LastFmRecommendationRepository
+	// matchingActive guards one worker run per list kind, so opening the cards
+	// page and a detail page in a burst does not search the same rows twice.
+	matchingActive map[string]bool
 }
 
 type cachedPage struct {
@@ -311,7 +317,22 @@ func NewRecommender(
 		topRows:          make(map[string]TopTrackItem),
 		topFailedSources: make(map[string]map[string]bool),
 		similarRecs:      make(map[string]cachedSimilarRecommendation),
+		matchingActive:   make(map[string]bool),
 	}
+}
+
+// SetRecommendationStore installs the persisted list store. Optional: without
+// it the recommender still builds and matches in memory.
+func (r *Recommender) SetRecommendationStore(store domain.LastFmRecommendationRepository) {
+	r.mu.Lock()
+	r.recommendationStore = store
+	r.mu.Unlock()
+}
+
+func (r *Recommender) recommendationStoreOrNil() domain.LastFmRecommendationRepository {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.recommendationStore
 }
 
 // SetCoverAssets installs the identity cover resolver. Optional: without it a

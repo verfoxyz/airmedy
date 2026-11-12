@@ -46,6 +46,15 @@ var Module = fx.Module("download",
 	fx.Invoke(func(svc *Service, remover LocalFileRemover) {
 		svc.SetLocalFileRemover(remover)
 	}),
+	// Alias learning and matching are optional: a graph without the alias store
+	// still downloads, it just cannot reuse name variants.
+	fx.Invoke(fx.Annotate(
+		func(svc *Service, merger *Merger, aliases domain.ArtistAliasRepository) {
+			svc.SetArtistAliases(aliases)
+			merger.SetArtistAliases(aliases)
+		},
+		fx.ParamTags(``, ``, `optional:"true"`),
+	)),
 	fx.Invoke(func(lc fx.Lifecycle, svc *Service, logger *slog.Logger) {
 		lc.Append(fx.Hook{
 			OnStart: func(ctx context.Context) error {

@@ -31,7 +31,8 @@
     "delete": "Xóa",
     "yes": "Có",
     "no": "Không",
-    "open_devtools": "Mở công cụ dành cho nhà phát triển"
+    "open_devtools": "Mở công cụ dành cho nhà phát triển",
+    "back": "Quay lại"
   },
   "mobile_sync": {
     "back": "Thiết bị di động",
@@ -178,6 +179,23 @@
       "title": "Quản lý thư viện",
       "delimiters_title": "Ký tự phân tách thẻ",
       "delimiters_description": "Tùy chỉnh cách tách thẻ nhiều giá trị cho nghệ sĩ, nghệ sĩ album, thể loại và nhà soạn nhạc. Đồng bộ lại thư viện để áp dụng thay đổi."
+    },
+    "artist_aliases": {
+      "title": "Bí danh nghệ sĩ",
+      "description": "Dùng lại bài hát khi nghệ sĩ được ghi bằng cách viết khác. Cặp đã học đến từ việc gộp; cặp thủ công do bạn thêm.",
+      "alias_label": "Bí danh (vd. Camellia)",
+      "canonical_label": "Tên chính thức (vd. かめりあ)",
+      "add": "Thêm",
+      "loading": "Đang tải…",
+      "empty": "Chưa có bí danh.",
+      "enable": "Dùng bí danh này khi khớp",
+      "delete": "Xóa",
+      "evidence_merge": "Học từ việc gộp",
+      "evidence_manual": "Thêm thủ công",
+      "invalid": "Cần cả hai tên.",
+      "self": "Một tên không thể là bí danh của chính nó.",
+      "exists": "Cặp này đã tồn tại.",
+      "save_failed": "Không lưu được bí danh."
     },
     "about": {
       "description": "Trình phát nhạc đa nền tảng hiện đại, tập trung vào hiệu suất và sự tinh tế.",
@@ -919,6 +937,9 @@
     "no_match": "Không khớp",
     "matched_from": "từ {source}",
     "similar_tracks": "Dành cho bạn",
-    "similar_empty": "Chưa có gợi ý nào."
+    "similar_empty": "Chưa có gợi ý nào.",
+    "refresh_list": "Làm mới danh sách này",
+    "refresh_all": "Làm mới tất cả",
+    "list_empty": "Chưa có bài hát."
   }
 }

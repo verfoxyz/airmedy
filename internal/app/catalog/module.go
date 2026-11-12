@@ -74,4 +74,12 @@ var Module = fx.Module("catalog",
 			})
 		},
 	),
+	// Alias expansion is optional: without the store matching still works with the
+	// literal artist sets.
+	fx.Invoke(fx.Annotate(
+		func(svc *Service, aliases domain.ArtistAliasRepository) {
+			svc.SetArtistAliases(aliases)
+		},
+		fx.ParamTags(``, `optional:"true"`),
+	)),
 )

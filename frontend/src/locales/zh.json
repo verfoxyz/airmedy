@@ -31,7 +31,8 @@
     "delete": "删除",
     "yes": "是",
     "no": "否",
-    "open_devtools": "打开开发者工具"
+    "open_devtools": "打开开发者工具",
+    "back": "返回"
   },
   "mobile_sync": {
     "back": "移动设备",
@@ -178,6 +179,23 @@
       "title": "媒体库管理",
       "delimiters_title": "标签分隔符",
       "delimiters_description": "自定义艺术家、专辑艺术家、流派和作曲家的多值标签的拆分方式。重新同步音乐库以应用更改。"
+    },
+    "artist_aliases": {
+      "title": "艺人别名",
+      "description": "同一艺人的不同写法可参与匹配。自动条目来自合并，手动条目由你添加。",
+      "alias_label": "别名（如 Camellia）",
+      "canonical_label": "正式名（如 かめりあ）",
+      "add": "添加",
+      "loading": "加载中…",
+      "empty": "还没有别名。",
+      "enable": "在匹配中启用该别名",
+      "delete": "删除",
+      "evidence_merge": "自动学习（合并）",
+      "evidence_manual": "手动添加",
+      "invalid": "两个名称都不能为空。",
+      "self": "名称不能与自身互为别名。",
+      "exists": "该别名对已存在。",
+      "save_failed": "保存别名失败。"
     },
     "about": {
       "description": "一款专注于性能和优雅的现代跨平台音乐播放器。",
@@ -919,6 +937,9 @@
     "no_match": "无匹配",
     "matched_from": "来自 {source}",
     "similar_tracks": "为你推荐",
-    "similar_empty": "暂时没有推荐。"
+    "similar_empty": "暂时没有推荐。",
+    "refresh_list": "刷新此歌单",
+    "refresh_all": "刷新全部",
+    "list_empty": "暂无曲目。"
   }
 }

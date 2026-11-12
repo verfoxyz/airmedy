@@ -191,7 +191,7 @@ func TestTopTrackWorkersSearchOnlyTheirSourceOnce(t *testing.T) {
 		t.Fatalf("unmatched row source calls = %d, want 5", perItem[rawNeverKey])
 	}
 
-	cachedHit, _ := recommender.cachedSourceMatch(matchKey, "mg")
+	cachedHit, _ := recommender.cachedSourceMatch(domain.LastFmRecommendationTopTracks, matchKey, "mg")
 	if cachedHit == nil || cachedHit.Provider != "mg" {
 		t.Fatalf("cached hit = %+v, want the mg match", cachedHit)
 	}
@@ -353,10 +353,11 @@ func TestPlaybackFailureRequeuesFromTheNextSource(t *testing.T) {
 	if got := countSourceCalls(matcher.sourcesCalled(), "kg|"+rawKey); got == 0 {
 		t.Fatal("the next source was never searched")
 	}
-	if _, cached := recommender.cachedSourceMatch(matchKey, "wy"); cached {
+	if _, cached := recommender.cachedSourceMatch(
+		domain.LastFmRecommendationTopTracks, matchKey, "wy"); cached {
 		t.Fatal("the failed source's cached match must be dropped")
 	}
-	if failed := recommender.failedTopSources(matchKey); !failed["wy"] {
+	if failed := recommender.failedTopSources(domain.LastFmRecommendationTopTracks, matchKey); !failed["wy"] {
 		t.Fatalf("failed sources = %v, want wy recorded", failed)
 	}
 }

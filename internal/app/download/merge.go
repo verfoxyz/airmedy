@@ -2,6 +2,7 @@ package download
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -38,16 +39,23 @@ const durationMergeTolerance = 3 * time.Second
 // that requested the song. Its associations move onto the surviving row and the
 // row is deleted, all in one transaction.
 type Merger struct {
-	tracks domain.TrackRepository
-	repo   domain.DownloadMergeRepository
-	tx     domain.TxManager
-	logger *slog.Logger
+	tracks  domain.TrackRepository
+	repo    domain.DownloadMergeRepository
+	tx      domain.TxManager
+	logger  *slog.Logger
+	aliases domain.ArtistAliasRepository
 }
 
 // NewMerger wires the merge step. repo and tx are required; tracks is used for
 // the plain lookups the merge and the M3 warning need.
 func NewMerger(tracks domain.TrackRepository, repo domain.DownloadMergeRepository, tx domain.TxManager, logger *slog.Logger) *Merger {
 	return &Merger{tracks: tracks, repo: repo, tx: tx, logger: logger}
+}
+
+// SetArtistAliases installs the alias store used to learn from a successful
+// merge. Optional: without it matching still works, it just cannot learn.
+func (m *Merger) SetArtistAliases(aliases domain.ArtistAliasRepository) {
+	m.aliases = aliases
 }
 
 // MergeInput is one finished finalize run seen through the merge rules.
@@ -114,6 +122,7 @@ func (m *Merger) Merge(ctx context.Context, in MergeInput) (MergeResult, error) 
 		if err := m.carryIdentityIfMissing(ctx, survivorID, remote); err != nil {
 			return MergeResult{}, err
 		}
+		m.learnAliases(ctx, survivorID, remote)
 		m.logger.Info("download: folded remote track row into the downloaded one",
 			"rule", rule, "kept", survivorID, "removed", remote.ID, "path", in.TargetPath)
 		return MergeResult{Rule: rule, RemovedTrackID: remote.ID, SurvivorTrackID: survivorID}, nil
@@ -136,6 +145,7 @@ func (m *Merger) Merge(ctx context.Context, in MergeInput) (MergeResult, error) 
 	if err := m.carryIdentity(ctx, survivorID, remote); err != nil {
 		return MergeResult{}, err
 	}
+	m.learnAliases(ctx, survivorID, remote)
 	m.logger.Info("download: imported row replaced the remote one",
 		"rule", mergeNone, "kept", survivorID, "removed", remote.ID, "path", in.TargetPath)
 	return MergeResult{Rule: mergeNone, RemovedTrackID: remote.ID, SurvivorTrackID: survivorID}, nil
@@ -171,6 +181,48 @@ func (m *Merger) carryIdentity(ctx context.Context, survivorID string, remote *d
 			remote.Provider, remote.ExternalID, survivorID, err)
 	}
 	return nil
+}
+
+// learnAliases records same-song artist name variants after a successful merge.
+//
+// Only the strong evidence is used: equal-sized credit sets (including two single
+// artists, the Camellia ↔ かめりあ case) are paired position-wise after sorting.
+// A set that merely overlaps is not learned, because the extra members are not
+// necessarily aliases.
+func (m *Merger) learnAliases(ctx context.Context, survivorID string, remote *domain.TrackDTO) {
+	if m.aliases == nil || remote == nil || survivorID == "" {
+		return
+	}
+	survivor, err := m.tracks.GetByID(ctx, survivorID)
+	if err != nil || survivor == nil {
+		return
+	}
+	for _, pair := range aliasPairs(
+		domain.ArtistKeyParts(artistNames(remote)),
+		domain.ArtistKeyParts(artistNames(survivor)),
+	) {
+		err := m.aliases.AddArtistAlias(ctx, pair[0], pair[1], domain.ArtistAliasEvidenceMerge)
+		if err != nil && !errors.Is(err, domain.ErrArtistAliasExists) {
+			m.logger.Debug("download: cannot learn artist alias",
+				"alias", pair[0], "canonical", pair[1], "error", err)
+		}
+	}
+}
+
+// aliasPairs pairs two equally sized, sorted credit sets. Different sizes are
+// skipped: without positional evidence the pairing would be a guess.
+func aliasPairs(remote, local []string) [][2]string {
+	if len(remote) == 0 || len(remote) != len(local) {
+		return nil
+	}
+	pairs := make([][2]string, 0, len(remote))
+	for index := range remote {
+		if remote[index] == local[index] {
+			continue
+		}
+		pairs = append(pairs, [2]string{remote[index], local[index]})
+	}
+	return pairs
 }
 
 // pickSurvivor decides which row keeps the associations.

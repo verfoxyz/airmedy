@@ -3,72 +3,51 @@ import { computed, onActivated, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Events } from '@wailsio/runtime'
-import { Music, Radio, RefreshCw } from '@lucide/vue'
+import { ListMusic, Music, Radio, RefreshCw } from '@lucide/vue'
 import { IconButton } from '@airmedy/ui'
-import TopTrackRow from '@/components/lastfm/TopTrackRow.vue'
-import { useCatalogStore } from '@/stores/catalog'
-import { usePlayerStore } from '@/stores/player'
+import LazyImg from '@/components/LazyImg.vue'
 import * as LastFmService from '../../bindings/airmedy/internal/infra/wails/lastfmservice'
 import type {
-  CatalogRowDTO,
-  TopTrackItemDTO,
-  TopTrackPageDTO,
+  RecommendationListCollectionDTO,
+  RecommendationListSummaryDTO,
 } from '../../bindings/airmedy/internal/infra/wails/models'
 
 /**
- * Last.fm top-tracks page (MVP).
+ * Last.fm page: one card per persisted recommendation list.
  *
- * One Last.fm request returns every row; five source workers then fill in the
- * provider identities through lastfm:recommendations-matched. The page only
- * renders and forwards play/save requests to the shared catalogue store.
+ * Opening the page reads the database; only the first visit (or a refresh)
+ * spends Last.fm requests. Matching keeps filling the stored rows in the
+ * background, so a card's counts settle without leaving the page.
  */
 const { t } = useI18n()
 const router = useRouter()
-const catalogStore = useCatalogStore()
-const playerStore = usePlayerStore()
 
-const page = ref<TopTrackPageDTO | null>(null)
+const collection = ref<RecommendationListCollectionDTO | null>(null)
 const loading = ref(false)
 const loaded = ref(false)
 /** loadError is a machine key the template words. */
 const loadError = ref('')
+const refreshingAll = ref(false)
+const refreshingKinds = ref<Record<string, boolean>>({})
 let offMatch: (() => void) | null = null
-// Events can beat the page response; keep them until there are rows to update.
-let pendingItems: TopTrackItemDTO[] = []
-let pendingDone = false
-// Rows the backend re-queued after a playback failure. A Done frame from an
-// earlier worker run must not finish these, or the failover would look like a
-// permanent "no match" before the new source answers.
-const requeued = new Set<string>()
 
-const status = computed(() => page.value?.status ?? '')
-const notConnected = computed(() => status.value === 'not_connected')
-const items = computed(() => page.value?.items ?? [])
-const similarItems = computed(() => page.value?.similar_items ?? [])
+const lists = computed(() => collection.value?.lists ?? [])
+const notConnected = computed(() => collection.value?.status === 'not_connected')
 const isEmpty = computed(
-  () => !!page.value && items.value.length === 0 && similarItems.value.length === 0,
+  () => !!collection.value && !notConnected.value && lists.value.length === 0,
+)
+const isRefreshing = computed(
+  () => refreshingAll.value || Object.values(refreshingKinds.value).some(Boolean),
 )
 
 async function load() {
   if (loading.value) return
   loading.value = true
   loadError.value = ''
-  pendingItems = []
-  pendingDone = false
-  requeued.clear()
   try {
-    page.value = await LastFmService.GetTopTrackRecommendations()
-    if (page.value) {
-      if (pendingItems.length > 0) {
-        page.value = applyPageItems(page.value, pendingItems, pendingDone)
-      } else if (pendingDone) {
-        page.value = finishPage(page.value)
-      }
-    }
-    pendingItems = []
-    pendingDone = false
+    collection.value = await LastFmService.ListRecommendationLists()
   } catch (error) {
-    console.error('Failed to load Last.fm top tracks', error)
+    console.error('Failed to load Last.fm recommendation lists', error)
     loadError.value = 'load_failed'
   } finally {
     loading.value = false
@@ -76,116 +55,68 @@ async function load() {
   }
 }
 
+async function refreshAll() {
+  if (refreshingAll.value) return
+  refreshingAll.value = true
+  loadError.value = ''
+  try {
+    await LastFmService.RefreshAllRecommendationLists()
+    await load()
+  } catch (error) {
+    console.error('Failed to refresh Last.fm recommendation lists', error)
+    loadError.value = 'load_failed'
+  } finally {
+    refreshingAll.value = false
+  }
+}
+
+async function refreshList(kind: string) {
+  if (refreshingKinds.value[kind]) return
+  refreshingKinds.value = { ...refreshingKinds.value, [kind]: true }
+  loadError.value = ''
+  try {
+    await LastFmService.RefreshRecommendationList(kind)
+    await load()
+  } catch (error) {
+    console.error('Failed to refresh a Last.fm recommendation list', error)
+    loadError.value = 'load_failed'
+  } finally {
+    refreshingKinds.value = { ...refreshingKinds.value, [kind]: false }
+  }
+}
+
+function openList(list: RecommendationListSummaryDTO) {
+  void router.push(`/lastfm/lists/${list.kind}`)
+}
+
+/** covers returns up to four URLs and pads the mosaic so the grid is stable. */
+function covers(list: RecommendationListSummaryDTO): (string | null)[] {
+  const urls = (list.cover_urls ?? []).filter((url) => !!url).slice(0, 4)
+  while (urls.length > 0 && urls.length < 4) urls.push('')
+  return urls.length === 0 ? [] : urls
+}
+
+/** coverClass keeps a 1–4 cover mosaic filling the square. */
+function coverClass(urls: (string | null)[], index: number): string {
+  if (urls.length === 1) return 'col-span-2 row-span-2'
+  if (urls.length === 2) return 'row-span-2'
+  if (urls.length === 3 && index === 0) return 'row-span-2'
+  return ''
+}
+
 interface TopTrackUpdate {
-  items?: TopTrackItemDTO[]
+  kind?: string
   done?: boolean
 }
 
 /**
- * applyPageItems applies one batch to both sections.
- *
- * The backend runs the two lists through the same five-source queue, so a batch
- * can contain rows for either list; a row is replaced in whichever list owns its
- * match key. Done finishes stragglers in both.
- */
-function applyPageItems(
-  current: TopTrackPageDTO,
-  updates: TopTrackItemDTO[],
-  done: boolean,
-): TopTrackPageDTO {
-  const byKey = new Map<string, TopTrackItemDTO>()
-  for (const update of updates) {
-    if (!update.match_key) continue
-    byKey.set(update.match_key, update)
-    // A matching update without a provider is the failover signal: the row is
-    // being searched again and must survive the next Done frame.
-    if (update.matching && !update.provider) requeued.add(update.match_key)
-    else requeued.delete(update.match_key)
-  }
-  const merge = (rows: TopTrackItemDTO[]): TopTrackItemDTO[] => {
-    const next = rows.map((row) => {
-      const update = row.match_key ? byKey.get(row.match_key) : undefined
-      return update ? { ...row, ...update } : row
-    })
-    return done ? finishItems(next) : next
-  }
-  return {
-    ...current,
-    items: merge(current.items),
-    similar_items: merge(current.similar_items ?? []),
-  }
-}
-
-function finishPage(current: TopTrackPageDTO): TopTrackPageDTO {
-  return {
-    ...current,
-    items: finishItems(current.items),
-    similar_items: finishItems(current.similar_items ?? []),
-  }
-}
-
-function finishItems(rows: TopTrackItemDTO[]): TopTrackItemDTO[] {
-  return rows.map((row) =>
-    row.matching && !(row.match_key && requeued.has(row.match_key))
-      ? { ...row, matching: false, matched: false, no_source: true }
-      : row,
-  )
-}
-
-/**
- * onRecommendationsMatched applies one batch of source results.
- *
- * A Done frame is authoritative: it means no row may stay in the matching
- * state, so any row without a result becomes "no match".
+ * onRecommendationsMatched refreshes the cards when a worker run finishes, so
+ * the counts show the stored state without polling.
  */
 function onRecommendationsMatched(event: Events.WailsEvent) {
   const update = (event.data ?? null) as TopTrackUpdate | null
-  if (!update) return
-  const updates = update.items ?? []
-  if (!page.value) {
-    pendingItems.push(...updates)
-    pendingDone = pendingDone || update.done === true
-    return
-  }
-  page.value = applyPageItems(page.value, updates, update.done === true)
-}
-
-/**
- * toCatalogRow adapts one row to the shared catalogue action shape.
- *
- * The provider fields are only meaningful after a match; the row component
- * hides the actions until then.
- */
-function toCatalogRow(item: TopTrackItemDTO): CatalogRowDTO {
-  return {
-    provider: item.provider,
-    external_id: item.external_id,
-    title: item.title,
-    artists: item.artists?.length ? item.artists : [item.artist],
-    album_name: item.album,
-    duration: item.duration,
-    sources: item.sources ?? [],
-    cover_url: item.cover_url,
-    cover_url_large: item.cover_url_large,
-    downloadable: item.downloadable,
-    blocked_reason: item.blocked_reason,
-    state: item.state,
-    local_track_id: item.local_track_id,
-  }
-}
-
-async function playTrack(item: TopTrackItemDTO) {
-  try {
-    const trackId = await catalogStore.preparePlayback(toCatalogRow(item))
-    if (!trackId) return
-    await playerStore.playTrackIds([trackId])
-  } catch (error) {
-    console.error('Failed to play a Last.fm top track', error)
-  }
-}
-
-function saveTrack(item: TopTrackItemDTO) {
-  void catalogStore.save(toCatalogRow(item), { favorite: true })
+  if (!update?.done) return
+  void load()
 }
 
 function openSettings() {
@@ -205,7 +136,7 @@ onUnmounted(() => {
 // KeepAlive re-activates the cached instance; a not-connected page asks again
 // because the user may have connected the account in settings since then.
 onActivated(() => {
-  if (!loaded.value || page.value?.status === 'not_connected') void load()
+  if (!loaded.value || collection.value?.status === 'not_connected') void load()
 })
 </script>
 
@@ -224,13 +155,13 @@ onActivated(() => {
       </div>
 
       <IconButton
-        data-test="lastfm-refresh"
-        :aria-label="$t('lastfm.refresh')"
-        :title="$t('lastfm.refresh')"
-        :disabled="loading || notConnected"
-        @click="load"
+        data-test="lastfm-refresh-all"
+        :aria-label="$t('lastfm.refresh_all')"
+        :title="$t('lastfm.refresh_all')"
+        :disabled="isRefreshing || notConnected"
+        @click="refreshAll"
       >
-        <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': loading }" aria-hidden="true" />
+        <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': refreshingAll }" aria-hidden="true" />
       </IconButton>
     </header>
 
@@ -256,13 +187,10 @@ onActivated(() => {
     </div>
 
     <!-- Loading skeleton -->
-    <div v-else-if="loading && !page" class="mt-12 space-y-2" data-test="lastfm-loading">
-      <div v-for="index in 6" :key="index" class="flex items-center gap-3 p-2">
-        <div class="h-10 w-10 animate-pulse rounded-lg bg-foreground/[0.06]" />
-        <div class="flex-1 space-y-2">
-          <div class="h-3 w-1/3 animate-pulse rounded bg-foreground/[0.06]" />
-          <div class="h-3 w-1/4 animate-pulse rounded bg-foreground/[0.04]" />
-        </div>
+    <div v-else-if="loading && !collection" class="mt-12 grid grid-cols-2 gap-6" data-test="lastfm-loading">
+      <div v-for="index in 2" :key="index" class="space-y-3">
+        <div class="aspect-square animate-pulse rounded-2xl bg-foreground/[0.06]" />
+        <div class="h-3 w-1/2 animate-pulse rounded bg-foreground/[0.06]" />
       </div>
     </div>
 
@@ -270,11 +198,8 @@ onActivated(() => {
       <p v-if="loadError" class="mt-8 text-sm text-dim" data-test="lastfm-error">
         {{ $t(`lastfm.${loadError}`) }}
       </p>
-      <p v-if="catalogStore.actionError" class="mt-2 text-sm text-dim">
-        {{ $t(`cloud_search.${catalogStore.actionError}`) }}
-      </p>
 
-      <!-- Empty -->
+      <!-- No lists at all -->
       <div
         v-if="isEmpty && !loadError"
         class="mt-16 flex flex-col items-center justify-center text-center"
@@ -284,51 +209,71 @@ onActivated(() => {
           <Music class="h-10 w-10 text-foreground opacity-30" aria-hidden="true" />
         </div>
         <p class="text-xl font-semibold text-dim">{{ $t('lastfm.empty_title') }}</p>
-        <p class="mt-2 text-dimmer">{{ $t('lastfm.empty_description') }}</p>
+        <p class="mt-2 text-dimmer">{{ $t('lastfm.list_empty') }}</p>
         <button
           type="button"
           class="mt-6 rounded-full bg-foreground/[0.06] px-5 py-2 text-sm font-medium text-foreground transition-colors hover:bg-foreground/[0.10]"
-          @click="load"
+          @click="refreshAll"
         >
-          {{ $t('lastfm.refresh') }}
+          {{ $t('lastfm.refresh_all') }}
         </button>
       </div>
 
-      <!-- For you + top tracks share the row component and the match stream -->
-      <template v-else>
-        <section class="mt-10" data-test="lastfm-similar">
-          <h2 class="mb-3 text-lg font-semibold text-foreground">
-            {{ $t('lastfm.similar_tracks') }}
-          </h2>
-          <div v-if="similarItems.length > 0" class="space-y-1">
-            <TopTrackRow
-              v-for="item in similarItems"
-              :key="item.match_key"
-              :item="item"
-              @play="playTrack"
-              @save="saveTrack"
-            />
-          </div>
-          <p v-else class="text-sm text-dim" data-test="lastfm-similar-empty">
-            {{ $t('lastfm.similar_empty') }}
-          </p>
-        </section>
+      <!-- Playlist cards -->
+      <div v-else class="mt-10 grid grid-cols-2 gap-6" data-test="lastfm-cards">
+        <article
+          v-for="list in lists"
+          :key="list.kind"
+          class="group cursor-pointer"
+          data-test="lastfm-card"
+          :data-kind="list.kind"
+          @click="openList(list)"
+        >
+          <div class="relative mb-3 aspect-square overflow-hidden rounded-2xl bg-foreground/5 ring-1 ring-foreground/[0.06]">
+            <div v-if="covers(list).length" class="grid h-full w-full grid-cols-2 grid-rows-2 gap-0.5">
+              <div
+                v-for="(url, index) in covers(list)"
+                :key="index"
+                :class="coverClass(covers(list), index)"
+                class="overflow-hidden bg-foreground/[0.06]"
+              >
+                <LazyImg
+                  v-if="url"
+                  :src="url"
+                  :alt="t(list.title)"
+                  class="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+                />
+              </div>
+            </div>
+            <div v-else class="flex h-full w-full items-center justify-center text-dimmer">
+              <ListMusic class="h-10 w-10" aria-hidden="true" />
+            </div>
 
-        <section class="mt-10" data-test="lastfm-top-tracks">
-          <h2 class="mb-3 text-lg font-semibold text-foreground">
-            {{ $t('lastfm.top') }}
-          </h2>
-          <div class="space-y-1">
-            <TopTrackRow
-              v-for="item in items"
-              :key="item.match_key"
-              :item="item"
-              @play="playTrack"
-              @save="saveTrack"
-            />
+            <IconButton
+              data-test="lastfm-card-refresh"
+              class="absolute right-2 top-2 bg-background/80 opacity-0 transition-opacity group-hover:opacity-100"
+              :aria-label="$t('lastfm.refresh_list')"
+              :title="$t('lastfm.refresh_list')"
+              :disabled="!!refreshingKinds[list.kind] || refreshingAll"
+              @click.stop="refreshList(list.kind)"
+            >
+              <RefreshCw
+                class="h-4 w-4"
+                :class="{ 'animate-spin': refreshingKinds[list.kind] }"
+                aria-hidden="true"
+              />
+            </IconButton>
           </div>
-        </section>
-      </template>
+
+          <div class="space-y-1 px-1">
+            <h2 class="truncate text-sm font-semibold text-foreground">{{ $t(list.title) }}</h2>
+            <p class="flex items-center gap-1.5 text-xs text-dim">
+              <ListMusic class="h-3.5 w-3.5" aria-hidden="true" />
+              <span data-test="lastfm-card-count">{{ list.track_count }}</span>
+            </p>
+          </div>
+        </article>
+      </div>
     </template>
   </div>
 </template>

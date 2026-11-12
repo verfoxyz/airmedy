@@ -37,6 +37,14 @@ var Module = fx.Module("lastfm",
 		},
 		fx.ParamTags(``, `optional:"true"`),
 	)),
+	// The two recommendation lists survive a restart; without the store the
+	// recommender still builds them in memory.
+	fx.Invoke(fx.Annotate(
+		func(recommender *Recommender, store domain.LastFmRecommendationRepository) {
+			recommender.SetRecommendationStore(store)
+		},
+		fx.ParamTags(``, `optional:"true"`),
+	)),
 	fx.Invoke(func(lc fx.Lifecycle, s *LastFmService, logger *slog.Logger) {
 		lc.Append(fx.Hook{
 			OnStart: func(ctx context.Context) error {

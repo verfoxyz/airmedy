@@ -124,6 +124,19 @@ the other (`["Gardens"]` vs `["Gardens", "Sad Keyboard Guy"]`). Unrelated sets, 
 partial overlap where neither side contains the other, do not match. Title and
 duration are still checked separately.
 
+### Artist aliases
+
+`artist_aliases` stores an unordered pair of single-artist keys (`camellia` ↔
+`かめりあ`) with `evidence` `merge`|`manual` and an `enabled` flag.
+`ArtistAliasRepository.ExpandArtists(ctx, keys)` returns each key plus its enabled
+one-hop aliases (bidirectional, never a chain). Every matching path expands before
+applying the subset rule: `MatchLocalTrack` via `ArtistNamesCompatibleWithAliases`,
+catalogue `MatchTrack`, the stream cache's `artist_key`, and cache duplicate
+grouping. A failed expansion falls back to the literal keys. A successful merge
+learns a pair only when the two credit sets have the same size (paired after
+sorting), which covers the two-single-artist case without guessing when the sizes
+differ.
+
 ### `NormalizeSort(s string) string`
 
 Used for `sort_title` / `sort_name` — produces a user-friendly sort key:

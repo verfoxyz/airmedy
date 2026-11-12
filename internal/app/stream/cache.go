@@ -82,6 +82,8 @@ type Cache struct {
 	// localIdentity lets Open refuse a row that already became a library file.
 	// *download.Service satisfies it; the cache only needs the yes/no answer.
 	localIdentity LocalIdentityChecker
+	// aliases expands the artist key for cross-source matching. Optional.
+	aliases domain.ArtistAliasRepository
 }
 
 // SettingsProvider is the settings slice the cache needs. *appsettings.Service
@@ -95,6 +97,12 @@ type SettingsProvider interface {
 // import the download service.
 type LocalIdentityChecker interface {
 	HasLocalIdentity(ctx context.Context, provider, externalID string) (bool, error)
+}
+
+// SetArtistAliases installs the alias store used for cross-source matching.
+// Optional; without it the literal artist key still matches.
+func (c *Cache) SetArtistAliases(aliases domain.ArtistAliasRepository) {
+	c.aliases = aliases
 }
 
 // SetLocalIdentityChecker installs the guard used by Open. Safe to call before
@@ -489,12 +497,43 @@ func (c *Cache) lookupEntry(ctx context.Context, provider string, track *domain.
 	if titleKey == "" || artistKey == "" {
 		return nil, nil
 	}
-	match, err := c.repo.MatchByTitleArtist(ctx, titleKey, artistKey,
-		int64(track.Duration)*1000, matchDurationToleranceMs)
+	match, err := c.matchCachedByTitleArtist(ctx, titleKey, artistKey, track.Duration)
 	if err != nil {
-		return nil, fmt.Errorf("match stream cache: %w", err)
+		return nil, err
 	}
 	return match, nil
+}
+
+// matchCachedByTitleArtist tries the literal artist key first, then its enabled
+// aliases (one hop), so a cache filled as "かめりあ" is reused for "Camellia".
+func (c *Cache) matchCachedByTitleArtist(
+	ctx context.Context, titleKey, artistKey string, duration int,
+) (*domain.StreamCacheEntry, error) {
+	keys := []string{artistKey}
+	if c.aliases != nil {
+		expanded, err := c.aliases.ExpandArtists(ctx, []string{artistKey})
+		if err != nil {
+			c.logger.Debug("stream cache: cannot expand artist aliases",
+				"artist_key", artistKey, "error", err)
+		} else {
+			for _, key := range expanded {
+				if key != artistKey {
+					keys = append(keys, key)
+				}
+			}
+		}
+	}
+	for _, key := range keys {
+		match, err := c.repo.MatchByTitleArtist(ctx, titleKey, key,
+			int64(duration)*1000, matchDurationToleranceMs)
+		if err != nil {
+			return nil, fmt.Errorf("match stream cache: %w", err)
+		}
+		if match != nil {
+			return match, nil
+		}
+	}
+	return nil, nil
 }
 
 // primaryArtist is the matching key's artist: the first credited artist, or the

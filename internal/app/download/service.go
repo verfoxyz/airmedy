@@ -135,6 +135,7 @@ type Service struct {
 	settings      SettingsReader
 	cached        CachedAudio
 	coverAssets   domain.CoverIdentityAssets
+	aliases       domain.ArtistAliasRepository
 	promotionTask domain.PromotionTaskRepository
 	lyrics        LyricsWriter
 	remover       LocalFileRemover
@@ -213,6 +214,12 @@ func NewService(
 		done:            make(chan struct{}),
 		coverURLs:       make(map[string]string),
 	}
+}
+
+// SetArtistAliases installs the alias store used by local matching and cache
+// duplicate grouping. Optional; without it the pure set rules still apply.
+func (s *Service) SetArtistAliases(aliases domain.ArtistAliasRepository) {
+	s.aliases = aliases
 }
 
 // SetClock replaces the clock the worker and the retry backoff read. It exists

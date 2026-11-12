@@ -91,6 +91,50 @@ func (f *mergeFixture) trackCount(t *testing.T) int {
 	return n
 }
 
+// TestMerge_LearnsArtistAliasFromTheMergedPair: after a successful merge the
+// two single-artist credits are recorded as a pair, so the next search matches
+// the local file instead of creating a remote row again.
+func TestMerge_LearnsArtistAliasFromTheMergedPair(t *testing.T) {
+	f := newMergeFixture(t)
+	ctx := context.Background()
+	aliases := sqlite.NewArtistAliasRepository(f.db)
+	f.merger.SetArtistAliases(aliases)
+
+	remotePath := domain.RemotePath("wy", "42")
+	require.NoError(t, f.tracks.Upsert(ctx, &domain.Track{
+		ID:             "remote-1",
+		Path:           remotePath,
+		Title:          "crystallized",
+		Duration:       200,
+		Availability:   domain.AvailabilityDownloading,
+		Provider:       "wy",
+		ExternalID:     "42",
+		RawArtistNames: "Camellia",
+	}))
+	require.NoError(t, f.tracks.Upsert(ctx, &domain.Track{
+		ID:             "local-1",
+		Path:           `D:\Music\crystallized.flac`,
+		Title:          "crystallized",
+		Duration:       200,
+		Availability:   domain.AvailabilityReady,
+		RawArtistNames: "かめりあ",
+	}))
+
+	result, err := f.merger.Merge(ctx, download.MergeInput{
+		RemotePath:    remotePath,
+		Provider:      "wy",
+		ExternalID:    "42",
+		TargetPath:    `D:\Music\crystallized.flac`,
+		TargetTrackID: "local-1",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "local-1", result.SurvivorTrackID)
+
+	expanded, err := aliases.ExpandArtists(ctx, []string{"camellia"})
+	require.NoError(t, err)
+	assert.Contains(t, expanded, "かめりあ", "the merge must record Camellia ↔ かめりあ")
+}
+
 // --- M1 ---------------------------------------------------------------------
 
 func TestMerge_RemoteRowWithoutIdentityIsRetiredNotDeleted(t *testing.T) {

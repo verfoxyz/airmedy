@@ -79,6 +79,11 @@ const routes = [
     component: () => import('../views/LastFmView.vue')
   },
   {
+    path: '/lastfm/lists/:kind',
+    name: 'lastfm-list',
+    component: () => import('../views/LastFmListView.vue')
+  },
+  {
     path: '/playlists',
     name: 'playlists',
     component: () => import('../views/PlaylistsView.vue')

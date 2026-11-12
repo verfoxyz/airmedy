@@ -169,7 +169,7 @@ func (s *Service) buildDuplicateCachePlan(ctx context.Context) (duplicateCachePl
 		groupable = append(groupable, entry)
 	}
 
-	for _, group := range groupDuplicateEntries(groupable) {
+	for _, group := range groupDuplicateEntries(groupable, s.canonicalArtistKey(ctx)) {
 		if len(group) < 2 {
 			continue
 		}
@@ -214,23 +214,47 @@ func (s *Service) buildDuplicateCachePlan(ctx context.Context) (duplicateCachePl
 	return plan, nil
 }
 
+// canonicalArtistKey maps an entry's artist key to the smallest key in its
+// one-hop alias set. Two entries cached under "Camellia" and "かめりあ" therefore
+// land in the same duplicate group. Without an alias store it is the identity.
+func (s *Service) canonicalArtistKey(ctx context.Context) func(string) string {
+	if s.aliases == nil {
+		return func(key string) string { return key }
+	}
+	return func(key string) string {
+		if key == "" {
+			return key
+		}
+		expanded, err := s.aliases.ExpandArtists(ctx, []string{key})
+		if err != nil || len(expanded) == 0 {
+			return key
+		}
+		return expanded[0]
+	}
+}
+
 // groupDuplicateEntries clusters entries by normalized title + artist, using the
-// same duration tolerance as cross-source matching. A group only holds entries
-// that can safely be compared; an empty key is never grouped.
-func groupDuplicateEntries(entries []*domain.StreamCacheEntry) [][]*domain.StreamCacheEntry {
+// same duration tolerance as cross-source matching. artistKey folds alias
+// variants onto one group key. A group only holds entries that can safely be
+// compared; an empty key is never grouped.
+func groupDuplicateEntries(
+	entries []*domain.StreamCacheEntry, artistKey func(string) string,
+) [][]*domain.StreamCacheEntry {
 	ordered := make([]*domain.StreamCacheEntry, 0, len(entries))
+	canonical := make(map[*domain.StreamCacheEntry]string, len(entries))
 	for _, entry := range entries {
 		if entry == nil || entry.TitleKey == "" || entry.ArtistKey == "" {
 			continue
 		}
 		ordered = append(ordered, entry)
+		canonical[entry] = artistKey(entry.ArtistKey)
 	}
 	sort.SliceStable(ordered, func(i, j int) bool {
 		if ordered[i].TitleKey != ordered[j].TitleKey {
 			return ordered[i].TitleKey < ordered[j].TitleKey
 		}
-		if ordered[i].ArtistKey != ordered[j].ArtistKey {
-			return ordered[i].ArtistKey < ordered[j].ArtistKey
+		if canonical[ordered[i]] != canonical[ordered[j]] {
+			return canonical[ordered[i]] < canonical[ordered[j]]
 		}
 		return ordered[i].LastUsed > ordered[j].LastUsed
 	})
@@ -240,7 +264,8 @@ func groupDuplicateEntries(entries []*domain.StreamCacheEntry) [][]*domain.Strea
 		placed := false
 		for index := range groups {
 			representative := groups[index][0]
-			if representative.TitleKey != entry.TitleKey || representative.ArtistKey != entry.ArtistKey {
+			if representative.TitleKey != entry.TitleKey ||
+				canonical[representative] != canonical[entry] {
 				continue
 			}
 			if !duplicateDurationsCompatible(representative.DurationMs, entry.DurationMs) {

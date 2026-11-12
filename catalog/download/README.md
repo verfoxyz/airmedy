@@ -267,7 +267,8 @@ identity are matched against ready on-disk tracks by normalised title, a
 **compatible** artist set (`domain.ArtistSetsCompatible`: one set contains the
 other and they share an artist, so a source that reports only the primary artist
 matches a file crediting the featured artist too) and duration within ±5s; a hit
-reports `in_library` plus `local_track_id`.
+reports `in_library` plus `local_track_id`. Both sides are expanded one hop through
+`artist_aliases` first, so `Camellia` matches a file tagged `かめりあ`.
 The action reuses that row (favorite/playlist only) unless the user explicitly
 chooses "download anyway", which registers the remote identity and enqueues.
 `MatchLocalTrack` exposes the same rule as a single-track port, which is what the

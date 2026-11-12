@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"sort"
@@ -80,14 +81,12 @@ func FoldUnicode(s string) string {
 	return res
 }
 
-// ArtistSetKey turns a credit list into a comparable key: every artist string is
-// split on the common delimiters, each part is normalised, duplicates are
-// removed, the set is sorted and joined. Order and separators no longer matter,
-// so "Sad Keyboard Guy;Gardens" and "Gardens, Sad Keyboard Guy" produce the same
-// key.
-func ArtistSetKey(names []string) string {
+// ArtistKeyParts normalizes a credit list into its individual artist keys:
+// split on the common delimiters, normalize each part, drop empties and
+// duplicates, then sort. Order and separators no longer matter.
+func ArtistKeyParts(names []string) []string {
 	if len(names) == 0 {
-		return ""
+		return nil
 	}
 	parts := make([]string, 0, len(names))
 	seen := make(map[string]struct{}, len(names))
@@ -106,10 +105,20 @@ func ArtistSetKey(names []string) string {
 			}
 		}
 	}
+	sort.Strings(parts)
+	return parts
+}
+
+// ArtistSetKey turns a credit list into a comparable key: every artist string is
+// split on the common delimiters, each part is normalised, duplicates are
+// removed, the set is sorted and joined. Order and separators no longer matter,
+// so "Sad Keyboard Guy;Gardens" and "Gardens, Sad Keyboard Guy" produce the same
+// key.
+func ArtistSetKey(names []string) string {
+	parts := ArtistKeyParts(names)
 	if len(parts) == 0 {
 		return ""
 	}
-	sort.Strings(parts)
 	return strings.Join(parts, "\x1f")
 }
 
@@ -121,20 +130,37 @@ func ArtistSetKey(names []string) string {
 // is too strict. The sets are compatible when they share at least one artist and
 // one contains the other; a title and duration still have to match separately.
 func ArtistSetsCompatible(left, right []string) bool {
-	leftKey := ArtistSetKey(left)
-	rightKey := ArtistSetKey(right)
-	if leftKey == "" || rightKey == "" {
+	return ArtistKeysCompatible(ArtistKeyParts(left), ArtistKeyParts(right))
+}
+
+// ArtistKeysCompatible applies the subset rule to already-normalized keys.
+func ArtistKeysCompatible(left, right []string) bool {
+	if len(left) == 0 || len(right) == 0 {
 		return false
 	}
-	if leftKey == rightKey {
-		return true
-	}
-	leftParts := strings.Split(leftKey, "\x1f")
-	rightParts := strings.Split(rightKey, "\x1f")
-	if !artistSetsIntersect(leftParts, rightParts) {
+	if !artistSetsIntersect(left, right) {
 		return false
 	}
-	return artistSetContains(leftParts, rightParts) || artistSetContains(rightParts, leftParts)
+	return artistSetContains(left, right) || artistSetContains(right, left)
+}
+
+// ArtistNamesCompatibleWithAliases expands both credit lists one hop through the
+// alias store, then applies the subset rule. A nil expander or a failed lookup
+// falls back to the unexpanded keys: alias resolution must never break matching.
+func ArtistNamesCompatibleWithAliases(
+	ctx context.Context, expander ArtistAliasRepository, left, right []string,
+) bool {
+	leftKeys := ArtistKeyParts(left)
+	rightKeys := ArtistKeyParts(right)
+	if expander != nil {
+		if expanded, err := expander.ExpandArtists(ctx, leftKeys); err == nil && len(expanded) > 0 {
+			leftKeys = expanded
+		}
+		if expanded, err := expander.ExpandArtists(ctx, rightKeys); err == nil && len(expanded) > 0 {
+			rightKeys = expanded
+		}
+	}
+	return ArtistKeysCompatible(leftKeys, rightKeys)
 }
 
 func artistSetsIntersect(left, right []string) bool {

@@ -22,6 +22,14 @@ var Module = fx.Module("stream",
 		func(resolver *PluginResolver) domain.StreamResolver { return resolver },
 		NewCache,
 	),
+	// Artist aliases let cross-source matching reuse a cached stream under the
+	// other spelling of the same artist. Optional for graphs without the store.
+	fx.Invoke(fx.Annotate(
+		func(cache *Cache, aliases domain.ArtistAliasRepository) {
+			cache.SetArtistAliases(aliases)
+		},
+		fx.ParamTags(``, `optional:"true"`),
+	)),
 	fx.Invoke(func(lifecycle fx.Lifecycle, cache *Cache, logger *slog.Logger) {
 		lifecycle.Append(fx.Hook{
 			OnStart: func(ctx context.Context) error {

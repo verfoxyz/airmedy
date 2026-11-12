@@ -32,6 +32,7 @@ vi.mock('../../../bindings/airmedy/internal/infra/wails/libraryservice', () => (
   GetWatchedFolders: watchedFolders,
   DelimitersPendingResync: vi.fn().mockResolvedValue(false),
   RepairTrackDurations: (...args: unknown[]) => repairDurations(...args),
+  ListArtistAliases: vi.fn().mockResolvedValue([]),
 }))
 
 function mountSettings() {

@@ -42,6 +42,7 @@ type Service struct {
 	library        RemoteTracks
 	localTracks    LocalTracks
 	localMatcher   LocalTrackMatcher
+	aliases        domain.ArtistAliasRepository
 	savedTracks    SavedTracks
 	favorites      FavoritesWriter
 	playlists      PlaylistMembership
@@ -124,6 +125,12 @@ func NewService(deps Deps) *Service {
 		sourceTimeout:  timeout,
 		coverCache:     make(map[domain.CatalogIdentity]string),
 	}
+}
+
+// SetArtistAliases installs the alias store used when comparing credited
+// artists. Optional; without it only the literal set rules apply.
+func (s *Service) SetArtistAliases(aliases domain.ArtistAliasRepository) {
+	s.aliases = aliases
 }
 
 // Search answers one page of merged results.

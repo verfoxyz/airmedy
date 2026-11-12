@@ -31,7 +31,8 @@
     "delete": "Delete",
     "yes": "Yes",
     "no": "No",
-    "open_devtools": "Open Developer Tools"
+    "open_devtools": "Open Developer Tools",
+    "back": "Back"
   },
   "mobile_sync": {
     "back": "Mobile devices",
@@ -178,6 +179,23 @@
       "title": "Library Management",
       "delimiters_title": "Tag Delimiters",
       "delimiters_description": "Customize how multi-value artist, album artist, genre and composer tags are split. Resync the library to apply changes."
+    },
+    "artist_aliases": {
+      "title": "Artist Aliases",
+      "description": "Reuse a song when an artist is credited under another spelling. Learned pairs come from merges; manual pairs are yours.",
+      "alias_label": "Alias (e.g. Camellia)",
+      "canonical_label": "Official name (e.g. かめりあ)",
+      "add": "Add",
+      "loading": "Loading…",
+      "empty": "No aliases yet.",
+      "enable": "Use this alias in matching",
+      "delete": "Delete",
+      "evidence_merge": "Learned from a merge",
+      "evidence_manual": "Added manually",
+      "invalid": "Both names are required.",
+      "self": "A name cannot be an alias of itself.",
+      "exists": "This pair already exists.",
+      "save_failed": "Could not save the alias."
     },
     "about": {
       "description": "A modern, cross-platform music player focused on performance and elegance.",
@@ -919,6 +937,9 @@
     "no_match": "No match",
     "matched_from": "from {source}",
     "similar_tracks": "For you",
-    "similar_empty": "No recommendations yet."
+    "similar_empty": "No recommendations yet.",
+    "refresh_list": "Refresh this list",
+    "refresh_all": "Refresh all",
+    "list_empty": "No tracks yet."
   }
 }

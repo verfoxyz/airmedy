@@ -31,7 +31,8 @@
     "delete": "Löschen",
     "yes": "Ja",
     "no": "Nein",
-    "open_devtools": "Entwicklerwerkzeuge öffnen"
+    "open_devtools": "Entwicklerwerkzeuge öffnen",
+    "back": "Zurück"
   },
   "mobile_sync": {
     "back": "Mobile Geräte",
@@ -178,6 +179,23 @@
       "title": "Bibliotheksverwaltung",
       "delimiters_title": "Tag-Trennzeichen",
       "delimiters_description": "Lege fest, wie mehrwertige Tags für Künstler, Album-Künstler, Genre und Komponist getrennt werden. Synchronisiere die Bibliothek neu, um Änderungen anzuwenden."
+    },
+    "artist_aliases": {
+      "title": "Künstlernamen-Aliase",
+      "description": "Ein Lied wiedererkennen, wenn ein Künstler anders geschrieben wird. Gelernte Paare stammen aus Zusammenführungen, manuelle von dir.",
+      "alias_label": "Alias (z. B. Camellia)",
+      "canonical_label": "Offizieller Name (z. B. かめりあ)",
+      "add": "Hinzufügen",
+      "loading": "Wird geladen…",
+      "empty": "Noch keine Aliase.",
+      "enable": "Diesen Alias beim Abgleich verwenden",
+      "delete": "Löschen",
+      "evidence_merge": "Aus einer Zusammenführung gelernt",
+      "evidence_manual": "Manuell hinzugefügt",
+      "invalid": "Beide Namen sind erforderlich.",
+      "self": "Ein Name kann kein Alias von sich selbst sein.",
+      "exists": "Dieses Paar existiert bereits.",
+      "save_failed": "Alias konnte nicht gespeichert werden."
     },
     "about": {
       "description": "Ein moderner, plattformübergreifender Musikplayer, der auf Leistung und Eleganz setzt.",
@@ -919,6 +937,9 @@
     "no_match": "Kein Treffer",
     "matched_from": "von {source}",
     "similar_tracks": "Für dich",
-    "similar_empty": "Noch keine Empfehlungen."
+    "similar_empty": "Noch keine Empfehlungen.",
+    "refresh_list": "Diese Liste aktualisieren",
+    "refresh_all": "Alle aktualisieren",
+    "list_empty": "Noch keine Titel."
   }
 }

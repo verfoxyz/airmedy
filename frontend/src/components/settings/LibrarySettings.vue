@@ -9,6 +9,7 @@ import type { WatchedFolder } from '../../../bindings/airmedy/internal/domain/mo
 import { Events } from '@wailsio/runtime'
 import ConfirmDialog from '../ConfirmDialog.vue'
 import DelimiterInput from './DelimiterInput.vue'
+import ArtistAliasSettings from './ArtistAliasSettings.vue'
 import SettingSection from './SettingSection.vue'
 import SettingRow from './SettingRow.vue'
 import {
@@ -369,6 +370,8 @@ onUnmounted(() => {
           :disabled="isSyncing" @update:model-value="(v) => onDelimitersChange('composer', v)" />
       </div>
     </SettingSection>
+
+    <ArtistAliasSettings />
 
     <SettingSection :icon="Gauge" :label="t('settings.library_analysis.title')">
       <SettingRow :title="t('settings.library_analysis.enable')"

@@ -31,7 +31,8 @@
     "delete": "Excluir",
     "yes": "Sim",
     "no": "Não",
-    "open_devtools": "Abrir ferramentas de desenvolvimento"
+    "open_devtools": "Abrir ferramentas de desenvolvimento",
+    "back": "Voltar"
   },
   "mobile_sync": {
     "back": "Dispositivos móveis",
@@ -178,6 +179,23 @@
       "title": "Gerenciamento de Biblioteca",
       "delimiters_title": "Delimitadores de tags",
       "delimiters_description": "Personalize como as tags de vários valores para artista, artista do álbum, gênero e compositor são divididas. Ressincronize a biblioteca para aplicar as alterações."
+    },
+    "artist_aliases": {
+      "title": "Aliases de artista",
+      "description": "Reutilize uma faixa quando o artista aparecer com outra grafia. Pares aprendidos vêm de fusões; os manuais são seus.",
+      "alias_label": "Alias (ex. Camellia)",
+      "canonical_label": "Nome oficial (ex. かめりあ)",
+      "add": "Adicionar",
+      "loading": "Carregando…",
+      "empty": "Ainda não há aliases.",
+      "enable": "Usar este alias na correspondência",
+      "delete": "Excluir",
+      "evidence_merge": "Aprendido de uma fusão",
+      "evidence_manual": "Adicionado manualmente",
+      "invalid": "Os dois nomes são obrigatórios.",
+      "self": "Um nome não pode ser alias de si mesmo.",
+      "exists": "Este par já existe.",
+      "save_failed": "Não foi possível salvar o alias."
     },
     "about": {
       "description": "Um player de música moderno e multiplataforma focado em desempenho e elegância.",
@@ -919,6 +937,9 @@
     "no_match": "Sem correspondência",
     "matched_from": "de {source}",
     "similar_tracks": "Para você",
-    "similar_empty": "Ainda não há recomendações."
+    "similar_empty": "Ainda não há recomendações.",
+    "refresh_list": "Atualizar esta lista",
+    "refresh_all": "Atualizar tudo",
+    "list_empty": "Ainda não há faixas."
   }
 }

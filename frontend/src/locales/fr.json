@@ -31,7 +31,8 @@
     "delete": "Supprimer",
     "yes": "Oui",
     "no": "Non",
-    "open_devtools": "Ouvrir les outils de développement"
+    "open_devtools": "Ouvrir les outils de développement",
+    "back": "Retour"
   },
   "mobile_sync": {
     "back": "Appareils mobiles",
@@ -178,6 +179,23 @@
       "title": "Gestion de la bibliothèque",
       "delimiters_title": "Séparateurs de balises",
       "delimiters_description": "Personnalisez la façon dont les balises à valeurs multiples pour l'artiste, l'artiste de l'album, le genre et le compositeur sont séparées. Resynchronisez la bibliothèque pour appliquer les modifications."
+    },
+    "artist_aliases": {
+      "title": "Alias d'artiste",
+      "description": "Réutilisez un morceau lorsqu'un artiste est crédité autrement. Les paires apprises viennent des fusions, les manuelles de vous.",
+      "alias_label": "Alias (ex. Camellia)",
+      "canonical_label": "Nom officiel (ex. かめりあ)",
+      "add": "Ajouter",
+      "loading": "Chargement…",
+      "empty": "Aucun alias pour l'instant.",
+      "enable": "Utiliser cet alias lors de la correspondance",
+      "delete": "Supprimer",
+      "evidence_merge": "Appris lors d'une fusion",
+      "evidence_manual": "Ajouté manuellement",
+      "invalid": "Les deux noms sont requis.",
+      "self": "Un nom ne peut pas être l'alias de lui-même.",
+      "exists": "Cette paire existe déjà.",
+      "save_failed": "Impossible d'enregistrer l'alias."
     },
     "about": {
       "description": "Un lecteur de musique moderne et multiplateforme axé sur la performance et l'élégance.",
@@ -919,6 +937,9 @@
     "no_match": "Aucune correspondance",
     "matched_from": "depuis {source}",
     "similar_tracks": "Pour vous",
-    "similar_empty": "Pas encore de recommandations."
+    "similar_empty": "Pas encore de recommandations.",
+    "refresh_list": "Actualiser cette liste",
+    "refresh_all": "Tout actualiser",
+    "list_empty": "Aucun titre pour l'instant."
   }
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"airmedy/internal/app/library"
 	"airmedy/internal/app/player"
@@ -17,6 +18,7 @@ import (
 type LibraryService struct {
 	libService    *library.LibraryService
 	playerService *player.PlayerService
+	aliasService  *library.ArtistAliasService
 	folderRepo    domain.WatchedFolderRepository
 	trackRepo     domain.TrackRepository
 	albumRepo     domain.AlbumRepository
@@ -29,6 +31,7 @@ type LibraryService struct {
 func NewLibraryService(
 	libService *library.LibraryService,
 	playerService *player.PlayerService,
+	aliasService *library.ArtistAliasService,
 	folderRepo domain.WatchedFolderRepository,
 	trackRepo domain.TrackRepository,
 	albumRepo domain.AlbumRepository,
@@ -40,6 +43,7 @@ func NewLibraryService(
 	return &LibraryService{
 		libService:    libService,
 		playerService: playerService,
+		aliasService:  aliasService,
 		folderRepo:    folderRepo,
 		trackRepo:     trackRepo,
 		albumRepo:     albumRepo,
@@ -422,4 +426,50 @@ func (s *LibraryService) SelectAndSetArtistArtwork(artistID string) (string, err
 // RemoveArtistArtwork clears the artist's custom artwork.
 func (s *LibraryService) RemoveArtistArtwork(artistID string) error {
 	return s.libService.RemoveArtistArtwork(context.Background(), artistID)
+}
+
+// ArtistAliasDTO is one row of the artist-alias editor.
+type ArtistAliasDTO struct {
+	// Alias and Canonical are the normalized keys shown to the user.
+	Alias     string `json:"alias"`
+	Canonical string `json:"canonical"`
+	// Evidence is "merge" (learned) or "manual".
+	Evidence  string `json:"evidence"`
+	Enabled   bool   `json:"enabled"`
+	CreatedAt string `json:"created_at"`
+}
+
+// ListArtistAliases returns every alias pair, enabled or not.
+func (s *LibraryService) ListArtistAliases() ([]ArtistAliasDTO, error) {
+	aliases, err := s.aliasService.List(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	result := make([]ArtistAliasDTO, 0, len(aliases))
+	for _, alias := range aliases {
+		result = append(result, ArtistAliasDTO{
+			Alias:     alias.AliasKey,
+			Canonical: alias.CanonicalKey,
+			Evidence:  alias.Evidence,
+			Enabled:   alias.Enabled,
+			CreatedAt: alias.CreatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	return result, nil
+}
+
+// AddArtistAlias stores a manual pair. Invalid, self-referencing and duplicate
+// pairs are rejected with a domain error.
+func (s *LibraryService) AddArtistAlias(alias, canonical string) error {
+	return s.aliasService.Add(context.Background(), alias, canonical)
+}
+
+// RemoveArtistAlias deletes both directions of the pair.
+func (s *LibraryService) RemoveArtistAlias(alias, canonical string) error {
+	return s.aliasService.Remove(context.Background(), alias, canonical)
+}
+
+// SetArtistAliasEnabled keeps the pair but takes it out of matching.
+func (s *LibraryService) SetArtistAliasEnabled(alias, canonical string, enabled bool) error {
+	return s.aliasService.SetEnabled(context.Background(), alias, canonical, enabled)
 }

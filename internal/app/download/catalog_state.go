@@ -177,7 +177,8 @@ func (s *Service) CatalogLocalMatches(
 			if !sameCatalogTitle(track.Title, c.query.Title) {
 				continue
 			}
-			if wantedArtists != "" && !domain.ArtistSetsCompatible(artistNames(track), c.query.Artists) {
+			if wantedArtists != "" &&
+				!domain.ArtistNamesCompatibleWithAliases(ctx, s.aliases, artistNames(track), c.query.Artists) {
 				continue
 			}
 			if bestID == "" || distance < bestDistance {
@@ -227,7 +228,7 @@ func (s *Service) MatchLocalTrack(
 		if domain.NormalizationKey(track.Title) != titleKey {
 			continue
 		}
-		if !domain.ArtistSetsCompatible(artistNames(track), artists) {
+		if !domain.ArtistNamesCompatibleWithAliases(ctx, s.aliases, artistNames(track), artists) {
 			continue
 		}
 		if duration > 0 {

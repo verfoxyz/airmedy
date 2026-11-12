@@ -99,6 +99,50 @@ func TestMatchTrackAcceptsAnyCreditedArtist(t *testing.T) {
 	}
 }
 
+// fakeAliasRepo expands one hop for the cloud-matching tests.
+type fakeAliasRepo struct{ pairs map[string][]string }
+
+func (f fakeAliasRepo) ListArtistAliases(context.Context) ([]domain.ArtistAlias, error) {
+	return nil, nil
+}
+
+func (f fakeAliasRepo) AddArtistAlias(context.Context, string, string, string) error { return nil }
+func (f fakeAliasRepo) RemoveArtistAlias(context.Context, string, string) error      { return nil }
+func (f fakeAliasRepo) SetArtistAliasEnabled(context.Context, string, string, bool) error {
+	return nil
+}
+
+func (f fakeAliasRepo) ExpandArtists(_ context.Context, keys []string) ([]string, error) {
+	out := append([]string{}, keys...)
+	for _, key := range keys {
+		out = append(out, f.pairs[key]...)
+	}
+	return out, nil
+}
+
+func TestMatchTrackExpandsArtistAliases(t *testing.T) {
+	sources := fakeSources{"wy": wySource()}
+	searcher := &fakeSearcher{results: map[string]domain.PluginSearchResult{
+		"wy": {
+			Rows: []domain.PluginSearchResultRow{
+				{ExternalID: "alias-hit", Title: "crystallized", Artists: []string{"かめりあ"}},
+			},
+		},
+	}}
+	svc := newTestService(sources, searcher, fakeResolver{"wy": true}, Config{})
+	svc.SetArtistAliases(fakeAliasRepo{pairs: map[string][]string{
+		"camellia": {"かめりあ"},
+	}})
+
+	rows, err := svc.MatchTrack(context.Background(), "crystallized", "Camellia", 0, []string{"wy"})
+	if err != nil {
+		t.Fatalf("MatchTrack: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ExternalID != "alias-hit" {
+		t.Fatalf("matches = %+v, want the alias-expanded artist hit", rows)
+	}
+}
+
 func TestMatchTrackIgnoresArtistOrderAndSeparators(t *testing.T) {
 	sources := fakeSources{"wy": wySource()}
 	searcher := &fakeSearcher{results: map[string]domain.PluginSearchResult{

@@ -3,6 +3,7 @@ package wails
 import (
 	"airmedy/internal/app/lastfm"
 	"context"
+	"time"
 )
 
 type LastFmService struct {
@@ -186,36 +187,83 @@ type TopTrackItemDTO struct {
 	BlockedReason string   `json:"blocked_reason"`
 	Sources       []string `json:"sources"`
 	Downloadable  bool     `json:"downloadable"`
+	// Kind is the list this row belongs to: top_tracks or similar.
+	Kind string `json:"kind"`
 	// MatchKey is artist + "\x00" + title; the frontend replaces rows by it.
 	MatchKey string `json:"match_key"`
 }
 
-// TopTrackPageDTO is the immediate top-tracks response.
-type TopTrackPageDTO struct {
-	Status string            `json:"status"`
-	Items  []TopTrackItemDTO `json:"items"`
-	// SimilarItems is the "for you" list derived from the top tracks. It uses
-	// the same row shape and the same match-update stream.
-	SimilarItems []TopTrackItemDTO `json:"similar_items"`
+// RecommendationListSummaryDTO is one card on the Last.fm page.
+type RecommendationListSummaryDTO struct {
+	Kind          string   `json:"kind"`
+	Title         string   `json:"title"`
+	TrackCount    int      `json:"track_count"`
+	MatchingCount int      `json:"matching_count"`
+	CoverURLs     []string `json:"cover_urls"`
+	UpdatedAt     string   `json:"updated_at"`
 }
 
-// GetTopTrackRecommendations returns the user's all-time most played tracks and
-// starts the five-source background matcher. Every row is returned before any
-// source search; match updates arrive through lastfm:recommendations-matched.
-func (s *LastFmService) GetTopTrackRecommendations() (TopTrackPageDTO, error) {
-	page, err := s.recommender.GetTopTrackRecommendations(context.Background())
+// RecommendationListCollectionDTO is the cards page payload.
+type RecommendationListCollectionDTO struct {
+	// Status is "ok" or "not_connected"; the frontend words it.
+	Status string                         `json:"status"`
+	Lists  []RecommendationListSummaryDTO `json:"lists"`
+}
+
+// RecommendationListDTO is one list detail page.
+type RecommendationListDTO struct {
+	Kind      string            `json:"kind"`
+	Title     string            `json:"title"`
+	Items     []TopTrackItemDTO `json:"items"`
+	UpdatedAt string            `json:"updated_at"`
+}
+
+// ListRecommendationLists returns the persisted cards. Only a list that was
+// never built costs a Last.fm request; reopening the page reads the database.
+func (s *LastFmService) ListRecommendationLists() (RecommendationListCollectionDTO, error) {
+	collection, err := s.recommender.ListRecommendationLists(context.Background())
 	if err != nil {
-		return TopTrackPageDTO{}, err
+		return RecommendationListCollectionDTO{}, err
 	}
-	return toTopTrackPageDTO(page), nil
+	result := RecommendationListCollectionDTO{
+		Status: collection.Status,
+		Lists:  make([]RecommendationListSummaryDTO, 0, len(collection.Lists)),
+	}
+	for _, summary := range collection.Lists {
+		result.Lists = append(result.Lists, RecommendationListSummaryDTO{
+			Kind:          summary.Kind,
+			Title:         summary.Title,
+			TrackCount:    summary.TrackCount,
+			MatchingCount: summary.MatchingCount,
+			CoverURLs:     append([]string{}, summary.CoverURLs...),
+			UpdatedAt:     summary.UpdatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	return result, nil
 }
 
-func toTopTrackPageDTO(page lastfm.TopTrackPage) TopTrackPageDTO {
-	return TopTrackPageDTO{
-		Status:       page.Status,
-		Items:        toTopTrackItemDTOs(page.Items),
-		SimilarItems: toTopTrackItemDTOs(page.SimilarItems),
+// GetRecommendationList returns one list's persisted rows.
+func (s *LastFmService) GetRecommendationList(kind string) (RecommendationListDTO, error) {
+	list, err := s.recommender.GetRecommendationList(context.Background(), kind)
+	if err != nil {
+		return RecommendationListDTO{}, err
 	}
+	return RecommendationListDTO{
+		Kind:      list.Kind,
+		Title:     list.Title,
+		Items:     toTopTrackItemDTOs(list.Items),
+		UpdatedAt: list.UpdatedAt.UTC().Format(time.RFC3339),
+	}, nil
+}
+
+// RefreshRecommendationList rebuilds exactly one list.
+func (s *LastFmService) RefreshRecommendationList(kind string) error {
+	return s.recommender.RefreshRecommendationList(context.Background(), kind)
+}
+
+// RefreshAllRecommendationLists rebuilds both lists.
+func (s *LastFmService) RefreshAllRecommendationLists() error {
+	return s.recommender.RefreshAllRecommendationLists(context.Background())
 }
 
 func toTopTrackItemDTOs(items []lastfm.TopTrackItem) []TopTrackItemDTO {
@@ -239,6 +287,7 @@ func toTopTrackItemDTOs(items []lastfm.TopTrackItem) []TopTrackItemDTO {
 			BlockedReason: item.BlockedReason,
 			Sources:       append([]string{}, item.Sources...),
 			Downloadable:  item.Downloadable,
+			Kind:          item.Kind,
 			MatchKey:      item.MatchKey,
 		})
 	}

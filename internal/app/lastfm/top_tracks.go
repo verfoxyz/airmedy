@@ -55,6 +55,9 @@ type TopTrackItem struct {
 	BlockedReason string   `json:"blocked_reason"`
 	Sources       []string `json:"sources"`
 	Downloadable  bool     `json:"downloadable"`
+	// Kind is the list this row belongs to: top_tracks or similar. It is
+	// persisted with the row, so an event can update the right list.
+	Kind string `json:"kind"`
 	// MatchKey is artist + "\x00" + title, the stable key the frontend uses to
 	// update a row in place.
 	MatchKey string `json:"match_key"`
@@ -71,6 +74,9 @@ type TopTrackPage struct {
 
 // TopTrackUpdate is the payload of lastfm:recommendations-matched for this MVP.
 type TopTrackUpdate struct {
+	// Kind is empty for the combined run that resolves both lists, and set for
+	// a single-list refresh, so a detail page can ignore another kind's updates.
+	Kind  string         `json:"kind"`
 	Items []TopTrackItem `json:"items"`
 	Done  bool           `json:"done"`
 }
@@ -96,6 +102,18 @@ type cachedSimilarRecommendation struct {
 	expiresAt time.Time
 }
 
+// recommendationCollection is one Last.fm fetch turned into page rows. Source
+// matching starts only after this returns, so a caller can persist the rows
+// before their first match update arrives.
+type recommendationCollection struct {
+	status       string
+	topItems     []TopTrackItem
+	similarItems []TopTrackItem
+	sources      []string
+	wantTop      bool
+	wantSimilar  bool
+}
+
 // GetTopTrackRecommendations returns the user's all-time most played tracks.
 //
 // It makes exactly one Last.fm request and returns every row before any source
@@ -103,16 +121,66 @@ type cachedSimilarRecommendation struct {
 // the previous matches immediately; the remaining rows are matched by five
 // source workers.
 func (r *Recommender) GetTopTrackRecommendations(ctx context.Context) (TopTrackPage, error) {
+	collected, err := r.collectRecommendations(ctx, true, true, false)
+	if err != nil {
+		return TopTrackPage{Status: collected.status, Items: []TopTrackItem{}}, err
+	}
+	if collected.status == StatusNotConnected {
+		return TopTrackPage{Status: StatusNotConnected, Items: []TopTrackItem{}}, nil
+	}
+	topItems, similarItems := r.startRecommendationMatching(ctx, collected, true)
+	return TopTrackPage{
+		Status:       collected.status,
+		Items:        topItems,
+		SimilarItems: similarItems,
+	}, nil
+}
+
+// collectRecommendations fetches the top tracks once and builds the requested
+// lists. force bypasses the similar-answer cache, which an explicit refresh
+// must do.
+func (r *Recommender) collectRecommendations(
+	ctx context.Context, wantTop, wantSimilar, force bool,
+) (recommendationCollection, error) {
+	collected := recommendationCollection{
+		status:       StatusOK,
+		topItems:     []TopTrackItem{},
+		similarItems: []TopTrackItem{},
+		wantTop:      wantTop,
+		wantSimilar:  wantSimilar,
+	}
 	connected, username, _ := r.client.GetStatus()
 	if !connected || strings.TrimSpace(username) == "" {
-		return TopTrackPage{Status: StatusNotConnected, Items: []TopTrackItem{}}, nil
+		collected.status = StatusNotConnected
+		return collected, nil
 	}
 
 	tracks, err := r.client.GetTopTracks(ctx, topTrackPeriod, topTrackLimit)
 	if err != nil {
-		return TopTrackPage{Status: StatusOK, Items: []TopTrackItem{}}, err
+		return collected, err
 	}
 
+	if wantTop {
+		collected.topItems = r.buildTopTrackItems(tracks)
+	}
+	if wantSimilar {
+		// "For you" reuses the same top tracks as seeds: track.getSimilar first,
+		// the similar-artist fallback only for the seeds that returned nothing.
+		// Local files are deliberately kept — a recommendation the user already
+		// owns is playable and shows "in library".
+		seeds := usableSeeds(tracks, similarSeedLimit)
+		similarTracks, similarPartial := r.collectSimilarRecommendations(ctx, seeds, force)
+		collected.similarItems = buildSimilarItems(seeds, similarTracks)
+		if similarPartial {
+			collected.status = StatusPartial
+		}
+	}
+	collected.sources = r.topTrackSources(ctx)
+	return collected, nil
+}
+
+// buildTopTrackItems keeps every usable unique Last.fm row.
+func (r *Recommender) buildTopTrackItems(tracks []LastFmTrack) []TopTrackItem {
 	items := make([]TopTrackItem, 0, len(tracks))
 	seen := make(map[string]struct{}, len(tracks))
 	for _, track := range tracks {
@@ -131,6 +199,7 @@ func (r *Recommender) GetTopTrackRecommendations(ctx context.Context) (TopTrackP
 			Duration: track.Duration,
 			Artists:  []string{track.Artist},
 			CoverURL: track.ImageURL,
+			Kind:     domain.LastFmRecommendationTopTracks,
 			Matching: true,
 			MatchKey: key,
 		})
@@ -138,48 +207,85 @@ func (r *Recommender) GetTopTrackRecommendations(ctx context.Context) (TopTrackP
 			break
 		}
 	}
+	return items
+}
 
-	sources := r.topTrackSources(ctx)
+// startRecommendationMatching applies cached matches and starts the workers.
+// It returns the rows to render, with cached and no-source states already
+// applied.
+//
+// combined uses one run for both lists (the initial page load). A single-list
+// refresh passes false so its Done frame names the only list it touched.
+func (r *Recommender) startRecommendationMatching(
+	ctx context.Context, collected recommendationCollection, combined bool,
+) ([]TopTrackItem, []TopTrackItem) {
+	_, username, _ := r.client.GetStatus()
+	r.rememberTopRows(collected.topItems, collected.similarItems)
 
-	// "For you" reuses the same top tracks as seeds: track.getSimilar first, the
-	// similar-artist fallback only for the seeds that returned nothing. Local
-	// files are deliberately kept — a recommendation the user already owns is
-	// playable and shows "in library".
-	seeds := usableSeeds(tracks, similarSeedLimit)
-	similarTracks, similarPartial := r.collectSimilarRecommendations(ctx, seeds)
-	similarItems := buildSimilarItems(seeds, similarTracks)
+	if combined && collected.wantTop && collected.wantSimilar {
+		topStates := r.seedTopTrackStates(collected.topItems, collected.sources)
+		similarStates := r.seedTopTrackStates(collected.similarItems, collected.sources)
+		// Cached hits are resolved before the run starts and would otherwise
+		// stay "matching" in the database forever.
+		r.persistMatchingStates(topStates)
+		r.persistMatchingStates(similarStates)
+		// Similar rows go first: the upper section should resolve before the long
+		// top-tracks list.
+		states := append(similarStates, topStates...)
+		if anyTopStatePending(states) {
+			r.markMatchingActive(domain.LastFmRecommendationTopTracks, true)
+			r.markMatchingActive(domain.LastFmRecommendationSimilar, true)
+			r.startTopTrackMatching(username, "", states, collected.sources)
+		}
+		return topTrackItemsFromStates(topStates), topTrackItemsFromStates(similarStates)
+	}
 
-	r.rememberTopRows(append(append([]TopTrackItem{}, similarItems...), items...))
-	topStates := r.seedTopTrackStates(items, sources)
-	similarStates := r.seedTopTrackStates(similarItems, sources)
-	// Similar rows go first: the upper section should resolve before the long
-	// top-tracks list.
-	states := append(similarStates, topStates...)
-
-	pageItems := make([]TopTrackItem, len(topStates))
-	similarPageItems := make([]TopTrackItem, len(similarStates))
-	pending := false
-	for index, state := range topStates {
-		pageItems[index] = state.item
-		if !state.done {
-			pending = true
+	topItems := []TopTrackItem{}
+	similarItems := []TopTrackItem{}
+	kinds := make([]string, 0, 2)
+	if collected.wantTop {
+		kinds = append(kinds, domain.LastFmRecommendationTopTracks)
+	}
+	if collected.wantSimilar {
+		kinds = append(kinds, domain.LastFmRecommendationSimilar)
+	}
+	for _, kind := range kinds {
+		items := collected.topItems
+		if kind == domain.LastFmRecommendationSimilar {
+			items = collected.similarItems
+		}
+		states := r.seedTopTrackStates(items, collected.sources)
+		r.persistMatchingStates(states)
+		if anyTopStatePending(states) {
+			r.markMatchingActive(kind, true)
+			r.startTopTrackMatching(username, kind, states, collected.sources)
+		}
+		if kind == domain.LastFmRecommendationTopTracks {
+			topItems = topTrackItemsFromStates(states)
+		} else {
+			similarItems = topTrackItemsFromStates(states)
 		}
 	}
-	for index, state := range similarStates {
-		similarPageItems[index] = state.item
+	return topItems, similarItems
+}
+
+// topTrackItemsFromStates returns the rows with the seeded state applied.
+func topTrackItemsFromStates(states []*topTrackState) []TopTrackItem {
+	items := make([]TopTrackItem, len(states))
+	for index, state := range states {
+		items[index] = state.item
+	}
+	return items
+}
+
+// anyTopStatePending reports whether any row still needs a source search.
+func anyTopStatePending(states []*topTrackState) bool {
+	for _, state := range states {
 		if !state.done {
-			pending = true
+			return true
 		}
 	}
-
-	status := StatusOK
-	if similarPartial {
-		status = StatusPartial
-	}
-	if pending {
-		r.startTopTrackMatching(username, states, sources)
-	}
-	return TopTrackPage{Status: status, Items: pageItems, SimilarItems: similarPageItems}, nil
+	return false
 }
 
 // usableSeeds takes the first usable top tracks, which are the "for you" seeds.
@@ -229,6 +335,7 @@ func buildSimilarItems(seeds []LastFmTrack, tracks []LastFmTrack) []TopTrackItem
 			Duration: track.Duration,
 			Artists:  []string{track.Artist},
 			CoverURL: track.ImageURL,
+			Kind:     domain.LastFmRecommendationSimilar,
 			Matching: true,
 			MatchKey: key,
 		})
@@ -243,7 +350,7 @@ func buildSimilarItems(seeds []LastFmTrack, tracks []LastFmTrack) []TopTrackItem
 // set. The answer is cached per seed set for recommendationCacheTTL, so a
 // refresh does not spend the request budget again.
 func (r *Recommender) collectSimilarRecommendations(
-	ctx context.Context, seeds []LastFmTrack,
+	ctx context.Context, seeds []LastFmTrack, force bool,
 ) ([]LastFmTrack, bool) {
 	if len(seeds) == 0 {
 		return nil, false
@@ -256,7 +363,7 @@ func (r *Recommender) collectSimilarRecommendations(
 	}
 	cached, ok := r.similarRecs[cacheKey]
 	r.mu.Unlock()
-	if ok && r.now().Before(cached.expiresAt) {
+	if ok && !force && r.now().Before(cached.expiresAt) {
 		return append([]LastFmTrack{}, cached.tracks...), cached.partial
 	}
 
@@ -346,18 +453,26 @@ func rankSimilarRecommendations(candidates map[string]*candidate) []LastFmTrack 
 
 // rememberTopRows keeps the Last.fm-side rows of the current page. Failover
 // resets a matched row from this copy, and only rows the user can currently see
-// are worth keeping.
-func (r *Recommender) rememberTopRows(items []TopTrackItem) {
-	rows := make(map[string]TopTrackItem, len(items))
-	for _, item := range items {
-		if item.MatchKey == "" {
-			continue
+// are worth keeping. The key includes the list kind because the same track may
+// appear in both lists.
+func (r *Recommender) rememberTopRows(lists ...[]TopTrackItem) {
+	rows := make(map[string]TopTrackItem)
+	for _, items := range lists {
+		for _, item := range items {
+			if item.MatchKey == "" || item.Kind == "" {
+				continue
+			}
+			rows[recommendationRowKey(item.Kind, item.MatchKey)] = item
 		}
-		rows[item.MatchKey] = item
 	}
 	r.mu.Lock()
 	r.topRows = rows
 	r.mu.Unlock()
+}
+
+// recommendationRowKey identifies one row across both lists.
+func recommendationRowKey(kind, matchKey string) string {
+	return kind + "\x00" + matchKey
 }
 
 // seedTopTrackStates applies the per-source match cache and returns the rows a
@@ -366,7 +481,7 @@ func (r *Recommender) seedTopTrackStates(items []TopTrackItem, sources []string)
 	states := make([]*topTrackState, len(items))
 	for index, item := range items {
 		state := &topTrackState{item: item, tried: make(map[string]bool)}
-		failed := r.failedTopSources(item.MatchKey)
+		failed := r.failedTopSources(item.Kind, item.MatchKey)
 		for _, source := range sources {
 			if failed[source] {
 				// This provider already failed to play this track: a retry would
@@ -374,7 +489,7 @@ func (r *Recommender) seedTopTrackStates(items []TopTrackItem, sources []string)
 				state.tried[source] = true
 				continue
 			}
-			row, ok := r.cachedSourceMatch(item.MatchKey, source)
+			row, ok := r.cachedSourceMatch(item.Kind, item.MatchKey, source)
 			if !ok {
 				continue
 			}
@@ -397,11 +512,24 @@ func (r *Recommender) seedTopTrackStates(items []TopTrackItem, sources []string)
 	return states
 }
 
+// persistMatchingStates writes the rows a cached match already resolved. They
+// are never emitted, so without this the database would keep them "matching".
+func (r *Recommender) persistMatchingStates(states []*topTrackState) {
+	items := make([]TopTrackItem, 0, len(states))
+	for _, state := range states {
+		if state.done {
+			items = append(items, state.item)
+		}
+	}
+	r.persistRecommendationItems(items)
+}
+
 // queuedTopTrackRun is one worker queue. A page load runs with finalDone, so the
 // last event tells the frontend that every unresolved row has no source. A
 // failover rerun sends Done=false: the rest of the page is already settled and
-// must not be overwritten.
+// must not be overwritten. kind is empty for the combined run.
 type queuedTopTrackRun struct {
+	kind      string
 	states    []*topTrackState
 	sources   []string
 	finalDone bool
@@ -410,9 +538,10 @@ type queuedTopTrackRun struct {
 // startTopTrackMatching runs one job per account. A second page request while
 // the job runs joins it through the same event stream.
 func (r *Recommender) startTopTrackMatching(
-	username string, states []*topTrackState, sources []string,
+	username, kind string, states []*topTrackState, sources []string,
 ) {
 	r.enqueueTopTrackRun(username, queuedTopTrackRun{
+		kind:      kind,
 		states:    states,
 		sources:   sources,
 		finalDone: true,
@@ -459,6 +588,7 @@ func (r *Recommender) runTopTrackQueue(username string, run queuedTopTrackRun) {
 // source as tried. A row becomes NoSource after every source failed.
 func (r *Recommender) runTopTrackMatching(username string, run queuedTopTrackRun) {
 	states, sources := run.states, run.sources
+	defer r.markMatchingActive(run.kind, false)
 
 	var (
 		bufferMu sync.Mutex
@@ -472,10 +602,17 @@ func (r *Recommender) runTopTrackMatching(username string, run queuedTopTrackRun
 		if len(items) == 0 && !done {
 			return
 		}
+		// Persist before emitting: the page may be closed when the event lands,
+		// and the row must still show its final state on the next visit.
+		r.persistRecommendationItems(items)
 		if r.emitter == nil {
 			return
 		}
-		r.emitter(recommendationsMatchedEvent, TopTrackUpdate{Items: items, Done: done})
+		r.emitter(recommendationsMatchedEvent, TopTrackUpdate{
+			Kind:  run.kind,
+			Items: items,
+			Done:  done,
+		})
 	}
 
 	if len(sources) == 0 {
@@ -574,7 +711,7 @@ func (r *Recommender) runTopTrackMatching(username string, run queuedTopTrackRun
 				mu.Lock()
 				states[next].active = false
 				states[next].tried[source] = true
-				r.storeSourceMatch(states[next].item.MatchKey, source, match)
+				r.storeSourceMatch(states[next].item.Kind, states[next].item.MatchKey, source, match)
 
 				var update *TopTrackItem
 				if match != nil {
@@ -630,19 +767,25 @@ func (r *Recommender) HandlePlaybackFailure(provider, externalID string) {
 	if provider == "" || externalID == "" {
 		return
 	}
-	for _, matchKey := range r.topTrackKeysForIdentity(provider, externalID) {
-		r.requeueTopTrack(matchKey, provider)
+	for _, ref := range r.topTrackKeysForIdentity(provider, externalID) {
+		r.requeueTopTrack(ref.kind, ref.matchKey, provider)
 	}
+}
+
+// recommendationRowRef names one row across the two lists.
+type recommendationRowRef struct {
+	kind     string
+	matchKey string
 }
 
 // topTrackKeysForIdentity maps a playing provider identity back to every page
 // row that was matched from it.
-func (r *Recommender) topTrackKeysForIdentity(provider, externalID string) []string {
+func (r *Recommender) topTrackKeysForIdentity(provider, externalID string) []recommendationRowRef {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	seen := make(map[string]struct{})
-	keys := make([]string, 0, 1)
+	seen := make(map[recommendationRowRef]struct{})
+	keys := make([]recommendationRowRef, 0, 1)
 	for cacheKey, entry := range r.sourceMatches {
 		if entry.row == nil {
 			continue
@@ -651,35 +794,51 @@ func (r *Recommender) topTrackKeysForIdentity(provider, externalID string) []str
 			strings.TrimSpace(entry.row.ExternalID) != externalID {
 			continue
 		}
+		// The cache key is kind + "\x00" + match_key + "|" + source, and match_key
+		// itself contains "\x00", so split from the right.
 		index := strings.LastIndexByte(cacheKey, '|')
 		if index <= 0 {
 			continue
 		}
-		matchKey := cacheKey[:index]
-		if _, duplicate := seen[matchKey]; duplicate {
+		ref := splitRecommendationRowKey(cacheKey[:index])
+		if ref.kind == "" || ref.matchKey == "" {
 			continue
 		}
-		seen[matchKey] = struct{}{}
-		keys = append(keys, matchKey)
+		if _, duplicate := seen[ref]; duplicate {
+			continue
+		}
+		seen[ref] = struct{}{}
+		keys = append(keys, ref)
 	}
 	return keys
 }
 
+// splitRecommendationRowKey splits kind + "\x00" + match_key. The match key keeps
+// its own separator because only the first field is the kind.
+func splitRecommendationRowKey(key string) recommendationRowRef {
+	index := strings.IndexByte(key, '\x00')
+	if index <= 0 {
+		return recommendationRowRef{}
+	}
+	return recommendationRowRef{kind: key[:index], matchKey: key[index+1:]}
+}
+
 // requeueTopTrack resets one row and searches it again without the failed source.
-func (r *Recommender) requeueTopTrack(matchKey, failedProvider string) {
+func (r *Recommender) requeueTopTrack(kind, matchKey, failedProvider string) {
+	rowKey := recommendationRowKey(kind, matchKey)
 	r.mu.Lock()
-	base, ok := r.topRows[matchKey]
+	base, ok := r.topRows[rowKey]
 	if !ok {
 		r.mu.Unlock()
 		return
 	}
-	failed := r.topFailedSources[matchKey]
+	failed := r.topFailedSources[rowKey]
 	if failed == nil {
 		failed = make(map[string]bool)
-		r.topFailedSources[matchKey] = failed
+		r.topFailedSources[rowKey] = failed
 	}
 	failed[failedProvider] = true
-	delete(r.sourceMatches, matchKey+"|"+failedProvider)
+	delete(r.sourceMatches, rowKey+"|"+failedProvider)
 	tried := make(map[string]bool, len(failed))
 	for source := range failed {
 		tried[source] = true
@@ -687,6 +846,7 @@ func (r *Recommender) requeueTopTrack(matchKey, failedProvider string) {
 	r.mu.Unlock()
 
 	item := resetTopTrackItem(base)
+	r.persistRecommendationItems([]TopTrackItem{item})
 	r.emitTopTrackUpdate([]TopTrackItem{item})
 
 	connected, username, _ := r.client.GetStatus()
@@ -707,10 +867,13 @@ func (r *Recommender) requeueTopTrack(matchKey, failedProvider string) {
 		item.NoSource = true
 		state.item = item
 		state.done = true
+		r.persistRecommendationItems([]TopTrackItem{item})
 		r.emitTopTrackUpdate([]TopTrackItem{item})
 		return
 	}
+	r.markMatchingActive(kind, true)
 	r.enqueueTopTrackRun(username, queuedTopTrackRun{
+		kind:    kind,
 		states:  []*topTrackState{state},
 		sources: sources,
 	})
@@ -743,10 +906,10 @@ func (r *Recommender) emitTopTrackUpdate(items []TopTrackItem) {
 }
 
 // failedTopSources returns the providers already known to fail this row.
-func (r *Recommender) failedTopSources(matchKey string) map[string]bool {
+func (r *Recommender) failedTopSources(kind, matchKey string) map[string]bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	failed := r.topFailedSources[matchKey]
+	failed := r.topFailedSources[recommendationRowKey(kind, matchKey)]
 	if len(failed) == 0 {
 		return nil
 	}
@@ -878,8 +1041,8 @@ func (r *Recommender) topTrackSources(ctx context.Context) []string {
 	return sources
 }
 
-func (r *Recommender) cachedSourceMatch(matchKey, source string) (*domain.CatalogSearchResult, bool) {
-	key := matchKey + "|" + source
+func (r *Recommender) cachedSourceMatch(kind, matchKey, source string) (*domain.CatalogSearchResult, bool) {
+	key := recommendationRowKey(kind, matchKey) + "|" + source
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	entry, ok := r.sourceMatches[key]
@@ -893,11 +1056,11 @@ func (r *Recommender) cachedSourceMatch(matchKey, source string) (*domain.Catalo
 	return entry.row, true
 }
 
-func (r *Recommender) storeSourceMatch(matchKey, source string, row *domain.CatalogSearchResult) {
-	if matchKey == "" || source == "" {
+func (r *Recommender) storeSourceMatch(kind, matchKey, source string, row *domain.CatalogSearchResult) {
+	if kind == "" || matchKey == "" || source == "" {
 		return
 	}
-	key := matchKey + "|" + source
+	key := recommendationRowKey(kind, matchKey) + "|" + source
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var copyRow *domain.CatalogSearchResult

@@ -31,7 +31,8 @@
     "delete": "削除",
     "yes": "はい",
     "no": "いいえ",
-    "open_devtools": "開発者ツールを開く"
+    "open_devtools": "開発者ツールを開く",
+    "back": "戻る"
   },
   "mobile_sync": {
     "back": "モバイルデバイス",
@@ -178,6 +179,23 @@
       "title": "ライブラリ管理",
       "delimiters_title": "タグの区切り文字",
       "delimiters_description": "アーティスト、アルバムアーティスト、ジャンル、作曲者の複数値タグの分割方法をカスタマイズします。変更を適用するにはライブラリを再同期してください。"
+    },
+    "artist_aliases": {
+      "title": "アーティストの別名",
+      "description": "同じアーティストの別表記でも曲を再利用できます。学習されたペアは統合から、手動ペアはあなたが追加します。",
+      "alias_label": "別名（例: Camellia）",
+      "canonical_label": "正式名（例: かめりあ）",
+      "add": "追加",
+      "loading": "読み込み中…",
+      "empty": "別名はまだありません。",
+      "enable": "照合でこの別名を使う",
+      "delete": "削除",
+      "evidence_merge": "統合から学習",
+      "evidence_manual": "手動で追加",
+      "invalid": "両方の名前が必要です。",
+      "self": "名前を自身の別名にはできません。",
+      "exists": "このペアは既に存在します。",
+      "save_failed": "別名を保存できませんでした。"
     },
     "about": {
       "description": "パフォーマンスとエレガンスに焦点を当てた、モダンなクロスプラットフォームの音楽プレーヤー。",
@@ -919,6 +937,9 @@
     "no_match": "一致なし",
     "matched_from": "{source} から",
     "similar_tracks": "あなたへのおすすめ",
-    "similar_empty": "おすすめはまだありません。"
+    "similar_empty": "おすすめはまだありません。",
+    "refresh_list": "このリストを更新",
+    "refresh_all": "すべて更新",
+    "list_empty": "曲はまだありません。"
   }
 }

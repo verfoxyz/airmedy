@@ -6,6 +6,7 @@ import (
 
 	"airmedy/internal/app/download"
 	"airmedy/internal/domain"
+	"airmedy/internal/infra/sqlite"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -151,6 +152,37 @@ func TestEnsureRemoteTrack_ReusesWhenOnlyThePrimaryArtistIsKnown(t *testing.T) {
 
 	assert.Equal(t, "local-1", track.ID, "a primary-artist-only row must reuse the local file")
 	assert.Equal(t, "wy", track.Provider)
+}
+
+// TestEnsureRemoteTrack_ReusesALocalRowThroughAnArtistAlias: "Camellia" and
+// "かめりあ" are the same artist; the alias learned or added in settings lets the
+// provider row reuse the on-disk file.
+func TestEnsureRemoteTrack_ReusesALocalRowThroughAnArtistAlias(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	require.NoError(t, h.tracks.Upsert(ctx, &domain.Track{
+		ID:             "local-1",
+		Path:           "/library/crystallized.flac",
+		Title:          "crystallized",
+		Duration:       200,
+		RawArtistNames: "かめりあ",
+		Availability:   domain.AvailabilityReady,
+	}))
+	aliases := sqlite.NewArtistAliasRepository(h.db)
+	require.NoError(t, aliases.AddArtistAlias(ctx, "camellia", "かめりあ", domain.ArtistAliasEvidenceManual))
+	h.svc.SetArtistAliases(aliases)
+
+	track, err := h.svc.EnsureRemoteTrack(ctx, domain.RemoteTrackSpec{
+		Provider:   "wy",
+		ExternalID: "42",
+		Title:      "crystallized",
+		Artists:    []string{"Camellia"},
+		Duration:   200,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "local-1", track.ID, "the alias must let the local file win")
 }
 
 // TestEnsureRemoteTrack_ForceRegistersANewRow: "download anyway" and re-download
