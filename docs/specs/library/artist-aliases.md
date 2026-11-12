@@ -36,8 +36,8 @@ CREATE INDEX idx_artist_aliases_canonical ON artist_aliases(canonical_key);
    - 比较远端艺人集合与本地艺人集合；
    - 对数量相同或一方为另一方子集的组合，记录 `(远端艺人, 本地艺人)` 别名对；
    - 例：远端 `Camellia` 合并到本地 `かめりあ` → 记录一对；
-2. **手动**（后续可做设置 UI，本期不做）；
-3. 不内置硬编码列表（会过时），完全靠学习。
+2. **手动添加**（本期做，见 §4.2）：设置里管理别名；
+3. 不内置硬编码列表（会过时），完全靠学习 + 手动。
 
 ## 4. 匹配时展开
 
@@ -56,6 +56,34 @@ func ExpandArtists(ctx context.Context, keys []string) ([]string, error)
   - 缓存去重分组。
 - 比较规则沿用 `fix-artist-variant-duplicates.md` 的**子集相容**。
 
+## 4.2 手动别名管理（设置）
+
+设置新增「音乐库 → 艺人别名」：
+
+- 列表：`别名` → `正式名`，按创建时间倒序；每条可删除；
+- 新增表单：两个输入框（别名、正式名），保存前做 `ArtistSetKey` 归一化并拒绝：
+  - 空值；
+  - 自己指向自己；
+  - 已存在的对（重复）；
+- 删除即从 `artist_aliases` 移除（双向对一起删）；
+- 修改后无需重启：匹配读取时实时查表。
+
+后端 API：
+
+```go
+ListArtistAliases(ctx) ([]ArtistAlias, error)
+AddArtistAlias(ctx, alias, canonical string) error
+RemoveArtistAlias(ctx, alias, canonical string) error
+```
+
+- 手动添加的 `evidence='manual'`，自动学习的为 `merge`；
+- 删除 `merge` 条目时提示“这是自动学习的别名，删除后可能重新学习到”。
+
+前端：
+
+- 设置分类 `library`（或 `metadata`）下新区域；使用 `Input` / `Button` / 列表行，不写裸 input；
+- 12 语言新增 `settings.artist_aliases.*`。
+
 ## 5. 记录时机
 
 - `merge.go` 的 `carryIdentity` / 合并成功处：拿到远端行与存活行的艺人后写入别名对（`INSERT OR IGNORE`）；
@@ -71,7 +99,9 @@ func ExpandArtists(ctx context.Context, keys []string) ([]string, error)
 - 本地优先匹配：Last.fm 的 `Camellia` 能命中本地 `かめりあ` 行；
 - 云端匹配：目标 `Camellia` 能命中行 `かめりあ`（展开后）；
 - 无别名的艺人行为不变；
-- 迁移 `000099` up/down。
+- 迁移 `000099` up/down；
+- 手动添加：空值/自指/重复被拒绝；添加后立即参与匹配；删除后不再参与；
+- 删除自动学习的条目后，再次合并可重新学习。
 
 **人工**
 
