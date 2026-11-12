@@ -32,7 +32,9 @@
     "yes": "Ja",
     "no": "Nein",
     "open_devtools": "Entwicklerwerkzeuge öffnen",
-    "back": "Zurück"
+    "back": "Zurück",
+    "suspicious_match": "Titel fragwürdig",
+    "suspicious_match_hint": "Die Dauer weicht von der Quelle ab. Bitte prüfen."
   },
   "mobile_sync": {
     "back": "Mobile Geräte",
@@ -940,6 +942,10 @@
     "similar_empty": "Noch keine Empfehlungen.",
     "refresh_list": "Diese Liste aktualisieren",
     "refresh_all": "Alle aktualisieren",
+    "refresh_item": "Quelle für diesen Titel aktualisieren",
+    "play_all": "Alle abspielen",
+    "shuffle": "Zufällige Wiedergabe",
+    "more_actions": "Weitere Aktionen",
     "list_empty": "Noch keine Titel."
   }
 }

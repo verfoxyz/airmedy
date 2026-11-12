@@ -32,7 +32,9 @@
     "yes": "예",
     "no": "아니요",
     "open_devtools": "개발자 도구 열기",
-    "back": "뒤로"
+    "back": "뒤로",
+    "suspicious_match": "확인 필요",
+    "suspicious_match_hint": "재생 시간이 소스와 다릅니다. 확인해 주세요."
   },
   "mobile_sync": {
     "back": "모바일 기기",
@@ -940,6 +942,10 @@
     "similar_empty": "아직 추천이 없습니다.",
     "refresh_list": "이 목록 새로 고침",
     "refresh_all": "모두 새로 고침",
+    "refresh_item": "이 곡의 소스 새로 고침",
+    "play_all": "모두 재생",
+    "shuffle": "셔플",
+    "more_actions": "추가 작업",
     "list_empty": "아직 곡이 없습니다."
   }
 }

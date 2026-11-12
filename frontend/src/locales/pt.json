@@ -32,7 +32,9 @@
     "yes": "Sim",
     "no": "Não",
     "open_devtools": "Abrir ferramentas de desenvolvimento",
-    "back": "Voltar"
+    "back": "Voltar",
+    "suspicious_match": "Faixa duvidosa",
+    "suspicious_match_hint": "A duração difere da fonte; confirme."
   },
   "mobile_sync": {
     "back": "Dispositivos móveis",
@@ -940,6 +942,10 @@
     "similar_empty": "Ainda não há recomendações.",
     "refresh_list": "Atualizar esta lista",
     "refresh_all": "Atualizar tudo",
+    "refresh_item": "Atualizar a fonte desta faixa",
+    "play_all": "Reproduzir tudo",
+    "shuffle": "Aleatório",
+    "more_actions": "Mais ações",
     "list_empty": "Ainda não há faixas."
   }
 }

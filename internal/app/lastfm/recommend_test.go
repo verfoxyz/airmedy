@@ -176,6 +176,8 @@ type fakeMatcher struct {
 	sourceErrs map[string]map[string]error
 	// localRows answers MatchLocalTrack, keyed by artist+"\x00"+title.
 	localRows map[string]*domain.TrackDTO
+	// localSuspicious marks one local answer as a duration-disagreed match.
+	localSuspicious map[string]bool
 	// block, when set, holds every search until the test closes it. It proves
 	// GetRecommendations returns before matching completes.
 	block chan struct{}
@@ -192,7 +194,7 @@ func (f *fakeMatcher) Sources(context.Context) ([]domain.CatalogSearchSource, er
 // artist+title, the same key MatchTrack uses.
 func (f *fakeMatcher) MatchLocalTrack(
 	_ context.Context, title string, artists []string, _ int,
-) (*domain.TrackDTO, error) {
+) (*domain.LocalTrackMatch, error) {
 	artist := ""
 	if len(artists) > 0 {
 		artist = artists[0]
@@ -201,7 +203,7 @@ func (f *fakeMatcher) MatchLocalTrack(
 	defer f.mu.Unlock()
 	key := artist + "\x00" + title
 	if track, ok := f.localRows[key]; ok {
-		return track, nil
+		return &domain.LocalTrackMatch{Track: track, Suspicious: f.localSuspicious[key]}, nil
 	}
 	return nil, nil
 }

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { nextTick, reactive } from 'vue'
 import LastFmListView from './LastFmListView.vue'
 
 const mocks = vi.hoisted(() => ({
@@ -8,11 +8,13 @@ const mocks = vi.hoisted(() => ({
   replace: vi.fn(),
   getList: vi.fn(),
   refreshList: vi.fn(),
+  refreshItem: vi.fn(),
   preparePlayback: vi.fn(),
   save: vi.fn(),
   playTrackIds: vi.fn(),
   handlers: new Map<string, (event: { data?: unknown }) => void>(),
   off: vi.fn(),
+  route: { params: { kind: 'top_tracks' } },
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -25,7 +27,7 @@ vi.mock('vue-i18n', () => ({
 }))
 
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ params: { kind: 'top_tracks' } }),
+  useRoute: () => mocks.route,
   useRouter: () => ({ push: mocks.push, replace: mocks.replace }),
 }))
 
@@ -42,6 +44,7 @@ vi.mock('@wailsio/runtime', async (importOriginal) => ({
 vi.mock('../../bindings/airmedy/internal/infra/wails/lastfmservice', () => ({
   GetRecommendationList: mocks.getList,
   RefreshRecommendationList: mocks.refreshList,
+  RefreshRecommendationItem: mocks.refreshItem,
 }))
 
 vi.mock('@/stores/catalog', () => ({
@@ -101,11 +104,15 @@ async function mountView() {
   return wrapper
 }
 
-async function emitMatch(data: unknown) {
-  const handler = mocks.handlers.get('lastfm:recommendations-matched')
+async function emitEvent(name: string, data: unknown) {
+  const handler = mocks.handlers.get(name)
   expect(handler).toBeDefined()
   handler!({ data })
   await nextTick()
+}
+
+async function emitMatch(data: unknown) {
+  await emitEvent('lastfm:recommendations-matched', data)
 }
 
 describe('LastFmListView (one persisted list)', () => {
@@ -114,28 +121,44 @@ describe('LastFmListView (one persisted list)', () => {
     mocks.replace.mockReset()
     mocks.getList.mockReset()
     mocks.refreshList.mockReset()
+    mocks.refreshItem.mockReset()
     mocks.preparePlayback.mockReset()
     mocks.save.mockReset()
     mocks.playTrackIds.mockReset()
     mocks.handlers.clear()
     mocks.off.mockReset()
+    document.body.innerHTML = ''
+    mocks.route.params = reactive({ kind: 'top_tracks' })
     mocks.preparePlayback.mockResolvedValue('track-1')
     mocks.save.mockResolvedValue(true)
     mocks.playTrackIds.mockResolvedValue(undefined)
     mocks.refreshList.mockResolvedValue(undefined)
+    mocks.refreshItem.mockResolvedValue(undefined)
   })
 
-  it('renders the stored rows and the list title', async () => {
+  it('renders the stored rows, mosaic, count and duration', async () => {
     mocks.getList.mockResolvedValue(list([item('One'), item('Two', 'matched')]))
     const wrapper = await mountView()
 
     expect(mocks.getList).toHaveBeenCalledWith('top_tracks')
     expect(wrapper.find('[data-test="lastfm-list-title"]').text()).toBe('lastfm.top')
-    expect(wrapper.find('[data-test="lastfm-list-count"]').text()).toBe('2')
+    expect(wrapper.find('[data-test="lastfm-list-cover"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="lastfm-list-count"]').text()).toContain('2')
+    expect(wrapper.find('[data-test="lastfm-list-duration"]').text()).toBe('6 common.min')
     const rows = wrapper.findAll('[data-test="top-track-row"]')
     expect(rows).toHaveLength(2)
     expect(rows[0].find('[data-test="top-track-status"]').attributes('data-state')).toBe('matching')
     expect(rows[1].find('[data-test="top-track-status"]').attributes('data-state')).toBe('matched')
+  })
+
+  it('builds the header mosaic from the row covers', async () => {
+    const rows = [item('One', 'matched'), item('Two', 'matched')]
+    rows[0].cover_url = 'https://cover/1.jpg'
+    rows[1].cover_url = 'https://cover/2.jpg'
+    mocks.getList.mockResolvedValue(list(rows))
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="lastfm-list-cover"]').findAll('img')).toHaveLength(2)
   })
 
   it('updates a row from the shared match stream', async () => {
@@ -189,11 +212,43 @@ describe('LastFmListView (one persisted list)', () => {
     )
   })
 
-  it('refreshes only this list and reloads it', async () => {
+  it('plays every playable row from the header', async () => {
+    mocks.preparePlayback.mockImplementation(async (row: { title: string }) => `id-${row.title}`)
+    mocks.getList.mockResolvedValue(list([
+      item('Hit', 'matched'),
+      item('Pending', 'matching'),
+      item('Other', 'matched'),
+    ]))
+    const wrapper = await mountView()
+
+    await wrapper.find('[data-test="lastfm-list-play"]').trigger('click')
+    await flushPromises()
+
+    expect(mocks.preparePlayback).toHaveBeenCalledTimes(2)
+    expect(mocks.playTrackIds).toHaveBeenCalledWith(['id-Hit', 'id-Other'])
+  })
+
+  it('shuffles the playable rows from the header', async () => {
+    mocks.preparePlayback.mockImplementation(async (row: { title: string }) => `id-${row.title}`)
+    mocks.getList.mockResolvedValue(list([item('Only', 'matched')]))
+    const wrapper = await mountView()
+
+    await wrapper.find('[data-test="lastfm-list-shuffle"]').trigger('click')
+    await flushPromises()
+
+    expect(mocks.playTrackIds).toHaveBeenCalledWith(['id-Only'])
+  })
+
+  it('refreshes this list from the header more menu', async () => {
     mocks.getList.mockResolvedValue(list([item('One')]))
     const wrapper = await mountView()
 
-    await wrapper.find('[data-test="lastfm-refresh"]').trigger('click')
+    await wrapper.find('[data-test="lastfm-list-more"]').trigger('click')
+    const label = [...document.body.querySelectorAll('span')].find(
+      (node) => node.textContent === 'lastfm.refresh_list',
+    )
+    expect(label).toBeDefined()
+    label!.closest('div')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flushPromises()
 
     expect(mocks.refreshList).toHaveBeenCalledWith('top_tracks')
@@ -225,6 +280,97 @@ describe('LastFmListView (one persisted list)', () => {
 
     wrapper.unmount()
 
-    expect(mocks.off).toHaveBeenCalledTimes(1)
+    expect(mocks.off).toHaveBeenCalledTimes(2)
+  })
+
+  it('reloads when the route switches to another list', async () => {
+    mocks.getList.mockResolvedValue(list([item('Top One')]))
+    const wrapper = await mountView()
+    expect(wrapper.find('[data-test="lastfm-list-title"]').text()).toBe('lastfm.top')
+
+    mocks.getList.mockResolvedValue({
+      ...list([item('Rec One', 'matched', 'similar')]),
+      kind: 'similar',
+      title: 'lastfm.similar_tracks',
+    })
+    mocks.route.params.kind = 'similar'
+    await nextTick()
+    await flushPromises()
+
+    expect(mocks.getList).toHaveBeenLastCalledWith('similar')
+    expect(wrapper.find('[data-test="lastfm-list-title"]').text()).toBe('lastfm.similar_tracks')
+    expect(wrapper.findAll('[data-test="top-track-row"]')).toHaveLength(1)
+  })
+
+  it('appends progressively built rows without duplicates', async () => {
+    mocks.getList.mockResolvedValue(list([item('One')]))
+    const wrapper = await mountView()
+
+    await emitEvent('lastfm:recommendation-items-added', {
+      kind: 'top_tracks',
+      items: [item('Two')],
+    })
+    expect(wrapper.findAll('[data-test="top-track-row"]')).toHaveLength(2)
+
+    await emitEvent('lastfm:recommendation-items-added', {
+      kind: 'top_tracks',
+      items: [item('Two'), item('Three')],
+    })
+    expect(wrapper.findAll('[data-test="top-track-row"]')).toHaveLength(3)
+
+    await emitEvent('lastfm:recommendation-items-added', {
+      kind: 'similar',
+      items: [item('Ignored', 'matching', 'similar')],
+    })
+    expect(wrapper.findAll('[data-test="top-track-row"]')).toHaveLength(3)
+  })
+
+  it('renders streamed rows before the list build finishes', async () => {
+    mocks.route.params = reactive({ kind: 'similar' })
+    let resolveList: (value: unknown) => void = () => {}
+    mocks.getList.mockReturnValue(new Promise((resolve) => {
+      resolveList = resolve
+    }))
+    const wrapper = await mountView()
+    expect(wrapper.find('[data-test="lastfm-list-loading"]').exists()).toBe(true)
+
+    await emitEvent('lastfm:recommendation-items-added', {
+      kind: 'similar',
+      items: [item('Early', 'matching', 'similar')],
+    })
+    expect(wrapper.find('[data-test="lastfm-list-loading"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-test="top-track-row"]')).toHaveLength(1)
+
+    resolveList({ ...list([]), kind: 'similar', title: 'lastfm.similar_tracks' })
+    await flushPromises()
+    expect(wrapper.findAll('[data-test="top-track-row"]')).toHaveLength(1)
+  })
+
+  it('re-runs source matching for one row from the context menu', async () => {
+    mocks.getList.mockResolvedValue(list([item('Hit', 'matched'), item('Other', 'matched')]))
+    const wrapper = await mountView()
+
+    await wrapper
+      .findAll('[data-test="top-track-row"]')[0]
+      .trigger('contextmenu', { clientX: 12, clientY: 18 })
+    const label = [...document.body.querySelectorAll('span')].find((node) =>
+      node.textContent?.includes('lastfm.refresh_item'),
+    )
+    expect(label).toBeDefined()
+    label!.closest('div')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+
+    expect(mocks.refreshItem).toHaveBeenCalledWith('top_tracks', 'artist\u0000hit')
+  })
+
+  it('disables the row refresh while the row is already matching', async () => {
+    mocks.getList.mockResolvedValue(list([item('Pending', 'matching')]))
+    const wrapper = await mountView()
+
+    await wrapper.find('[data-test="top-track-row"]').trigger('contextmenu')
+    const label = [...document.body.querySelectorAll('span')].find((node) =>
+      node.textContent?.includes('lastfm.refresh_item'),
+    )
+    expect(label!.closest('div')!.className).toContain('cursor-not-allowed')
   })
 })

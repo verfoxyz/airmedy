@@ -43,6 +43,8 @@ type RecommendationItem struct {
 	ExternalID   string   `json:"external_id" db:"external_id"`
 	State        string   `json:"state" db:"state"`
 	LocalTrackID string   `json:"local_track_id" db:"local_track_id"`
+	// Suspicious keeps a flagged local match across restarts.
+	Suspicious bool `json:"suspicious" db:"suspicious"`
 }
 
 // RecommendationList is one persisted list: its rows in Last.fm order plus the
@@ -62,6 +64,8 @@ type RecommendationListSummary struct {
 	Title         string `json:"title"`
 	TrackCount    int    `json:"track_count"`
 	MatchingCount int    `json:"matching_count"`
+	// TotalDuration is the sum of the rows' duration in seconds.
+	TotalDuration int `json:"total_duration"`
 	// CoverURLs holds up to four covers, in list order, for the card mosaic.
 	CoverURLs []string  `json:"cover_urls"`
 	UpdatedAt time.Time `json:"updated_at"`

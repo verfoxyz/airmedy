@@ -54,17 +54,19 @@ func (s *Service) EnsureRemoteTrack(ctx context.Context, spec domain.RemoteTrack
 			// A failed lookup is not a reason to refuse the registration.
 			s.logger.Warn("download: local track lookup failed",
 				"provider", provider, "external_id", externalID, "error", lookupErr)
-		} else if local != nil {
-			if local.Provider == "" {
-				if err := s.merger.repo.CarryIdentity(ctx, local.ID, provider, externalID); err != nil {
+		} else if local != nil && local.Track != nil {
+			// A duration-disagreed match still reuses the row: one flagged copy is
+			// better than a second row for the same song.
+			if local.Track.Provider == "" {
+				if err := s.merger.repo.CarryIdentity(ctx, local.Track.ID, provider, externalID); err != nil {
 					s.logger.Warn("download: cannot carry identity onto the local row",
-						"track_id", local.ID, "provider", provider, "external_id", externalID, "error", err)
+						"track_id", local.Track.ID, "provider", provider, "external_id", externalID, "error", err)
 				} else {
-					local.Provider = provider
-					local.ExternalID = externalID
+					local.Track.Provider = provider
+					local.Track.ExternalID = externalID
 				}
 			}
-			return local, nil
+			return local.Track, nil
 		}
 	}
 

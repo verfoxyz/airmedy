@@ -19,6 +19,7 @@ type RecommendationListSummary struct {
 	Title         string    `json:"title"`
 	TrackCount    int       `json:"track_count"`
 	MatchingCount int       `json:"matching_count"`
+	TotalDuration int       `json:"total_duration"`
 	CoverURLs     []string  `json:"cover_urls"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -61,6 +62,16 @@ func knownRecommendationKind(kind string) bool {
 		kind == domain.LastFmRecommendationSimilar
 }
 
+// recommendationItemsAddedEvent streams rows while the similar list is being
+// built, one batch per seed.
+const recommendationItemsAddedEvent = "lastfm:recommendation-items-added"
+
+// RecommendationItemsAdded is the payload of lastfm:recommendation-items-added.
+type RecommendationItemsAdded struct {
+	Kind  string         `json:"kind"`
+	Items []TopTrackItem `json:"items"`
+}
+
 // ListRecommendationLists returns the stored cards. A list that has never been
 // built is built once; afterwards the page reads from the database until the
 // user refreshes.
@@ -94,15 +105,8 @@ func (r *Recommender) ListRecommendationLists(
 	missingSimilar := !hasRecommendationKind(summaries, domain.LastFmRecommendationSimilar)
 	if missingTop || missingSimilar {
 		// Build only what is missing; an existing list must survive untouched.
-		collected, buildErr := r.collectRecommendations(ctx, missingTop, missingSimilar, false)
-		if buildErr != nil {
-			return RecommendationListCollection{Status: collected.status, Lists: orderSummaries(summaries)}, buildErr
-		}
-		if collected.status != StatusNotConnected {
-			if storeErr := r.storeCollectedLists(ctx, collected); storeErr != nil {
-				return RecommendationListCollection{Status: collected.status, Lists: orderSummaries(summaries)}, storeErr
-			}
-			r.startRecommendationMatching(ctx, collected, missingTop && missingSimilar)
+		if buildErr := r.buildStoredLists(ctx, missingTop, missingSimilar); buildErr != nil {
+			return RecommendationListCollection{Status: StatusOK, Lists: orderSummaries(summaries)}, buildErr
 		}
 		summaries, err = store.ListRecommendationLists(ctx)
 		if err != nil {
@@ -115,7 +119,7 @@ func (r *Recommender) ListRecommendationLists(
 }
 
 // GetRecommendationList returns one persisted list. A missing kind is built once
-// with the same collect-then-store flow, so matching never races the insert.
+// with the same store-then-match flow, so matching never races the insert.
 func (r *Recommender) GetRecommendationList(
 	ctx context.Context, kind string,
 ) (RecommendationList, error) {
@@ -156,16 +160,10 @@ func (r *Recommender) GetRecommendationList(
 		return RecommendationList{}, err
 	}
 	if list == nil {
-		collected, buildErr := r.collectRecommendations(
-			ctx, kind == domain.LastFmRecommendationTopTracks, kind == domain.LastFmRecommendationSimilar, false)
-		if buildErr != nil {
+		if buildErr := r.buildStoredLists(
+			ctx, kind == domain.LastFmRecommendationTopTracks, kind == domain.LastFmRecommendationSimilar,
+		); buildErr != nil {
 			return RecommendationList{Kind: kind, Title: recommendationTitle(kind)}, buildErr
-		}
-		if collected.status != StatusNotConnected {
-			if storeErr := r.storeCollectedLists(ctx, collected); storeErr != nil {
-				return RecommendationList{Kind: kind, Title: recommendationTitle(kind)}, storeErr
-			}
-			r.startRecommendationMatching(ctx, collected, false)
 		}
 		list, err = store.GetRecommendationList(ctx, kind)
 		if err != nil {
@@ -178,14 +176,13 @@ func (r *Recommender) GetRecommendationList(
 				Items: []TopTrackItem{},
 			}, nil
 		}
-	} else {
-		r.resumeRecommendationMatching(ctx, kind)
 	}
+	r.resumeRecommendationMatching(ctx, kind)
 	return recommendationListFromDomain(*list), nil
 }
 
-// RefreshRecommendationList rebuilds exactly one list. A failed build keeps the
-// stored rows and their match state untouched.
+// RefreshRecommendationList rebuilds exactly one list. A failed top-tracks
+// request keeps the stored rows and their match state untouched.
 func (r *Recommender) RefreshRecommendationList(ctx context.Context, kind string) error {
 	if !knownRecommendationKind(kind) {
 		return fmt.Errorf("lastfm recommendations: unknown list %q", kind)
@@ -195,74 +192,291 @@ func (r *Recommender) RefreshRecommendationList(ctx context.Context, kind string
 		return nil
 	}
 
-	collected, err := r.collectRecommendations(
-		ctx, kind == domain.LastFmRecommendationTopTracks, kind == domain.LastFmRecommendationSimilar, true)
+	tracks, err := r.client.GetTopTracks(ctx, topTrackPeriod, topTrackLimit)
 	if err != nil {
 		return err
 	}
-	if collected.status == StatusNotConnected {
-		return nil
+	if kind == domain.LastFmRecommendationTopTracks {
+		return r.storeTopList(ctx, tracks)
 	}
-	// Persist before matching starts, so the first update finds its row.
-	if err := r.storeCollectedLists(ctx, collected); err != nil {
-		return err
-	}
-	r.startRecommendationMatching(ctx, collected, false)
-	return nil
+	_, err = r.streamSimilarList(ctx, tracks)
+	return err
 }
 
-// RefreshAllRecommendationLists rebuilds both lists. The rows are replaced per
-// list, so a failure leaves the failed list's previous content in place.
+// RefreshAllRecommendationLists rebuilds both lists. The top list is written
+// first; the similar list then streams in while its rows are matched.
 func (r *Recommender) RefreshAllRecommendationLists(ctx context.Context) error {
 	connected, username, _ := r.client.GetStatus()
 	if !connected || strings.TrimSpace(username) == "" {
 		return nil
 	}
 
-	collected, err := r.collectRecommendations(ctx, true, true, true)
+	tracks, err := r.client.GetTopTracks(ctx, topTrackPeriod, topTrackLimit)
 	if err != nil {
 		return err
 	}
-	if collected.status == StatusNotConnected {
-		return nil
-	}
-	if err := r.storeCollectedLists(ctx, collected); err != nil {
+	if err := r.storeTopList(ctx, tracks); err != nil {
 		return err
 	}
-	r.startRecommendationMatching(ctx, collected, true)
+	_, err = r.streamSimilarList(ctx, tracks)
+	return err
+}
+
+// RefreshRecommendationItem re-runs source matching for one row without asking
+// Last.fm for the content again.
+//
+// The row's cached source results and failed providers are dropped, the row is
+// reset to matching, persisted and pushed back through the five-source queue.
+// Other rows keep their caches.
+func (r *Recommender) RefreshRecommendationItem(
+	ctx context.Context, kind, matchKey string,
+) error {
+	if !knownRecommendationKind(kind) {
+		return fmt.Errorf("lastfm recommendations: unknown list %q", kind)
+	}
+	matchKey = strings.TrimSpace(matchKey)
+	if matchKey == "" {
+		return fmt.Errorf("lastfm recommendations: empty match key")
+	}
+	connected, username, _ := r.client.GetStatus()
+	if !connected || strings.TrimSpace(username) == "" {
+		return nil
+	}
+
+	base, ok := r.recommendationBaseRow(ctx, kind, matchKey)
+	if !ok {
+		return fmt.Errorf("lastfm recommendations: unknown row %q", matchKey)
+	}
+
+	rowKey := recommendationRowKey(kind, matchKey)
+	r.mu.Lock()
+	prefix := rowKey + "|"
+	for key := range r.sourceMatches {
+		if strings.HasPrefix(key, prefix) {
+			delete(r.sourceMatches, key)
+		}
+	}
+	delete(r.topFailedSources, rowKey)
+	r.topRows[rowKey] = base
+	r.mu.Unlock()
+
+	item := resetTopTrackItem(base)
+	item.Kind = kind
+	item.MatchKey = matchKey
+	r.persistRecommendationItems([]TopTrackItem{item})
+	r.emitTopTrackUpdate([]TopTrackItem{item})
+
+	sources := r.topTrackSources(ctx)
+	if len(sources) == 0 {
+		item.Matching = false
+		item.NoSource = true
+		r.persistRecommendationItems([]TopTrackItem{item})
+		r.emitTopTrackUpdate([]TopTrackItem{item})
+		return nil
+	}
+
+	state := &topTrackState{item: item, tried: make(map[string]bool)}
+	r.markMatchingActive(kind, true)
+	r.enqueueTopTrackRun(username, queuedTopTrackRun{
+		kind:    kind,
+		states:  []*topTrackState{state},
+		sources: sources,
+	})
 	return nil
 }
 
-// storeCollectedLists persists the lists the collection contains.
-func (r *Recommender) storeCollectedLists(ctx context.Context, collected recommendationCollection) error {
+// recommendationBaseRow returns the row's Last.fm identity from memory, or from
+// the store after a restart.
+func (r *Recommender) recommendationBaseRow(
+	ctx context.Context, kind, matchKey string,
+) (TopTrackItem, bool) {
+	r.mu.Lock()
+	base, ok := r.topRows[recommendationRowKey(kind, matchKey)]
+	r.mu.Unlock()
+	if ok {
+		return base, true
+	}
+	store := r.recommendationStoreOrNil()
+	if store == nil {
+		return TopTrackItem{}, false
+	}
+	list, err := store.GetRecommendationList(ctx, kind)
+	if err != nil || list == nil {
+		return TopTrackItem{}, false
+	}
+	for _, row := range list.Items {
+		if row.MatchKey == matchKey {
+			return recommendationItemFromDomain(row), true
+		}
+	}
+	return TopTrackItem{}, false
+}
+
+// buildStoredLists builds the requested lists into the store. Top tracks are one
+// request; the similar list streams per seed so the page can render it early.
+func (r *Recommender) buildStoredLists(
+	ctx context.Context, wantTop, wantSimilar bool,
+) error {
+	tracks, err := r.client.GetTopTracks(ctx, topTrackPeriod, topTrackLimit)
+	if err != nil {
+		return err
+	}
+	if wantTop {
+		if err := r.storeTopList(ctx, tracks); err != nil {
+			return err
+		}
+	}
+	if wantSimilar {
+		if _, err := r.streamSimilarList(ctx, tracks); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// storeTopList replaces the top list and starts its matching.
+func (r *Recommender) storeTopList(ctx context.Context, tracks []LastFmTrack) error {
+	items := r.buildTopTrackItems(tracks)
+	if err := r.saveRecommendationList(ctx, domain.LastFmRecommendationTopTracks, items); err != nil {
+		return err
+	}
+	r.startKindMatching(ctx, domain.LastFmRecommendationTopTracks, items)
+	return nil
+}
+
+// streamSimilarList rebuilds the similar list seed by seed.
+//
+// Each seed's new rows are written to the store and emitted as they arrive, so
+// the detail page can render the list while the remaining requests run. The
+// order is seed order then Last.fm order; the same song is kept once.
+func (r *Recommender) streamSimilarList(
+	ctx context.Context, tracks []LastFmTrack,
+) ([]TopTrackItem, error) {
+	// Replace the old content only after the seed request succeeded: a total
+	// failure before this point keeps the previous list.
+	if err := r.saveRecommendationList(ctx, domain.LastFmRecommendationSimilar, []TopTrackItem{}); err != nil {
+		return nil, err
+	}
+
+	seeds := usableSeeds(tracks, similarSeedLimit)
+	seen := make(map[string]struct{}, len(seeds))
+	for _, seed := range seeds {
+		seen[similarRecommendationKey(seed)] = struct{}{}
+	}
+
+	items := make([]TopTrackItem, 0, similarRecommendationTake)
+	for index, seed := range seeds {
+		entries := r.similarSeedTracks(ctx, seed, index)
+		added := make([]TopTrackItem, 0)
+		for _, track := range entries {
+			if len(items) >= similarRecommendationTake {
+				break
+			}
+			if !usableTrack(track) {
+				continue
+			}
+			key := similarRecommendationKey(track)
+			if _, duplicate := seen[key]; duplicate {
+				continue
+			}
+			seen[key] = struct{}{}
+			item := TopTrackItem{
+				Title:    track.Title,
+				Artist:   track.Artist,
+				Album:    track.Album,
+				Duration: track.Duration,
+				Artists:  []string{track.Artist},
+				CoverURL: track.ImageURL,
+				Kind:     domain.LastFmRecommendationSimilar,
+				Matching: true,
+				MatchKey: candidateKey(track.Artist, track.Title),
+			}
+			items = append(items, item)
+			added = append(added, item)
+		}
+		if len(added) > 0 {
+			// Persist before emitting, so a page that reconnects reads the same
+			// rows the event announced.
+			if err := r.saveRecommendationList(ctx, domain.LastFmRecommendationSimilar, items); err != nil {
+				return items, err
+			}
+			r.emitRecommendationItemsAdded(domain.LastFmRecommendationSimilar, added)
+		}
+		if len(items) >= similarRecommendationTake {
+			break
+		}
+	}
+	r.startKindMatching(ctx, domain.LastFmRecommendationSimilar, items)
+	return items, nil
+}
+
+// similarSeedTracks returns one seed's rows, using the neighbour fallback when
+// the direct answer is empty.
+func (r *Recommender) similarSeedTracks(
+	ctx context.Context, seed LastFmTrack, index int,
+) []LastFmTrack {
+	tracks, err := r.client.GetSimilarTracks(ctx, seed.Artist, seed.Title, similarTrackLimit)
+	if err != nil {
+		r.logger.Debug("last.fm similar tracks failed",
+			"artist", seed.Artist, "title", seed.Title, "error", err)
+		return nil
+	}
+	if len(tracks) > 0 || index >= fallbackSeedLimit {
+		return tracks
+	}
+	hits, failed := r.fallbackForSeed(ctx, seed)
+	if failed {
+		r.logger.Debug("last.fm fallback failed", "artist", seed.Artist, "title", seed.Title)
+	}
+	fallback := make([]LastFmTrack, 0, len(hits))
+	for _, hit := range hits {
+		fallback = append(fallback, hit.track)
+	}
+	return fallback
+}
+
+// startKindMatching applies cached matches and queues one list's rows.
+func (r *Recommender) startKindMatching(ctx context.Context, kind string, items []TopTrackItem) {
+	if len(items) == 0 {
+		return
+	}
+	collected := recommendationCollection{
+		status:  StatusOK,
+		sources: r.topTrackSources(ctx),
+	}
+	if kind == domain.LastFmRecommendationTopTracks {
+		collected.topItems = items
+		collected.wantTop = true
+	} else {
+		collected.similarItems = items
+		collected.wantSimilar = true
+	}
+	r.startRecommendationMatching(ctx, collected, false)
+}
+
+// saveRecommendationList replaces one list's rows.
+func (r *Recommender) saveRecommendationList(ctx context.Context, kind string, items []TopTrackItem) error {
 	store := r.recommendationStoreOrNil()
 	if store == nil {
 		return nil
 	}
-	updatedAt := r.now().UTC()
-	if collected.wantTop {
-		list := &domain.RecommendationList{
-			Kind:      domain.LastFmRecommendationTopTracks,
-			Title:     recommendationTitle(domain.LastFmRecommendationTopTracks),
-			Items:     toDomainRecommendationItems(collected.topItems),
-			UpdatedAt: updatedAt,
-		}
-		if err := store.SaveRecommendationList(ctx, list); err != nil {
-			return err
-		}
+	return store.SaveRecommendationList(ctx, &domain.RecommendationList{
+		Kind:      kind,
+		Title:     recommendationTitle(kind),
+		Items:     toDomainRecommendationItems(items),
+		UpdatedAt: r.now().UTC(),
+	})
+}
+
+// emitRecommendationItemsAdded announces the rows a seed just produced.
+func (r *Recommender) emitRecommendationItemsAdded(kind string, items []TopTrackItem) {
+	if r.emitter == nil || len(items) == 0 {
+		return
 	}
-	if collected.wantSimilar {
-		list := &domain.RecommendationList{
-			Kind:      domain.LastFmRecommendationSimilar,
-			Title:     recommendationTitle(domain.LastFmRecommendationSimilar),
-			Items:     toDomainRecommendationItems(collected.similarItems),
-			UpdatedAt: updatedAt,
-		}
-		if err := store.SaveRecommendationList(ctx, list); err != nil {
-			return err
-		}
-	}
-	return nil
+	r.emitter(recommendationItemsAddedEvent, RecommendationItemsAdded{
+		Kind:  kind,
+		Items: items,
+	})
 }
 
 // persistRecommendationItems writes match progress back to the stored rows.
@@ -391,6 +605,7 @@ func orderSummaries(
 			Title:         summary.Title,
 			TrackCount:    summary.TrackCount,
 			MatchingCount: summary.MatchingCount,
+			TotalDuration: summary.TotalDuration,
 			CoverURLs:     append([]string{}, summary.CoverURLs...),
 			UpdatedAt:     summary.UpdatedAt,
 		})
@@ -421,6 +636,7 @@ func recommendationSummary(kind string, items []TopTrackItem) RecommendationList
 		CoverURLs:  []string{},
 	}
 	for _, item := range items {
+		summary.TotalDuration += item.Duration
 		if item.Matching {
 			summary.MatchingCount++
 		}
@@ -479,6 +695,7 @@ func recommendationItemFromDomain(item domain.RecommendationItem) TopTrackItem {
 		BlockedReason: item.BlockedReason,
 		Sources:       append([]string{}, item.Sources...),
 		Downloadable:  item.Downloadable,
+		Suspicious:    item.Suspicious,
 	}
 }
 
@@ -511,5 +728,6 @@ func toDomainRecommendationItem(item TopTrackItem) domain.RecommendationItem {
 		ExternalID:    item.ExternalID,
 		State:         item.State,
 		LocalTrackID:  item.LocalTrackID,
+		Suspicious:    item.Suspicious,
 	}
 }

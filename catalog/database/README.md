@@ -137,6 +137,7 @@ SQLite database managed via `golang-migrate` for schema versioning and `sqlx` fo
 | 000098 | `lastfm_pending_scrobbles.up.sql` | Add `lastfm_pending_scrobbles(id, artist, title, album, album_artist, track_number, duration, started_at, attempts, last_error, next_retry_at, created_at)` plus `idx_lastfm_pending_retry`. A qualified play is written before the network request; `UNIQUE(artist, title, started_at)` makes one play enqueue once. `started_at` is the Last.fm scrobble timestamp (Unix seconds); `next_retry_at` is the next allowed attempt (`NULL` = permanently refused/ignored). The worker reads due rows oldest-first, batches at most fifty, and cleanup enforces the 30-day/20-attempt/5000-row limits. Down drops the index and table |
 | 000099 | `artist_aliases.up.sql` | Add `artist_aliases(alias_key, canonical_key, evidence, enabled, created_at)` with `(alias_key, canonical_key)` as the PK and `idx_artist_aliases_canonical`. One row stores one direction of an unordered pair; expansion reads both directions. `evidence` is `merge` (learned from a successful merge) or `manual` (settings). `enabled=0` keeps the row but removes it from matching, so a learned mistake is not re-learned. Only normalized single-artist keys are stored; `ArtistAliasRepository.ExpandArtists` expands one hop. Down drops the index and table |
 | 000100 | `lastfm_recommendation_lists.up.sql` | Add `lastfm_recommendation_lists(kind, title, payload, updated_at)` and `lastfm_recommendation_items(kind, position, match_key, title, artist, artists, album, duration, cover_url, cover_url_large, downloadable, blocked_reason, sources, matching, matched, no_source, provider, external_id, state, local_track_id)` with `(kind, match_key)` as the PK and `idx_lastfm_recommendation_matching`. `kind` is `top_tracks` / `similar`; `position` preserves Last.fm order; `artists` and `sources` are JSON. Saving a list replaces its rows in one transaction; match progress updates rows in place. `matching=1` is the restart queue the worker drains. Down drops the index and tables |
+| 000101 | `lastfm_suspicious_matches.up.sql` | Add `lastfm_recommendation_items.suspicious INTEGER NOT NULL DEFAULT 0`. A local match is accepted when title + artist set agree even if the duration disagrees by more than `domain.LocalMatchSuspiciousSeconds` (10s); the flag persists with the row so the UI keeps showing "questionable track" after a restart. Down drops the column |
 
 `listeningRepository.GetListeningInsights` returns up to 50 entries for both Top Artists
 (ordered by listened seconds) and Top Tracks (ordered by play count, then listened
@@ -565,7 +566,7 @@ idx_daily_track_listening_stats_date ON daily_track_listening_stats(local_date)
 
 **`GetRecentlyPlayed`**: `ORDER BY updated_at DESC LIMIT ?` (updated when play count increments)
 
-**`GetRecentlyAdded`**: `ORDER BY created_at DESC LIMIT ?` (track import time)
+**`GetRecentlyAdded`**: `ORDER BY created_at DESC LIMIT ?` (track import time). Remote rows are excluded until they earn a place: `play_count > 0` or a `stream_cache` row with `complete = 1` for the same provider/external id. Local rows always pass, so registering a recommendation list does not flood the view with unplayed shells.
 
 **`Upsert`**: `INSERT OR REPLACE INTO tracks ...` using sqlx named parameters.
 

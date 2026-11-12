@@ -187,6 +187,9 @@ type TopTrackItemDTO struct {
 	BlockedReason string   `json:"blocked_reason"`
 	Sources       []string `json:"sources"`
 	Downloadable  bool     `json:"downloadable"`
+	// Suspicious reports a local match whose duration disagrees; the row stays
+	// playable and the UI asks before saving or downloading.
+	Suspicious bool `json:"suspicious"`
 	// Kind is the list this row belongs to: top_tracks or similar.
 	Kind string `json:"kind"`
 	// MatchKey is artist + "\x00" + title; the frontend replaces rows by it.
@@ -199,6 +202,7 @@ type RecommendationListSummaryDTO struct {
 	Title         string   `json:"title"`
 	TrackCount    int      `json:"track_count"`
 	MatchingCount int      `json:"matching_count"`
+	TotalDuration int      `json:"total_duration"`
 	CoverURLs     []string `json:"cover_urls"`
 	UpdatedAt     string   `json:"updated_at"`
 }
@@ -235,6 +239,7 @@ func (s *LastFmService) ListRecommendationLists() (RecommendationListCollectionD
 			Title:         summary.Title,
 			TrackCount:    summary.TrackCount,
 			MatchingCount: summary.MatchingCount,
+			TotalDuration: summary.TotalDuration,
 			CoverURLs:     append([]string{}, summary.CoverURLs...),
 			UpdatedAt:     summary.UpdatedAt.UTC().Format(time.RFC3339),
 		})
@@ -259,6 +264,11 @@ func (s *LastFmService) GetRecommendationList(kind string) (RecommendationListDT
 // RefreshRecommendationList rebuilds exactly one list.
 func (s *LastFmService) RefreshRecommendationList(kind string) error {
 	return s.recommender.RefreshRecommendationList(context.Background(), kind)
+}
+
+// RefreshRecommendationItem re-runs source matching for one row.
+func (s *LastFmService) RefreshRecommendationItem(kind, matchKey string) error {
+	return s.recommender.RefreshRecommendationItem(context.Background(), kind, matchKey)
 }
 
 // RefreshAllRecommendationLists rebuilds both lists.
@@ -287,6 +297,7 @@ func toTopTrackItemDTOs(items []lastfm.TopTrackItem) []TopTrackItemDTO {
 			BlockedReason: item.BlockedReason,
 			Sources:       append([]string{}, item.Sources...),
 			Downloadable:  item.Downloadable,
+			Suspicious:    item.Suspicious,
 			Kind:          item.Kind,
 			MatchKey:      item.MatchKey,
 		})

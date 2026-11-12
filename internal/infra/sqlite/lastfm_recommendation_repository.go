@@ -33,7 +33,7 @@ type storedRecommendationItem struct {
 
 const recommendationItemColumns = `kind, position, match_key, title, artist, artists, album,
 	duration, cover_url, cover_url_large, downloadable, blocked_reason, sources,
-	matching, matched, no_source, provider, external_id, state, local_track_id`
+	matching, matched, no_source, provider, external_id, state, local_track_id, suspicious`
 
 // ListRecommendationLists returns the stored cards. Counts and covers are
 // derived from the rows, so a stale summary cannot drift from the detail page.
@@ -49,7 +49,7 @@ func (r *lastfmRecommendationRepository) ListRecommendationLists(
 
 	items := make([]domain.RecommendationItem, 0)
 	if err := r.db.SelectContext(ctx, &items,
-		`SELECT kind, position, cover_url, matching
+		`SELECT kind, position, duration, cover_url, matching
 		 FROM lastfm_recommendation_items
 		 ORDER BY kind ASC, position ASC`); err != nil {
 		return nil, fmt.Errorf("lastfm recommendation lists: summaries: %w", err)
@@ -74,6 +74,7 @@ func (r *lastfmRecommendationRepository) ListRecommendationLists(
 			continue
 		}
 		summary.TrackCount++
+		summary.TotalDuration += item.Duration
 		if item.Matching {
 			summary.MatchingCount++
 		}
@@ -175,12 +176,13 @@ func (r *lastfmRecommendationRepository) SaveRecommendationList(
 				`INSERT INTO lastfm_recommendation_items
 				 (kind, position, match_key, title, artist, artists, album, duration, cover_url,
 				  cover_url_large, downloadable, blocked_reason, sources, matching,
-				  matched, no_source, provider, external_id, state, local_track_id)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				  matched, no_source, provider, external_id, state, local_track_id, suspicious)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				list.Kind, position, item.MatchKey, item.Title, item.Artist, string(artists),
 				item.Album, item.Duration, item.CoverURL, item.CoverURLLarge, item.Downloadable,
 				item.BlockedReason, string(sources), item.Matching, item.Matched,
 				item.NoSource, item.Provider, item.ExternalID, item.State, item.LocalTrackID,
+				item.Suspicious,
 			); err != nil {
 				return fmt.Errorf("lastfm recommendation list %s: insert %s: %w",
 					list.Kind, item.MatchKey, err)
@@ -216,12 +218,13 @@ func (r *lastfmRecommendationRepository) UpdateRecommendationItems(
 				 SET title = ?, artist = ?, artists = ?, album = ?, duration = ?, cover_url = ?,
 				     cover_url_large = ?, downloadable = ?, blocked_reason = ?, sources = ?,
 				     matching = ?, matched = ?, no_source = ?, provider = ?,
-				     external_id = ?, state = ?, local_track_id = ?
+				     external_id = ?, state = ?, local_track_id = ?, suspicious = ?
 				 WHERE kind = ? AND match_key = ?`,
 				item.Title, item.Artist, string(artists), item.Album, item.Duration, item.CoverURL,
 				item.CoverURLLarge, item.Downloadable, item.BlockedReason, string(sources),
 				item.Matching, item.Matched, item.NoSource, item.Provider,
-				item.ExternalID, item.State, item.LocalTrackID, item.Kind, item.MatchKey,
+				item.ExternalID, item.State, item.LocalTrackID, item.Suspicious,
+				item.Kind, item.MatchKey,
 			); err != nil {
 				return fmt.Errorf("lastfm recommendation item %s/%s: update: %w",
 					item.Kind, item.MatchKey, err)

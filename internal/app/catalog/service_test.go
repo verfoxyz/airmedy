@@ -252,7 +252,7 @@ func TestPageOf_HasMoreIsNotAGuess(t *testing.T) {
 // fakeStates answers the row-state port and records what it was asked.
 type fakeStates struct {
 	states       map[domain.CatalogIdentity]string
-	localMatches map[domain.CatalogIdentity]string
+	localMatches map[domain.CatalogIdentity]domain.CatalogLocalMatch
 	err          error
 
 	mu    sync.Mutex
@@ -268,13 +268,15 @@ func (f *fakeStates) CatalogRowStates(_ context.Context, identities []domain.Cat
 	return f.states, f.err
 }
 
-func (f *fakeStates) CatalogLocalMatches(_ context.Context, _ []domain.CatalogLocalQuery) (map[domain.CatalogIdentity]string, error) {
+func (f *fakeStates) CatalogLocalMatches(_ context.Context, _ []domain.CatalogLocalQuery) (map[domain.CatalogIdentity]domain.CatalogLocalMatch, error) {
 	return f.localMatches, f.err
 }
 
 func TestApplyStates_MatchesAnImportedLocalRow(t *testing.T) {
 	identity := domain.CatalogIdentity{Provider: "wy", ExternalID: "509781655"}
-	states := &fakeStates{localMatches: map[domain.CatalogIdentity]string{identity: "local-1"}}
+	states := &fakeStates{localMatches: map[domain.CatalogIdentity]domain.CatalogLocalMatch{
+		identity: {TrackID: "local-1"},
+	}}
 	svc := NewService(Deps{States: states, Logger: quietLogger()})
 
 	rows := []domain.CatalogSearchResult{{
@@ -290,8 +292,10 @@ func TestApplyStates_MatchesAnImportedLocalRow(t *testing.T) {
 func TestApplyStates_RegisteredIdentityWinsOverALocalLookalike(t *testing.T) {
 	identity := domain.CatalogIdentity{Provider: "wy", ExternalID: "509781655"}
 	states := &fakeStates{
-		states:       map[domain.CatalogIdentity]string{identity: domain.CatalogRowStateDownloading},
-		localMatches: map[domain.CatalogIdentity]string{identity: "local-1"},
+		states: map[domain.CatalogIdentity]string{identity: domain.CatalogRowStateDownloading},
+		localMatches: map[domain.CatalogIdentity]domain.CatalogLocalMatch{
+			identity: {TrackID: "local-1"},
+		},
 	}
 	svc := NewService(Deps{States: states, Logger: quietLogger()})
 

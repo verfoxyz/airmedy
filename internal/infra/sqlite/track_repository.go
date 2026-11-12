@@ -667,6 +667,9 @@ func (r *trackRepository) GetRecentlyPlayed(ctx context.Context, limit int) ([]*
 }
 
 func (r *trackRepository) GetRecentlyAdded(ctx context.Context, limit int) ([]*domain.TrackDTO, error) {
+	// A remote row is only "recently added" once it earned its place: it was
+	// played, or a complete stream cache exists for it. Registering a Last.fm
+	// playlist's rows for playback must not flood the list with unplayed shells.
 	query := fmt.Sprintf(`
 		SELECT %s, a.title AS album_title, a.sort_title AS album_sort_title, a.normalization_key AS album_normalization_key, a.copyright AS album_copyright, a.artwork_key AS album_artwork_key, a.year AS album_year, a.created_at AS album_created_at, a.updated_at AS album_updated_at,
 		       GROUP_CONCAT(art.name, '; ') AS artist_names,
@@ -675,6 +678,14 @@ func (r *trackRepository) GetRecentlyAdded(ctx context.Context, limit int) ([]*d
 		LEFT JOIN albums a ON t.album_id = a.id
 		LEFT JOIN track_artists ta ON t.id = ta.track_id
 		LEFT JOIN artists art ON ta.artist_id = art.id
+		WHERE t.path NOT LIKE 'remote://%%'
+		   OR t.play_count > 0
+		   OR EXISTS (
+		        SELECT 1 FROM stream_cache sc
+		        WHERE sc.provider = t.provider
+		          AND sc.external_id = t.external_id
+		          AND sc.complete = 1
+		   )
 		GROUP BY t.id
 		ORDER BY t.created_at DESC
 		LIMIT ?

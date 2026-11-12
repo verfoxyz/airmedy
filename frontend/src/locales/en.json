@@ -32,7 +32,9 @@
     "yes": "Yes",
     "no": "No",
     "open_devtools": "Open Developer Tools",
-    "back": "Back"
+    "back": "Back",
+    "suspicious_match": "Questionable track",
+    "suspicious_match_hint": "Duration differs from the source; please confirm."
   },
   "mobile_sync": {
     "back": "Mobile devices",
@@ -940,6 +942,10 @@
     "similar_empty": "No recommendations yet.",
     "refresh_list": "Refresh this list",
     "refresh_all": "Refresh all",
+    "refresh_item": "Refresh this track's source",
+    "play_all": "Play all",
+    "shuffle": "Shuffle",
+    "more_actions": "More actions",
     "list_empty": "No tracks yet."
   }
 }

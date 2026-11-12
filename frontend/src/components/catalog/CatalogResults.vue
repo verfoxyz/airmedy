@@ -542,6 +542,15 @@ defineExpose({
         <span v-else-if="!row.downloadable" class="text-xs text-dimmer">
           {{ blockedReason(row) }}
         </span>
+        <span
+          v-if="row.suspicious"
+          data-test="catalog-suspicious"
+          class="inline-flex items-center gap-1 rounded-full bg-foreground/[0.06] px-2.5 py-1 text-xs text-dim"
+          :title="$t('common.suspicious_match_hint')"
+        >
+          <AlertTriangle class="h-3.5 w-3.5" />
+          {{ $t('common.suspicious_match') }}
+        </span>
 
         <!-- Actions appear on hover, like the rest of the app's list rows. -->
         <div

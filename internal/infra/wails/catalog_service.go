@@ -70,6 +70,9 @@ type CatalogRowDTO struct {
 	// though it was imported rather than downloaded from this provider. The UI
 	// reuses it instead of downloading a duplicate.
 	LocalTrackID string `json:"local_track_id"`
+	// Suspicious marks a local match whose duration disagrees. The row still
+	// reuses the file, but save/download must wait for the user to confirm.
+	Suspicious bool `json:"suspicious"`
 }
 
 // CatalogFailureDTO is one source that could not contribute to the page.
@@ -225,6 +228,7 @@ func (s *CatalogService) SearchCatalog(request CatalogSearchRequest) (CatalogSea
 			BlockedReason: row.DownloadBlockedReason,
 			State:         row.State,
 			LocalTrackID:  row.LocalTrackID,
+			Suspicious:    row.Suspicious,
 		})
 	}
 	for _, source := range page.Sources {

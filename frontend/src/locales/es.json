@@ -32,7 +32,9 @@
     "yes": "Sí",
     "no": "No",
     "open_devtools": "Abrir herramientas de desarrollo",
-    "back": "Atrás"
+    "back": "Atrás",
+    "suspicious_match": "Pista dudosa",
+    "suspicious_match_hint": "La duración difiere de la fuente; confírmalo."
   },
   "mobile_sync": {
     "back": "Dispositivos móviles",
@@ -940,6 +942,10 @@
     "similar_empty": "Aún no hay recomendaciones.",
     "refresh_list": "Actualizar esta lista",
     "refresh_all": "Actualizar todo",
+    "refresh_item": "Actualizar la fuente de esta pista",
+    "play_all": "Reproducir todo",
+    "shuffle": "Aleatorio",
+    "more_actions": "Más acciones",
     "list_empty": "Aún no hay pistas."
   }
 }

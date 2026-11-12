@@ -1243,7 +1243,9 @@ func (c *Cache) fail(s *cacheSession, err error) {
 	c.saveStats(s)
 }
 
-// handleStream serves one cached entry, honouring a single "bytes=N-" range.
+// handleStream serves one cached entry. The single-segment Range forms FFmpeg
+// sends (bytes=N-M, bytes=N-, bytes=-N) are honoured; bytes that have not
+// arrived yet make the handler wait instead of returning EOF.
 func (c *Cache) handleStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1258,10 +1260,25 @@ func (c *Cache) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	start, hasRange, rangeErr := parseRangeHeader(r.Header.Get("Range"))
+	rangeHeader := r.Header.Get("Range")
+	spec, hasRange, rangeErr := parseRangeHeader(rangeHeader)
+	status := http.StatusOK
+	contentRange := ""
+	var written int64
+	// miniaudio only surfaces "ma_player_load failed: -10", so the proxy side
+	// of a failed load must be diagnosable from its own log: the requested
+	// Range, the status returned and the bytes actually written.
+	defer func() {
+		c.logger.Debug("Stream proxy response",
+			"id", id, "method", r.Method, "range", rangeHeader,
+			"status", status, "content_range", contentRange, "written", written)
+	}()
+
 	if rangeErr != nil {
-		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", s.totalOrZero()))
-		http.Error(w, "invalid range", http.StatusRequestedRangeNotSatisfiable)
+		contentRange = fmt.Sprintf("bytes */%d", s.totalOrZero())
+		w.Header().Set("Content-Range", contentRange)
+		status = http.StatusRequestedRangeNotSatisfiable
+		http.Error(w, "invalid range", status)
 		return
 	}
 
@@ -1269,9 +1286,11 @@ func (c *Cache) handleStream(w http.ResponseWriter, r *http.Request) {
 	// this the response would have to start before the first byte is known.
 	if !s.waitReady(r.Context(), 30*time.Second) {
 		if r.Context().Err() != nil {
+			status = 0
 			return
 		}
-		http.Error(w, "stream unavailable", http.StatusBadGateway)
+		status = http.StatusBadGateway
+		http.Error(w, "stream unavailable", status)
 		return
 	}
 
@@ -1281,7 +1300,8 @@ func (c *Cache) handleStream(w http.ResponseWriter, r *http.Request) {
 	failed := s.failed
 	s.mu.Unlock()
 	if failed != nil {
-		http.Error(w, "stream unavailable", http.StatusBadGateway)
+		status = http.StatusBadGateway
+		http.Error(w, "stream unavailable", status)
 		return
 	}
 
@@ -1289,22 +1309,34 @@ func (c *Cache) handleStream(w http.ResponseWriter, r *http.Request) {
 	if contentType != "" {
 		w.Header().Set("Content-Type", contentType)
 	}
-	status := http.StatusOK
+
+	start := int64(0)
+	end := int64(-1) // inclusive; -1 means "to the end"
 	if hasRange && total >= 0 {
-		if start >= total {
-			w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", total))
-			http.Error(w, "range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
+		var ok bool
+		start, end, ok = spec.resolve(total)
+		if !ok {
+			contentRange = fmt.Sprintf("bytes */%d", total)
+			w.Header().Set("Content-Range", contentRange)
+			status = http.StatusRequestedRangeNotSatisfiable
+			http.Error(w, "range not satisfiable", status)
 			return
 		}
 		status = http.StatusPartialContent
-		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, total-1, total))
-	}
-	if total >= 0 {
-		w.Header().Set("Content-Length", strconv.FormatInt(total-start, 10))
+		contentRange = fmt.Sprintf("bytes %d-%d/%d", start, end, total)
+		w.Header().Set("Content-Range", contentRange)
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+	} else if total >= 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(total, 10))
 	}
 	w.WriteHeader(status)
 	if r.Method == http.MethodHead {
 		return
+	}
+
+	limit := int64(-1) // exclusive upper bound; -1 means "until the session ends"
+	if status == http.StatusPartialContent {
+		limit = end + 1
 	}
 
 	flusher, _ := w.(http.Flusher)
@@ -1314,11 +1346,19 @@ func (c *Cache) handleStream(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil || s.isClosed() {
 			return
 		}
-		n, readErr := s.readAt(buf, offset)
+		if limit >= 0 && offset >= limit {
+			return
+		}
+		readBuf := buf
+		if limit >= 0 && limit-offset < int64(len(readBuf)) {
+			readBuf = readBuf[:int(limit-offset)]
+		}
+		n, readErr := s.readAt(readBuf, offset)
 		if n > 0 {
-			if _, err := w.Write(buf[:n]); err != nil {
+			if _, err := w.Write(readBuf[:n]); err != nil {
 				return
 			}
+			written += int64(n)
 			offset += int64(n)
 			if flusher != nil {
 				flusher.Flush()
@@ -1346,29 +1386,79 @@ func (c *Cache) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// parseRangeHeader accepts the single-segment form FFmpeg sends. It returns
+// byteRange is a parsed Range header. Exactly one of suffixLen (bytes=-N) or
+// start/end (bytes=N-M, bytes=N-) is meaningful.
+type byteRange struct {
+	start     int64
+	end       int64 // -1 when the client left the upper bound open
+	suffixLen int64
+}
+
+// resolve maps the request onto a body of total bytes. ok is false when the
+// range cannot be served, which must produce a 416.
+func (r byteRange) resolve(total int64) (start, end int64, ok bool) {
+	if total <= 0 {
+		return 0, 0, false
+	}
+	if r.suffixLen > 0 {
+		n := r.suffixLen
+		if n > total {
+			n = total
+		}
+		return total - n, total - 1, true
+	}
+	if r.start >= total {
+		return 0, 0, false
+	}
+	end = total - 1
+	if r.end >= 0 && r.end < end {
+		end = r.end
+	}
+	return r.start, end, true
+}
+
+// parseRangeHeader accepts the single-segment forms FFmpeg sends. It returns
 // hasRange=false for an absent header so a plain GET is a 200.
-func parseRangeHeader(value string) (start int64, hasRange bool, err error) {
+func parseRangeHeader(value string) (byteRange, bool, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return 0, false, nil
+		return byteRange{}, false, nil
 	}
 	if !strings.HasPrefix(value, "bytes=") {
-		return 0, false, errors.New("only bytes ranges are supported")
+		return byteRange{}, false, errors.New("only bytes ranges are supported")
 	}
 	spec := strings.TrimSpace(strings.TrimPrefix(value, "bytes="))
+	if spec == "" {
+		return byteRange{}, false, errors.New("empty range")
+	}
 	if strings.Contains(spec, ",") {
-		return 0, false, errors.New("multiple ranges are not supported")
+		return byteRange{}, false, errors.New("multiple ranges are not supported")
 	}
-	first := strings.SplitN(spec, "-", 2)[0]
+	bounds := strings.SplitN(spec, "-", 2)
+	if len(bounds) != 2 {
+		return byteRange{}, false, errors.New("invalid range")
+	}
+	first := strings.TrimSpace(bounds[0])
+	last := strings.TrimSpace(bounds[1])
 	if first == "" {
-		return 0, false, errors.New("suffix ranges are not supported")
+		n, err := strconv.ParseInt(last, 10, 64)
+		if err != nil || n <= 0 {
+			return byteRange{}, false, errors.New("invalid suffix range")
+		}
+		return byteRange{suffixLen: n}, true, nil
 	}
-	start, err = strconv.ParseInt(first, 10, 64)
+	start, err := strconv.ParseInt(first, 10, 64)
 	if err != nil || start < 0 {
-		return 0, false, errors.New("invalid range start")
+		return byteRange{}, false, errors.New("invalid range start")
 	}
-	return start, true, nil
+	if last == "" {
+		return byteRange{start: start, end: -1}, true, nil
+	}
+	end, err := strconv.ParseInt(last, 10, 64)
+	if err != nil || end < start {
+		return byteRange{}, false, errors.New("invalid range end")
+	}
+	return byteRange{start: start, end: end}, true, nil
 }
 
 // parseContentRange reads "bytes 0-99/1000" and returns the start, end and

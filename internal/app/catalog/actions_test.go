@@ -627,11 +627,14 @@ type fakeLocalMatcher struct {
 
 func (f *fakeLocalMatcher) MatchLocalTrack(
 	context.Context, string, []string, int,
-) (*domain.TrackDTO, error) {
+) (*domain.LocalTrackMatch, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
-	return f.track, f.err
+	if f.track == nil {
+		return nil, f.err
+	}
+	return &domain.LocalTrackMatch{Track: f.track}, f.err
 }
 
 func (f *fakeLocalMatcher) callCount() int {

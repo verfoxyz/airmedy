@@ -55,6 +55,10 @@ type TopTrackItem struct {
 	BlockedReason string   `json:"blocked_reason"`
 	Sources       []string `json:"sources"`
 	Downloadable  bool     `json:"downloadable"`
+	// Suspicious reports a local match whose duration disagrees with Last.fm by
+	// more than the accepted hint window. The row stays playable; the UI asks
+	// the user to confirm instead of auto-saving or downloading.
+	Suspicious bool `json:"suspicious"`
 	// Kind is the list this row belongs to: top_tracks or similar. It is
 	// persisted with the row, so an event can update the right list.
 	Kind string `json:"kind"`
@@ -890,6 +894,7 @@ func resetTopTrackItem(item TopTrackItem) TopTrackItem {
 	item.Sources = nil
 	item.Downloadable = false
 	item.CoverURLLarge = ""
+	item.Suspicious = false
 	item.Matched = false
 	item.NoSource = false
 	item.Matching = true
@@ -898,11 +903,16 @@ func resetTopTrackItem(item TopTrackItem) TopTrackItem {
 
 // emitTopTrackUpdate sends a failover state change. Done is always false: the
 // rest of the page is already resolved and must not be finished as "no source".
+// The row's kind scopes the update to one list.
 func (r *Recommender) emitTopTrackUpdate(items []TopTrackItem) {
 	if r.emitter == nil {
 		return
 	}
-	r.emitter(recommendationsMatchedEvent, TopTrackUpdate{Items: items, Done: false})
+	kind := ""
+	if len(items) > 0 {
+		kind = items[0].Kind
+	}
+	r.emitter(recommendationsMatchedEvent, TopTrackUpdate{Kind: kind, Items: items, Done: false})
 }
 
 // failedTopSources returns the providers already known to fail this row.
@@ -960,28 +970,30 @@ func (r *Recommender) localMatch(item TopTrackItem) *domain.CatalogSearchResult 
 			"title", item.Title, "error", err)
 		return nil
 	}
-	if local == nil || local.IsRemote() {
+	if local == nil || local.Track == nil || local.Track.IsRemote() {
 		return nil
 	}
+	track := local.Track
 
-	names := make([]string, 0, len(local.Artists))
-	for _, artist := range local.Artists {
+	names := make([]string, 0, len(track.Artists))
+	for _, artist := range track.Artists {
 		if artist != nil && strings.TrimSpace(artist.Name) != "" {
 			names = append(names, strings.TrimSpace(artist.Name))
 		}
 	}
-	album := strings.TrimSpace(local.RawAlbumName)
-	if local.Album != nil && strings.TrimSpace(local.Album.Title) != "" {
-		album = strings.TrimSpace(local.Album.Title)
+	album := strings.TrimSpace(track.RawAlbumName)
+	if track.Album != nil && strings.TrimSpace(track.Album.Title) != "" {
+		album = strings.TrimSpace(track.Album.Title)
 	}
 	return &domain.CatalogSearchResult{
-		Title:        local.Title,
+		Title:        track.Title,
 		Artists:      names,
 		AlbumName:    album,
-		Duration:     local.Duration,
-		CoverURL:     localArtworkURL(local.ArtworkKey),
+		Duration:     track.Duration,
+		CoverURL:     localArtworkURL(track.ArtworkKey),
 		State:        domain.CatalogRowStateInLibrary,
-		LocalTrackID: local.ID,
+		LocalTrackID: track.ID,
+		Suspicious:   local.Suspicious,
 	}
 }
 
@@ -1029,6 +1041,7 @@ func (r *Recommender) applyTopTrackMatch(item *TopTrackItem, row *domain.Catalog
 	item.LocalTrackID = row.LocalTrackID
 	item.BlockedReason = row.DownloadBlockedReason
 	item.Sources = append([]string{}, row.Sources...)
+	item.Suspicious = row.Suspicious
 }
 
 // topTrackSources returns every available source in the priority order, capped

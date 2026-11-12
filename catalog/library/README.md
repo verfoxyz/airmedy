@@ -191,7 +191,7 @@ GetTracksByGenreID(genreID: string): TrackDTO[]
 GetTracksByComposerID(composerID: string): TrackDTO[]
 GetFavoriteTracks(): TrackDTO[]
 GetRecentlyPlayedTracks(limit: number): TrackDTO[]
-GetRecentlyAddedTracks(limit: number): TrackDTO[]
+GetRecentlyAddedTracks(limit: number): TrackDTO[]  // remote rows only after a play or a complete stream cache
 GetMostListenedTracks(limit: number): TrackDTO[]
 GetLeastListenedTracks(limit: number): TrackDTO[]
 // Album queries

@@ -67,10 +67,11 @@ func (s *Service) MatchTrack(
 // MatchLocalTrack finds an on-disk row that already represents title + artists.
 //
 // It is the local-first step of recommendation matching: a hit is playable and
-// already has artwork, so the caller skips the cloud search entirely.
+// already has artwork, so the caller skips the cloud search entirely. A
+// duration disagreement still matches and is reported as suspicious.
 func (s *Service) MatchLocalTrack(
 	ctx context.Context, title string, artists []string, duration int,
-) (*domain.TrackDTO, error) {
+) (*domain.LocalTrackMatch, error) {
 	if s.localMatcher == nil {
 		return nil, nil
 	}

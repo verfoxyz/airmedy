@@ -509,6 +509,21 @@ describe('CatalogResults', () => {
     wrapper.unmount()
   })
 
+  it('flags a suspicious local match without hiding its actions', () => {
+    const wrapper = mountResults({
+      sources: SOURCES,
+      rows: [row({ state: 'in_library', local_track_id: 'local-1', suspicious: true })],
+    })
+
+    const chip = wrapper.find('[data-test="catalog-suspicious"]')
+    expect(chip.exists()).toBe(true)
+    expect(chip.attributes('title')).toBe('common.suspicious_match_hint')
+    expect(chip.text()).toBe('common.suspicious_match')
+    // The user must decide; the row stays playable.
+    expect(wrapper.find('[data-test="catalog-play"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('shows the downloading state while a job is in flight', () => {
     const wrapper = mountResults({ sources: SOURCES, rows: [row({ state: 'downloading' })] })
 

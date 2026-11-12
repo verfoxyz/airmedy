@@ -40,11 +40,12 @@ type LocalTracks interface {
 	GetTrack(ctx context.Context, trackID string) (*domain.TrackDTO, error)
 }
 
-// LocalTrackMatcher finds an existing on-disk row by title + artist set
-// (+ duration tolerance). It is the local-first half of every match: a hit
+// LocalTrackMatcher finds an existing on-disk row by title + compatible artist
+// set. Duration is only a hint: a large disagreement still matches and is
+// reported as suspicious. It is the local-first half of every match: a hit
 // means the provider's row must not be registered at all.
 type LocalTrackMatcher interface {
-	MatchLocalTrack(ctx context.Context, title string, artists []string, duration int) (*domain.TrackDTO, error)
+	MatchLocalTrack(ctx context.Context, title string, artists []string, duration int) (*domain.LocalTrackMatch, error)
 }
 
 // FavoritesWriter flags a track as a favorite.
@@ -134,8 +135,8 @@ func (s *Service) EnsureStreamableTrack(ctx context.Context, request ActionReque
 			normaliseArtists(request.Artists), request.Duration)
 		if err != nil {
 			s.logger.Warn("catalog: local track match failed", "error", err)
-		} else if local != nil && !local.IsRemote() {
-			return local, nil
+		} else if local != nil && local.Track != nil && !local.Track.IsRemote() {
+			return local.Track, nil
 		}
 	}
 

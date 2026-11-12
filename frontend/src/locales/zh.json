@@ -32,7 +32,9 @@
     "yes": "是",
     "no": "否",
     "open_devtools": "打开开发者工具",
-    "back": "返回"
+    "back": "返回",
+    "suspicious_match": "此曲有疑问",
+    "suspicious_match_hint": "时长与来源不一致，请自行确认。"
   },
   "mobile_sync": {
     "back": "移动设备",
@@ -940,6 +942,10 @@
     "similar_empty": "暂时没有推荐。",
     "refresh_list": "刷新此歌单",
     "refresh_all": "刷新全部",
+    "refresh_item": "刷新此曲的源",
+    "play_all": "播放全部",
+    "shuffle": "随机播放",
+    "more_actions": "更多操作",
     "list_empty": "暂无曲目。"
   }
 }

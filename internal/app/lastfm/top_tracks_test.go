@@ -513,6 +513,46 @@ func TestRunTopTracksPrefersTheLocalFile(t *testing.T) {
 	}
 }
 
+// TestLocalMatchCarriesTheSuspiciousFlag: a duration-disagreed local match is
+// still reused, but the row carries the flag so the UI can ask the user.
+func TestLocalMatchCarriesTheSuspiciousFlag(t *testing.T) {
+	source := connectedSource(nil)
+	source.top[topTrackPeriod] = []LastFmTrack{track("Gardens", "Owned Song")}
+	key := "Gardens\x00Owned Song"
+
+	matcher := &fakeMatcher{
+		sources: []domain.CatalogSearchSource{{ID: "wy"}},
+		localRows: map[string]*domain.TrackDTO{
+			key: {Track: domain.Track{
+				ID: "local-1", Title: "Owned Song", Duration: 260,
+			}},
+		},
+		localSuspicious: map[string]bool{key: true},
+	}
+	recommender, capture := newTopTrackRecommender(source, matcher)
+
+	if _, err := recommender.GetTopTrackRecommendations(context.Background()); err != nil {
+		t.Fatalf("GetTopTrackRecommendations: %v", err)
+	}
+
+	var matched *TopTrackItem
+	for _, update := range capture.waitDone(t) {
+		item := update
+		if item.Title == "Owned Song" {
+			matched = &item
+		}
+	}
+	if matched == nil || matched.LocalTrackID != "local-1" || !matched.Matched {
+		t.Fatalf("matched update = %+v, want the local row", matched)
+	}
+	if !matched.Suspicious {
+		t.Fatalf("matched update = %+v, want suspicious=true", matched)
+	}
+	if got := len(matcher.sourcesCalled()); got != 0 {
+		t.Fatalf("source calls = %d, want none for a local match", got)
+	}
+}
+
 // --- "For you" (similar tracks) ----------------------------------------------
 
 func similarTracksKey(artist, title string) string {

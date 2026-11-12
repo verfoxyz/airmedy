@@ -194,8 +194,13 @@ Page-level failures travel as machine kinds in `error_kind` (`no_sources`,
 `views/LastFmView.vue` is the sidebar entry directly below Search. It renders one
 card per persisted recommendation list and opens the detail at
 `/lastfm/lists/:kind` (`top_tracks` or `similar`), in that order: **For you**
-(`lastfm.similar_tracks`) above **Top tracks** (`lastfm.top`). A card shows the
-title, the track count and a 1–4 cover mosaic from `cover_urls`.
+(`lastfm.similar_tracks`) above **Top tracks** (`lastfm.top`). Each card mirrors
+the library album card: a 1–4 cover mosaic, the title, and track count + total
+duration (no artist/composer line). Hovering reveals **play all**, **shuffle**
+and **more**; more offers *refresh this list* and *refresh all*. Play/shuffle read
+the stored rows, resolve the playable ones through the catalogue, and start the
+shared player; shuffle randomizes the resolved IDs. A per-card refresh button
+sits in the cover's top-right corner.
 
 The lists are **persisted**. `LastFmService.ListRecommendationLists()` reads the
 database; only a list that was never built (or a missing kind) triggers one build.
@@ -211,12 +216,14 @@ Refresh is explicit:
 - a refresh bypasses the 30-minute similar-answer cache.
 
 Building keeps the previous rules: top tracks are one `user.getTopTracks`
-(`overall`, limit 50) request; the first ten usable rows seed `track.getSimilar`
-(limit 10 each), and an empty answer falls back to `artist.getSimilar` (limit 3)
-then each similar artist's `artist.getTopTracks` (limit 5). Rows merge by title +
-artist set, ordered by seed support then Last.fm popularity, capped at 50. Seeds
-never recommend themselves; local files are **kept** and become playable through
-the shared queue.
+(`overall`, limit 50) request. The **For you** list is built seed by seed: the
+first ten usable top tracks seed `track.getSimilar` (limit 10 each), and an empty
+answer falls back to `artist.getSimilar` (limit 3) then each similar artist's
+`artist.getTopTracks` (limit 5). Each seed's new rows are written to the store and
+emitted as `lastfm:recommendation-items-added` (`{kind, items}`), appended in seed
+order then Last.fm order. A song several seeds recommend is kept once; the list
+is capped at 50. Seeds never recommend themselves; local files are **kept** and
+become playable through the shared queue.
 
 Matching continues in the background and writes each result back to
 `lastfm_recommendation_items`, so the status survives a restart; the worker only
@@ -224,20 +231,34 @@ processes rows with `matching = 1`. It runs five workers, one per source (`wy`,
 `kg`, `tx`, `kw`, `mg` in priority order). Before any worker starts, the local
 matcher (`MatchLocalTrack`) checks whether the song is already on disk; a hit is
 reported as in-library with its `local_track_id` and no source is searched. That
-lookup is title + artist set (order and separators ignored), duration ±5s.
+lookup is title + artist set (order and separators ignored); duration is a hint
+(≤10s is normal, a larger difference still matches but the row shows the
+"questionable track" chip).
 Otherwise a worker searches only its own source; a miss puts the row back for the
 other workers, and a per-row tried set guarantees each row/source pair is
 searched once. A row becomes `no_source` only after every source failed. Source
 outcomes are cached for 30 minutes per (list kind + artist + title, source).
 
 Rows are updated through `lastfm:recommendations-matched` with `{kind, items,
-done}`, batched every 300–500 ms. `kind` is empty for the combined initial run and
+done}`, batched every 300–500 ms. `kind` is empty for a combined initial run and
 names the list for a single-list refresh, so a detail page ignores another list's
 updates. The page replaces rows by `match_key` (artist + `\0` + title); a row is
 `matching` until a source hits, then shows its provider and the shared play/save
 actions. `done` is authoritative for the current list: no row stays `matching`,
 and unresolved rows read "no match". The cards page reloads the summaries on
 `done`.
+
+The detail page is `/lastfm/lists/:kind`. Its header mirrors the card: back
+button, the same 1–4 cover mosaic, title and `track count · total duration`, plus
+**play all**, **shuffle** and a **more** menu that refreshes this list. The rows
+reuse `TopTrackRow` (match status, play, save). Cover, duration and playable-row
+parsing come from the shared `lib/lastfmTracks.ts`. Because the route name is
+shared, the view watches the parameter and reloads when the user moves between
+cards. A row's context menu offers **refresh this track's source**
+(`RefreshRecommendationItem(kind, match_key)`): it clears that row's cached source
+results and failed providers, resets it to `matching`, persists it and re-queues
+it through the same workers. Other rows keep their caches and no Last.fm content
+request is made. A row already `matching` disables the action.
 
 Cover priority is fixed: a real Last.fm image (`LastFmTrack.ImageURL`, placeholder
 already filtered out by the client) wins, then the matched source's `cover_url`,

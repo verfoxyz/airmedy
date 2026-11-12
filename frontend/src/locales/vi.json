@@ -32,7 +32,9 @@
     "yes": "Có",
     "no": "Không",
     "open_devtools": "Mở công cụ dành cho nhà phát triển",
-    "back": "Quay lại"
+    "back": "Quay lại",
+    "suspicious_match": "Bài hát cần xác nhận",
+    "suspicious_match_hint": "Thời lượng khác nguồn; vui lòng xác nhận."
   },
   "mobile_sync": {
     "back": "Thiết bị di động",
@@ -940,6 +942,10 @@
     "similar_empty": "Chưa có gợi ý nào.",
     "refresh_list": "Làm mới danh sách này",
     "refresh_all": "Làm mới tất cả",
+    "refresh_item": "Làm mới nguồn của bài hát này",
+    "play_all": "Phát tất cả",
+    "shuffle": "Phát ngẫu nhiên",
+    "more_actions": "Thao tác khác",
     "list_empty": "Chưa có bài hát."
   }
 }

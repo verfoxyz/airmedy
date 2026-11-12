@@ -365,8 +365,8 @@ func TestUpgradeFromVersion95AddsDiscardPending(t *testing.T) {
 	if dirty {
 		t.Fatal("the upgrade left the schema dirty")
 	}
-	if version != 100 {
-		t.Fatalf("version = %d, want 100", version)
+	if version != 101 {
+		t.Fatalf("version = %d, want 101", version)
 	}
 	if !hasColumn("promoted") || !hasColumn("discard_pending") {
 		t.Fatal("the upgraded database is missing a promotion column")

@@ -202,6 +202,10 @@ type CatalogSearchResult struct {
 	// row is in the library through that row; actions reuse it instead of
 	// registering a new remote identity.
 	LocalTrackID string
+	// Suspicious reports a local match whose duration differs from this row by
+	// more than LocalMatchSuspiciousSeconds. The row still reuses the on-disk
+	// file, but the UI must ask the user to confirm before saving or downloading.
+	Suspicious bool
 }
 
 // CatalogSearchPage is one assembled page.
@@ -335,10 +339,11 @@ type CatalogRowStateResolver interface {
 	// omits it when the track was never registered. An error is reported but
 	// never fails the search: losing the badge must not blank the page.
 	CatalogRowStates(ctx context.Context, identities []CatalogIdentity) (map[CatalogIdentity]string, error)
-	// CatalogLocalMatches maps identities to an existing on-disk track id when
-	// the library already holds the same song outside this provider. The search
-	// page uses it to avoid a duplicate download for an imported file.
-	CatalogLocalMatches(ctx context.Context, queries []CatalogLocalQuery) (map[CatalogIdentity]string, error)
+	// CatalogLocalMatches maps identities to an existing on-disk row when the
+	// library already holds the same song outside this provider. The search page
+	// uses it to avoid a duplicate download for an imported file; Suspicious
+	// marks a match whose duration disagrees, so the UI can ask the user.
+	CatalogLocalMatches(ctx context.Context, queries []CatalogLocalQuery) (map[CatalogIdentity]CatalogLocalMatch, error)
 }
 
 // CatalogSearchFailureKind names why one source could not be searched.

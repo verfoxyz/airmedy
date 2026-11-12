@@ -141,10 +141,11 @@ type CatalogMatcher interface {
 		ctx context.Context, title, artist string, duration int, sources []string,
 	) ([]domain.CatalogSearchResult, error)
 	// MatchLocalTrack answers "is this song already on disk?" without a network
-	// call, so a library copy is reused before any source is searched.
+	// call, so a library copy is reused before any source is searched. The match
+	// reports a suspicious duration disagreement instead of rejecting the row.
 	MatchLocalTrack(
 		ctx context.Context, title string, artists []string, duration int,
-	) (*domain.TrackDTO, error)
+	) (*domain.LocalTrackMatch, error)
 	Sources(ctx context.Context) ([]domain.CatalogSearchSource, error)
 }
 

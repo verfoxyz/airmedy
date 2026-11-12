@@ -337,6 +337,173 @@ func TestCacheProxiesFullBodyAndRange(t *testing.T) {
 	}
 }
 
+// TestCacheServesAllRangeForms covers the probe shapes FFmpeg sends against a
+// seekable stream: bounded, open-ended and suffix ranges must return exactly
+// the requested bytes with matching Content-Range, while out-of-range and
+// multi-range requests must be 416.
+func TestCacheServesAllRangeForms(t *testing.T) {
+	data := bytes.Repeat([]byte("0123456789abcdef"), 512) // 8192 bytes
+	total := int64(len(data))
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "song.flac", time.Time{}, bytes.NewReader(data))
+	}))
+	defer upstream.Close()
+
+	cache := newTestCache(t, &fakeResolver{ref: domain.StreamRef{URL: upstream.URL + "/song.flac"}})
+	session, err := cache.Open(context.Background(), remoteTrack())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+
+	tests := []struct {
+		name       string
+		header     string
+		wantStatus int
+		wantStart  int64
+		wantEnd    int64
+		wantBody   []byte
+	}{
+		{"bounded", "bytes=0-99", http.StatusPartialContent, 0, 99, data[:100]},
+		{"open", "bytes=100-", http.StatusPartialContent, 100, total - 1, data[100:]},
+		{"suffix", "bytes=-1024", http.StatusPartialContent, total - 1024, total - 1, data[total-1024:]},
+		{"suffix wider than body", "bytes=-999999", http.StatusPartialContent, 0, total - 1, data},
+		{"bounded clamped to body", "bytes=8000-999999", http.StatusPartialContent, 8000, total - 1, data[8000:]},
+		{"start past end", "bytes=999999-", http.StatusRequestedRangeNotSatisfiable, 0, 0, nil},
+		{"multi range", "bytes=0-1,4-5", http.StatusRequestedRangeNotSatisfiable, 0, 0, nil},
+		{"zero suffix", "bytes=-0", http.StatusRequestedRangeNotSatisfiable, 0, 0, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, session.URL, nil)
+			req.Header.Set("Range", tt.header)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("GET %q: %v", tt.header, err)
+			}
+			body, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if readErr != nil {
+				t.Fatalf("read body: %v", readErr)
+			}
+			if resp.StatusCode != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+			if tt.wantStatus != http.StatusPartialContent {
+				if got, want := resp.Header.Get("Content-Range"), fmt.Sprintf("bytes */%d", total); got != want {
+					t.Fatalf("Content-Range = %q, want %q", got, want)
+				}
+				return
+			}
+			if got, want := resp.Header.Get("Content-Range"), fmt.Sprintf("bytes %d-%d/%d", tt.wantStart, tt.wantEnd, total); got != want {
+				t.Fatalf("Content-Range = %q, want %q", got, want)
+			}
+			if got, want := resp.Header.Get("Content-Length"), strconv.FormatInt(tt.wantEnd-tt.wantStart+1, 10); got != want {
+				t.Fatalf("Content-Length = %q, want %q", got, want)
+			}
+			if !bytes.Equal(body, tt.wantBody) {
+				t.Fatalf("body = %d bytes, want %d", len(body), len(tt.wantBody))
+			}
+		})
+	}
+
+	resp, err := http.Get(session.URL)
+	if err != nil {
+		t.Fatalf("GET without range: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Accept-Ranges"); got != "bytes" {
+		t.Fatalf("Accept-Ranges = %q, want bytes", got)
+	}
+	if !bytes.Equal(body, data) {
+		t.Fatalf("full body = %d bytes, want %d", len(body), len(data))
+	}
+}
+
+// TestCacheRangeBlocksUntilBytesArrive: a bounded range extending past the
+// downloaded watermark must not end there; the handler resumes once the
+// download catches up, so a growing file never looks truncated.
+func TestCacheRangeBlocksUntilBytesArrive(t *testing.T) {
+	data := bytes.Repeat([]byte{0x5a}, 2<<20)
+	const pauseAfter = 1280 * 1024
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/flac")
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write(data[:pauseAfter]); err != nil {
+			return
+		}
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = w.Write(data[pauseAfter:])
+	}))
+	defer upstream.Close()
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+
+	cache := newTestCache(t, &fakeResolver{ref: domain.StreamRef{URL: upstream.URL + "/song.flac"}})
+	session, err := cache.Open(context.Background(), remoteTrack())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+
+	const rangeStart, rangeEnd = 1000000, 1500000
+	type result struct {
+		body []byte
+		err  error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		req, _ := http.NewRequest(http.MethodGet, session.URL, nil)
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", rangeStart, rangeEnd))
+		resp, getErr := http.DefaultClient.Do(req)
+		if getErr != nil {
+			resultCh <- result{err: getErr}
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, readErr := io.ReadAll(resp.Body)
+		resultCh <- result{body: body, err: readErr}
+	}()
+
+	select {
+	case got := <-resultCh:
+		t.Fatalf("client finished early with %d bytes while the tail was paused: %v", len(got.body), got.err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case got := <-resultCh:
+		if got.err != nil {
+			t.Fatalf("read: %v", got.err)
+		}
+		want := data[rangeStart : rangeEnd+1]
+		if !bytes.Equal(got.body, want) {
+			t.Fatalf("body = %d bytes, want %d", len(got.body), len(want))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("client never received the released range")
+	}
+}
+
 // TestCacheBlocksUntilBytesArrive proves the proxy waits for a growing file
 // instead of returning EOF: the upstream pauses mid-body after the prebuffer
 // water mark, and the client must receive every byte only after the rest is
@@ -484,27 +651,30 @@ func TestEnforceLimitSkipsActiveSession(t *testing.T) {
 func TestParseRangeHeader(t *testing.T) {
 	tests := []struct {
 		in       string
-		start    int64
+		want     byteRange
 		hasRange bool
 		wantErr  bool
 	}{
-		{"", 0, false, false},
-		{"bytes=0-", 0, true, false},
-		{"bytes=1234-", 1234, true, false},
-		{"bytes=100-200", 100, true, false},
-		{"bytes=-500", 0, false, true},
-		{"bytes=0-1,4-5", 0, false, true},
-		{"items=0-", 0, false, true},
-		{"bytes=abc-", 0, false, true},
+		{"", byteRange{}, false, false},
+		{"bytes=0-", byteRange{start: 0, end: -1}, true, false},
+		{"bytes=1234-", byteRange{start: 1234, end: -1}, true, false},
+		{"bytes=100-200", byteRange{start: 100, end: 200}, true, false},
+		{"bytes=-500", byteRange{suffixLen: 500}, true, false},
+		{"bytes=-0", byteRange{}, false, true},
+		{"bytes=", byteRange{}, false, true},
+		{"bytes=200-100", byteRange{}, false, true},
+		{"bytes=0-1,4-5", byteRange{}, false, true},
+		{"items=0-", byteRange{}, false, true},
+		{"bytes=abc-", byteRange{}, false, true},
 	}
 	for _, tt := range tests {
-		start, hasRange, err := parseRangeHeader(tt.in)
+		got, hasRange, err := parseRangeHeader(tt.in)
 		if (err != nil) != tt.wantErr {
 			t.Errorf("parseRangeHeader(%q) error = %v, wantErr %v", tt.in, err, tt.wantErr)
 			continue
 		}
-		if start != tt.start || hasRange != tt.hasRange {
-			t.Errorf("parseRangeHeader(%q) = (%d,%v), want (%d,%v)", tt.in, start, hasRange, tt.start, tt.hasRange)
+		if got != tt.want || hasRange != tt.hasRange {
+			t.Errorf("parseRangeHeader(%q) = (%+v,%v), want (%+v,%v)", tt.in, got, hasRange, tt.want, tt.hasRange)
 		}
 	}
 }
@@ -528,8 +698,8 @@ func (u *chunkedUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		u.mu.Lock()
 		u.rngs = append(u.rngs, value)
 		u.mu.Unlock()
-		if parsed, hasRange, err := parseRangeHeader(value); err == nil && hasRange {
-			start = parsed
+		if parsed, hasRange, err := parseRangeHeader(value); err == nil && hasRange && parsed.suffixLen == 0 {
+			start = parsed.start
 		}
 	}
 	if start > int64(len(u.body)) {

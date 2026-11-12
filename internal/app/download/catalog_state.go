@@ -113,22 +113,25 @@ func (s *Service) CatalogRowStates(
 	return states, nil
 }
 
-// catalogLocalTolerance is the ±5s window used to recognise an imported file as
-// the same song as a search hit.
-const catalogLocalTolerance = 5
+// absoluteDifference returns |a - b| for the duration hint.
+func absoluteDifference(a, b int) int {
+	difference := a - b
+	if difference < 0 {
+		return -difference
+	}
+	return difference
+}
 
 // CatalogLocalMatches implements domain.CatalogRowStateResolver.
 //
-// A file the user imported carries no provider identity, so the identity lookup
-// cannot see it and the search row would offer a second download of the same
-// song. This answers the other question: does an on-disk track already look
-// like this row? The rule matches the merge heuristic — same normalised title,
-// compatible artist set and duration within ±5s — because a looser rule would
-// pair a live version or a cover with the studio track.
+// Title + compatible artist set decide the match; duration is only a hint. A
+// difference above domain.LocalMatchSuspiciousSeconds still reuses the on-disk
+// row but marks it suspicious, so the search row asks the user instead of
+// silently treating a different recording as owned.
 func (s *Service) CatalogLocalMatches(
 	ctx context.Context, queries []domain.CatalogLocalQuery,
-) (map[domain.CatalogIdentity]string, error) {
-	matches := make(map[domain.CatalogIdentity]string, len(queries))
+) (map[domain.CatalogIdentity]domain.CatalogLocalMatch, error) {
+	matches := make(map[domain.CatalogIdentity]domain.CatalogLocalMatch, len(queries))
 
 	type candidate struct {
 		query    domain.CatalogLocalQuery
@@ -143,7 +146,11 @@ func (s *Service) CatalogLocalMatches(
 			continue
 		}
 		valid = append(valid, candidate{query: query, identity: query.Identity})
-		low, high := query.Duration-catalogLocalTolerance, query.Duration+catalogLocalTolerance
+		low := query.Duration - domain.LocalMatchCandidateWindowSeconds
+		if low < 0 {
+			low = 0
+		}
+		high := query.Duration + domain.LocalMatchCandidateWindowSeconds
 		if minDuration == 0 || low < minDuration {
 			minDuration = low
 		}
@@ -164,14 +171,7 @@ func (s *Service) CatalogLocalMatches(
 		bestID, bestDistance := "", -1
 		wantedArtists := domain.ArtistSetKey(c.query.Artists)
 		for _, track := range tracks {
-			if track == nil {
-				continue
-			}
-			distance := track.Duration - c.query.Duration
-			if distance < 0 {
-				distance = -distance
-			}
-			if distance > catalogLocalTolerance {
+			if track == nil || track.IsRemote() {
 				continue
 			}
 			if !sameCatalogTitle(track.Title, c.query.Title) {
@@ -181,12 +181,17 @@ func (s *Service) CatalogLocalMatches(
 				!domain.ArtistNamesCompatibleWithAliases(ctx, s.aliases, artistNames(track), c.query.Artists) {
 				continue
 			}
+			distance := absoluteDifference(track.Duration, c.query.Duration)
 			if bestID == "" || distance < bestDistance {
 				bestID, bestDistance = track.ID, distance
 			}
 		}
-		if bestID != "" {
-			matches[c.identity] = bestID
+		if bestID == "" {
+			continue
+		}
+		matches[c.identity] = domain.CatalogLocalMatch{
+			TrackID:    bestID,
+			Suspicious: bestDistance > domain.LocalMatchSuspiciousSeconds,
 		}
 	}
 	return matches, nil
@@ -195,24 +200,28 @@ func (s *Service) CatalogLocalMatches(
 // MatchLocalTrack finds an on-disk row that already represents one song.
 //
 // It is the local-first half of every "is this song already in the library?"
-// question: title + compatible artist set are compared against playable files,
-// with the duration narrowed to ±5s when the caller knows it. No network access. A
-// hit lets the caller skip the cloud search and reuse the row that has a real path
-// and artwork.
+// question: title + compatible artist set decide the match and the duration is
+// only a hint. A difference above domain.LocalMatchSuspiciousSeconds still
+// matches but reports Suspicious, so the caller can ask the user instead of
+// creating a second row. No network access.
 func (s *Service) MatchLocalTrack(
 	ctx context.Context, title string, artists []string, duration int,
-) (*domain.TrackDTO, error) {
+) (*domain.LocalTrackMatch, error) {
 	titleKey := domain.NormalizationKey(strings.TrimSpace(title))
 	wantedArtists := domain.ArtistSetKey(artists)
 	if titleKey == "" || wantedArtists == "" {
 		return nil, nil
 	}
 
-	// Without a duration the whole playable range is a candidate; the title and
-	// artist set still make the match safe.
+	// A duration only widens or narrows the candidate scan; it never rejects a
+	// title + artist match. Without one, the whole playable range is considered.
 	lower, upper := 0, math.MaxInt32
 	if duration > 0 {
-		lower, upper = duration-catalogLocalTolerance, duration+catalogLocalTolerance
+		lower = duration - domain.LocalMatchCandidateWindowSeconds
+		if lower < 0 {
+			lower = 0
+		}
+		upper = duration + domain.LocalMatchCandidateWindowSeconds
 	}
 	candidates, err := s.tracks.FindPlayableByDuration(ctx, lower, upper)
 	if err != nil {
@@ -231,24 +240,22 @@ func (s *Service) MatchLocalTrack(
 		if !domain.ArtistNamesCompatibleWithAliases(ctx, s.aliases, artistNames(track), artists) {
 			continue
 		}
-		if duration > 0 {
-			distance := track.Duration - duration
-			if distance < 0 {
-				distance = -distance
-			}
-			if distance > catalogLocalTolerance {
-				continue
-			}
-			if best == nil || distance < bestDistance {
-				best, bestDistance = track, distance
-			}
-			continue
+		// An unknown duration cannot make a match suspicious; it just cannot sort
+		// the candidates. Below, the smallest difference wins.
+		distance := 0
+		if duration > 0 && track.Duration > 0 {
+			distance = absoluteDifference(track.Duration, duration)
 		}
-		if best == nil {
-			best = track
+		if best == nil || distance < bestDistance {
+			best, bestDistance = track, distance
 		}
 	}
-	return best, nil
+	if best == nil {
+		return nil, nil
+	}
+	suspicious := duration > 0 && best.Duration > 0 &&
+		bestDistance > domain.LocalMatchSuspiciousSeconds
+	return &domain.LocalTrackMatch{Track: best, Suspicious: suspicious}, nil
 }
 
 // GetTrack exposes one library row for the catalogue action path, which needs

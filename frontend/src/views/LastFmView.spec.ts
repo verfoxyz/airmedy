@@ -8,6 +8,9 @@ const mocks = vi.hoisted(() => ({
   list: vi.fn(),
   refreshList: vi.fn(),
   refreshAll: vi.fn(),
+  getList: vi.fn(),
+  preparePlayback: vi.fn(),
+  playTrackIds: vi.fn(),
   handlers: new Map<string, (event: { data?: unknown }) => void>(),
   off: vi.fn(),
 }))
@@ -34,16 +37,50 @@ vi.mock('../../bindings/airmedy/internal/infra/wails/lastfmservice', () => ({
   ListRecommendationLists: mocks.list,
   RefreshRecommendationList: mocks.refreshList,
   RefreshAllRecommendationLists: mocks.refreshAll,
+  GetRecommendationList: mocks.getList,
 }))
 
-function summary(kind: string, count: number, covers: string[] = []) {
+vi.mock('@/stores/catalog', () => ({
+  useCatalogStore: () => ({ preparePlayback: mocks.preparePlayback }),
+}))
+
+vi.mock('@/stores/player', () => ({
+  usePlayerStore: () => ({ playTrackIds: mocks.playTrackIds }),
+}))
+
+function summary(kind: string, count: number, covers: string[] = [], duration = 0) {
   return {
     kind,
     title: kind === 'similar' ? 'lastfm.similar_tracks' : 'lastfm.top',
     track_count: count,
     matching_count: 0,
+    total_duration: duration,
     cover_urls: covers,
     updated_at: '2026-01-01T00:00:00Z',
+  }
+}
+
+function trackRow(title: string, state: 'matched' | 'matching' | 'no_match' = 'matched') {
+  return {
+    title,
+    artist: 'Artist',
+    album: 'Album',
+    duration: 200,
+    artists: ['Artist'],
+    cover_url: '',
+    cover_url_large: '',
+    matching: state === 'matching',
+    matched: state === 'matched',
+    no_source: state === 'no_match',
+    provider: state === 'matched' ? 'wy' : '',
+    external_id: state === 'matched' ? `wy-${title}` : '',
+    state: '',
+    local_track_id: '',
+    blocked_reason: '',
+    sources: state === 'matched' ? ['wy'] : [],
+    downloadable: state === 'matched',
+    kind: 'top_tracks',
+    match_key: `artist\u0000${title.toLowerCase()}`,
   }
 }
 
@@ -52,7 +89,7 @@ function collection(status = 'ok') {
     status,
     lists: status === 'not_connected'
       ? []
-      : [summary('similar', 3, ['https://cover/a.jpg']), summary('top_tracks', 50)],
+      : [summary('similar', 3, ['https://cover/a.jpg'], 380), summary('top_tracks', 50, [], 9000)],
   }
 }
 
@@ -79,10 +116,16 @@ describe('LastFmView (persisted recommendation cards)', () => {
     mocks.list.mockReset()
     mocks.refreshList.mockReset()
     mocks.refreshAll.mockReset()
+    mocks.getList.mockReset()
+    mocks.preparePlayback.mockReset()
+    mocks.playTrackIds.mockReset()
     mocks.handlers.clear()
     mocks.off.mockReset()
+    document.body.innerHTML = ''
     mocks.refreshList.mockResolvedValue(undefined)
     mocks.refreshAll.mockResolvedValue(undefined)
+    mocks.preparePlayback.mockImplementation(async (row: { title: string }) => `id-${row.title}`)
+    mocks.playTrackIds.mockResolvedValue(undefined)
   })
 
   it('guides the user to settings when Last.fm is not connected', async () => {
@@ -105,6 +148,7 @@ describe('LastFmView (persisted recommendation cards)', () => {
     expect(cards[0].find('[data-test="lastfm-card-count"]').text()).toBe('3')
     expect(cards[1].attributes('data-kind')).toBe('top_tracks')
     expect(cards[1].find('[data-test="lastfm-card-count"]').text()).toBe('50')
+    expect(cards[0].find('[data-test="lastfm-card-duration"]').text()).toBe('6 common.min')
     expect(cards[0].findAll('img')).toHaveLength(1)
   })
 
@@ -161,6 +205,58 @@ describe('LastFmView (persisted recommendation cards)', () => {
     await empty.find('button').trigger('click')
     await flushPromises()
     expect(mocks.refreshAll).toHaveBeenCalledTimes(1)
+  })
+
+  it('plays every playable row of a card', async () => {
+    mocks.list.mockResolvedValue(collection())
+    mocks.getList.mockResolvedValue({
+      kind: 'top_tracks',
+      title: 'lastfm.top',
+      items: [trackRow('One'), trackRow('Pending', 'matching'), trackRow('Two')],
+      updated_at: '2026-01-01T00:00:00Z',
+    })
+    const wrapper = await mountView()
+
+    await wrapper.findAll('[data-test="lastfm-card-play"]')[1].trigger('click')
+    await flushPromises()
+
+    expect(mocks.getList).toHaveBeenCalledWith('top_tracks')
+    expect(mocks.preparePlayback).toHaveBeenCalledTimes(2)
+    expect(mocks.playTrackIds).toHaveBeenCalledWith(['id-One', 'id-Two'])
+    expect(mocks.push).not.toHaveBeenCalled()
+  })
+
+  it('shuffles the playable rows of a card', async () => {
+    mocks.list.mockResolvedValue(collection())
+    mocks.getList.mockResolvedValue({
+      kind: 'top_tracks',
+      title: 'lastfm.top',
+      items: [trackRow('Only')],
+      updated_at: '2026-01-01T00:00:00Z',
+    })
+    const wrapper = await mountView()
+
+    await wrapper.findAll('[data-test="lastfm-card-shuffle"]')[1].trigger('click')
+    await flushPromises()
+
+    expect(mocks.playTrackIds).toHaveBeenCalledWith(['id-Only'])
+  })
+
+  it('offers refresh actions from the card more menu', async () => {
+    mocks.list.mockResolvedValue(collection())
+    const wrapper = await mountView()
+
+    await wrapper.findAll('[data-test="lastfm-card-more"]')[1].trigger('click')
+    const labels = [...document.body.querySelectorAll('span')].map((node) => node.textContent)
+    expect(labels).toContain('lastfm.refresh_list')
+    expect(labels).toContain('lastfm.refresh_all')
+
+    const refreshThis = [...document.body.querySelectorAll('span')].find(
+      (node) => node.textContent === 'lastfm.refresh_list',
+    )
+    refreshThis!.closest('div')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+    expect(mocks.refreshList).toHaveBeenCalledWith('top_tracks')
   })
 
   it('releases the match listener on unmount', async () => {

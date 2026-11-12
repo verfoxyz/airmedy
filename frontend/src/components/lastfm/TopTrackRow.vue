@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Heart, Music, Play } from '@lucide/vue'
+import { AlertTriangle, Heart, Music, Play } from '@lucide/vue'
 import { useI18n } from 'vue-i18n'
 import LazyImg from '@/components/LazyImg.vue'
 import type { TopTrackItemDTO } from '../../../bindings/airmedy/internal/infra/wails/models'
@@ -103,6 +103,16 @@ const canSave = computed(
       data-state="matched"
     >
       {{ matchedLabel }}
+    </span>
+
+    <span
+      v-if="item.suspicious"
+      class="inline-flex shrink-0 items-center gap-1 rounded-full bg-foreground/[0.06] px-2.5 py-1 text-xs text-dim"
+      :title="t('common.suspicious_match_hint')"
+      data-test="top-track-suspicious"
+    >
+      <AlertTriangle class="h-3.5 w-3.5" aria-hidden="true" />
+      {{ t('common.suspicious_match') }}
     </span>
 
     <div v-if="canPlay || canSave" class="flex shrink-0 items-center gap-1">

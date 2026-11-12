@@ -559,9 +559,10 @@ func (s *Service) applyStates(ctx context.Context, rows []domain.CatalogSearchRe
 			continue
 		}
 		identity := domain.CatalogIdentity{Provider: rows[index].Provider, ExternalID: rows[index].ExternalID}
-		if id := matches[identity]; id != "" {
-			rows[index].LocalTrackID = id
+		if match := matches[identity]; match.TrackID != "" {
+			rows[index].LocalTrackID = match.TrackID
 			rows[index].State = domain.CatalogRowStateInLibrary
+			rows[index].Suspicious = match.Suspicious
 		}
 	}
 }

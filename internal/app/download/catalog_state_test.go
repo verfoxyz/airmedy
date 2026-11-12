@@ -95,9 +95,9 @@ func TestCatalogLocalMatches_MatchesAnImportedFileByTitleArtistAndDuration(t *te
 	})
 	require.NoError(t, err)
 
-	assert.Equal(t, "local-1", matches[identity])
-	assert.Equal(t, "local-1", matches[versionIdentity])
-	assert.Equal(t, "cover-1", matches[domain.CatalogIdentity{Provider: "wy", ExternalID: "2"}])
+	assert.Equal(t, "local-1", matches[identity].TrackID)
+	assert.Equal(t, "local-1", matches[versionIdentity].TrackID)
+	assert.Equal(t, "cover-1", matches[domain.CatalogIdentity{Provider: "wy", ExternalID: "2"}].TrackID)
 	assert.NotContains(t, matches, domain.CatalogIdentity{Provider: "wy", ExternalID: "3"},
 		"a query without a duration is too weak to match")
 }
@@ -126,7 +126,7 @@ func TestCatalogLocalMatches_AllowsAPrimaryArtistOnlyQuery(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	assert.Equal(t, "local-1", matches[identity])
+	assert.Equal(t, "local-1", matches[identity].TrackID)
 	assert.NotContains(t, matches, unrelated, "an unrelated artist must not match")
 }
 

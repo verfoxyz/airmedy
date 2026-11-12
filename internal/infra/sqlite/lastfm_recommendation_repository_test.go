@@ -35,12 +35,12 @@ func TestRecommendationRepositorySavesReadsAndUpdatesRows(t *testing.T) {
 			{
 				Kind: domain.LastFmRecommendationTopTracks, MatchKey: "a\x00one",
 				Title: "One", Artist: "A", Artists: []string{"A", "B"},
-				CoverURL: "https://cover/1.jpg", Sources: []string{"wy"},
+				Duration: 200, CoverURL: "https://cover/1.jpg", Sources: []string{"wy"},
 				Matching: true,
 			},
 			{
 				Kind: domain.LastFmRecommendationTopTracks, MatchKey: "a\x00two",
-				Title: "Two", Artist: "A", CoverURL: "https://cover/2.jpg",
+				Title: "Two", Artist: "A", Duration: 180, CoverURL: "https://cover/2.jpg",
 				Matching: true,
 			},
 		},
@@ -82,7 +82,8 @@ func TestRecommendationRepositorySavesReadsAndUpdatesRows(t *testing.T) {
 	for _, summary := range summaries {
 		switch summary.Kind {
 		case domain.LastFmRecommendationTopTracks:
-			if summary.TrackCount != 2 || summary.MatchingCount != 2 || len(summary.CoverURLs) != 2 {
+			if summary.TrackCount != 2 || summary.MatchingCount != 2 ||
+				summary.TotalDuration != 380 || len(summary.CoverURLs) != 2 {
 				t.Fatalf("top summary = %+v", summary)
 			}
 		case domain.LastFmRecommendationSimilar:
@@ -102,12 +103,14 @@ func TestRecommendationRepositorySavesReadsAndUpdatesRows(t *testing.T) {
 	top.Items[0].Provider = "wy"
 	top.Items[0].ExternalID = "9"
 	top.Items[0].Sources = []string{"wy"}
+	top.Items[0].Suspicious = true
 	if err := repo.UpdateRecommendationItems(ctx, []domain.RecommendationItem{top.Items[0]}); err != nil {
 		t.Fatalf("UpdateRecommendationItems: %v", err)
 	}
 	got, _ = repo.GetRecommendationList(ctx, domain.LastFmRecommendationTopTracks)
-	if got.Items[0].Matching || !got.Items[0].Matched || got.Items[0].Provider != "wy" {
-		t.Fatalf("updated row = %+v, want the persisted match", got.Items[0])
+	if got.Items[0].Matching || !got.Items[0].Matched || got.Items[0].Provider != "wy" ||
+		!got.Items[0].Suspicious {
+		t.Fatalf("updated row = %+v, want the persisted match and flag", got.Items[0])
 	}
 	pending, _ = repo.PendingRecommendationItems(ctx)
 	if len(pending) != 2 {

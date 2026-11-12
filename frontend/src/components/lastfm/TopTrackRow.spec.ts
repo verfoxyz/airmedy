@@ -73,6 +73,19 @@ describe('TopTrackRow covers', () => {
     expect(wrapper.find('[data-test="cover"]').attributes('src')).toBe('https://cdn.example/cover.jpg')
   })
 
+  it('flags a suspicious duration match with a tooltip', () => {
+    const wrapper = mountRow({ suspicious: true })
+    const chip = wrapper.find('[data-test="top-track-suspicious"]')
+    expect(chip.exists()).toBe(true)
+    expect(chip.attributes('title')).toBe('common.suspicious_match_hint')
+    expect(chip.text()).toBe('common.suspicious_match')
+  })
+
+  it('does not flag a normal match', () => {
+    const wrapper = mountRow()
+    expect(wrapper.find('[data-test="top-track-suspicious"]').exists()).toBe(false)
+  })
+
   it('labels a local-only match as in the library', () => {
     const wrapper = mountRow({ provider: '', external_id: '', local_track_id: 'local-1' })
     expect(wrapper.find('[data-test="top-track-status"]').text()).toBe('lastfm.in_library')

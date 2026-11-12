@@ -3,9 +3,20 @@ import { computed, onActivated, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Events } from '@wailsio/runtime'
-import { ListMusic, Music, Radio, RefreshCw } from '@lucide/vue'
+import { ListMusic, MoreHorizontal, Music, Play, Radio, RefreshCw, Shuffle } from '@lucide/vue'
 import { IconButton } from '@airmedy/ui'
+import ContextMenu from '@/components/ContextMenu.vue'
 import LazyImg from '@/components/LazyImg.vue'
+import { useContextMenu } from '@/composables/useContextMenu'
+import {
+  formatLastFmDuration,
+  isPlayableLastFmRow,
+  lastFmCoverClass,
+  lastFmCovers,
+  lastFmRowToCatalogRow,
+} from '@/lib/lastfmTracks'
+import { useCatalogStore } from '@/stores/catalog'
+import { usePlayerStore } from '@/stores/player'
 import * as LastFmService from '../../bindings/airmedy/internal/infra/wails/lastfmservice'
 import type {
   RecommendationListCollectionDTO,
@@ -21,6 +32,8 @@ import type {
  */
 const { t } = useI18n()
 const router = useRouter()
+const catalogStore = useCatalogStore()
+const playerStore = usePlayerStore()
 
 const collection = ref<RecommendationListCollectionDTO | null>(null)
 const loading = ref(false)
@@ -29,6 +42,8 @@ const loaded = ref(false)
 const loadError = ref('')
 const refreshingAll = ref(false)
 const refreshingKinds = ref<Record<string, boolean>>({})
+const busyKind = ref('')
+const rowMenu = useContextMenu()
 let offMatch: (() => void) | null = null
 
 const lists = computed(() => collection.value?.lists ?? [])
@@ -89,19 +104,69 @@ function openList(list: RecommendationListSummaryDTO) {
   void router.push(`/lastfm/lists/${list.kind}`)
 }
 
-/** covers returns up to four URLs and pads the mosaic so the grid is stable. */
-function covers(list: RecommendationListSummaryDTO): (string | null)[] {
-  const urls = (list.cover_urls ?? []).filter((url) => !!url).slice(0, 4)
-  while (urls.length > 0 && urls.length < 4) urls.push('')
-  return urls.length === 0 ? [] : urls
+/** totalDuration words the card's sum of row durations. */
+function totalDuration(list: RecommendationListSummaryDTO): string {
+  return formatLastFmDuration(list.total_duration ?? 0, t)
 }
 
-/** coverClass keeps a 1–4 cover mosaic filling the square. */
-function coverClass(urls: (string | null)[], index: number): string {
-  if (urls.length === 1) return 'col-span-2 row-span-2'
-  if (urls.length === 2) return 'row-span-2'
-  if (urls.length === 3 && index === 0) return 'row-span-2'
-  return ''
+/**
+ * playList resolves the list's playable rows and starts playback.
+ *
+ * The card only holds a summary, so the rows are read from the store first;
+ * shuffle randomizes the resolved IDs, which is the same playback queue in a
+ * different order.
+ */
+async function playList(list: RecommendationListSummaryDTO, shuffle: boolean) {
+  if (busyKind.value === list.kind || list.track_count === 0) return
+  busyKind.value = list.kind
+  try {
+    const detail = await LastFmService.GetRecommendationList(list.kind)
+    const ids: string[] = []
+    for (const row of detail.items ?? []) {
+      if (!isPlayableLastFmRow(row)) continue
+      const id = await catalogStore.preparePlayback(lastFmRowToCatalogRow(row))
+      if (id) ids.push(id)
+    }
+    if (ids.length === 0) return
+    if (shuffle) shuffleIds(ids)
+    await playerStore.playTrackIds(ids)
+  } catch (error) {
+    console.error('Failed to play a Last.fm recommendation list', error)
+  } finally {
+    busyKind.value = ''
+  }
+}
+
+function shuffleIds(ids: string[]) {
+  for (let index = ids.length - 1; index > 0; index--) {
+    const swap = Math.floor(Math.random() * (index + 1))
+    ;[ids[index], ids[swap]] = [ids[swap], ids[index]]
+  }
+}
+
+/** openMore exposes the refresh actions the hover row does not carry. */
+function openMore(event: MouseEvent, list: RecommendationListSummaryDTO) {
+  rowMenu.open(event, [
+    {
+      label: t('lastfm.refresh_list'),
+      icon: RefreshCw,
+      action: () => {
+        void refreshList(list.kind)
+      },
+    },
+    {
+      label: t('lastfm.refresh_all'),
+      icon: RefreshCw,
+      action: () => {
+        void refreshAll()
+      },
+    },
+  ])
+}
+
+/** covers returns the card's mosaic cells from the stored cover list. */
+function covers(list: RecommendationListSummaryDTO): string[] {
+  return lastFmCovers(list.cover_urls ?? [])
 }
 
 interface TopTrackUpdate {
@@ -219,8 +284,13 @@ onActivated(() => {
         </button>
       </div>
 
-      <!-- Playlist cards -->
-      <div v-else class="mt-10 grid grid-cols-2 gap-6" data-test="lastfm-cards">
+      <!-- Playlist cards: 2 columns on narrow screens, 3 otherwise, capped at
+           200px per column so a sparse page keeps a uniform card size. -->
+      <div
+        v-else
+        class="mt-10 grid justify-start gap-4 grid-cols-[repeat(2,minmax(0,200px))] sm:grid-cols-[repeat(3,minmax(0,200px))]"
+        data-test="lastfm-cards"
+      >
         <article
           v-for="list in lists"
           :key="list.kind"
@@ -234,7 +304,7 @@ onActivated(() => {
               <div
                 v-for="(url, index) in covers(list)"
                 :key="index"
-                :class="coverClass(covers(list), index)"
+                :class="lastFmCoverClass(covers(list), index)"
                 class="overflow-hidden bg-foreground/[0.06]"
               >
                 <LazyImg
@@ -247,6 +317,45 @@ onActivated(() => {
             </div>
             <div v-else class="flex h-full w-full items-center justify-center text-dimmer">
               <ListMusic class="h-10 w-10" aria-hidden="true" />
+            </div>
+
+            <!-- Hover actions, mirroring the library album card. -->
+            <div
+              class="absolute inset-0 flex items-center justify-center gap-2 bg-background/30 opacity-0 transition-opacity group-hover:opacity-100"
+              data-test="lastfm-card-actions"
+            >
+              <button
+                type="button"
+                class="flex h-9 w-9 items-center justify-center rounded-full bg-background/85 text-foreground shadow-lg ring-1 ring-foreground/[0.08] transition-colors hover:text-primary disabled:opacity-40"
+                data-test="lastfm-card-play"
+                :aria-label="$t('lastfm.play_all')"
+                :title="$t('lastfm.play_all')"
+                :disabled="busyKind === list.kind || list.track_count === 0"
+                @click.stop="playList(list, false)"
+              >
+                <Play class="h-4 w-4 fill-current" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                class="flex h-9 w-9 items-center justify-center rounded-full bg-background/85 text-foreground shadow-lg ring-1 ring-foreground/[0.08] transition-colors hover:text-primary disabled:opacity-40"
+                data-test="lastfm-card-shuffle"
+                :aria-label="$t('lastfm.shuffle')"
+                :title="$t('lastfm.shuffle')"
+                :disabled="busyKind === list.kind || list.track_count === 0"
+                @click.stop="playList(list, true)"
+              >
+                <Shuffle class="h-4 w-4" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                class="flex h-9 w-9 items-center justify-center rounded-full bg-background/85 text-foreground shadow-lg ring-1 ring-foreground/[0.08] transition-colors hover:text-primary"
+                data-test="lastfm-card-more"
+                :aria-label="$t('lastfm.more_actions')"
+                :title="$t('lastfm.more_actions')"
+                @click.stop="openMore($event, list)"
+              >
+                <MoreHorizontal class="h-4 w-4" aria-hidden="true" />
+              </button>
             </div>
 
             <IconButton
@@ -267,13 +376,24 @@ onActivated(() => {
 
           <div class="space-y-1 px-1">
             <h2 class="truncate text-sm font-semibold text-foreground">{{ $t(list.title) }}</h2>
-            <p class="flex items-center gap-1.5 text-xs text-dim">
-              <ListMusic class="h-3.5 w-3.5" aria-hidden="true" />
+            <p class="truncate text-xs text-dim" data-test="lastfm-card-meta">
               <span data-test="lastfm-card-count">{{ list.track_count }}</span>
+              <template v-if="list.total_duration > 0">
+                <span> · </span>
+                <span data-test="lastfm-card-duration">{{ totalDuration(list) }}</span>
+              </template>
             </p>
           </div>
         </article>
       </div>
     </template>
+
+    <ContextMenu
+      :visible="rowMenu.visible.value"
+      :x="rowMenu.x.value"
+      :y="rowMenu.y.value"
+      :items="rowMenu.items.value"
+      @close="rowMenu.close()"
+    />
   </div>
 </template>

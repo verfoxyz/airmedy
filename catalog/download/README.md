@@ -234,11 +234,13 @@ package nor the playlist or library services.
   row that lacks it), because a remote row has no album entity for the finalize tag
   step to read.
 - **Local-first registration.** Before creating a remote row, `EnsureRemoteTrack`
-  looks for an on-disk row for the same title, a compatible artist set and duration
-  (±5s). A hit is returned instead of registering a duplicate; the provider identity
-  is written onto it only when it has none, and a row already bound to another provider
-  keeps that identity. `RemoteTrackSpec.Force` (download anyway, re-download)
-  skips the lookup. The lookup is best-effort: a failure logs and falls through to
+  looks for an on-disk row for the same title and a compatible artist set. Duration
+  is only a hint (≤10s is normal; a larger difference still matches and is flagged
+  suspicious), and the candidate with the smallest difference wins. A hit is
+  returned instead of registering a duplicate; the provider identity is written
+  onto it only when it has none, and a row already bound to another provider keeps
+  that identity. `RemoteTrackSpec.Force` (download anyway, re-download) skips the
+  lookup. The lookup is best-effort: a failure logs and falls through to
   registration.
 - **Tags are verified by the import, not by the tagger.** After importing the
   finished file, `VerifyImportedTrack` re-reads the row through the library's own
@@ -266,8 +268,11 @@ track id the event carries.
 identity are matched against ready on-disk tracks by normalised title, a
 **compatible** artist set (`domain.ArtistSetsCompatible`: one set contains the
 other and they share an artist, so a source that reports only the primary artist
-matches a file crediting the featured artist too) and duration within ±5s; a hit
-reports `in_library` plus `local_track_id`. Both sides are expanded one hop through
+matches a file crediting the featured artist too) and a duration hint. A
+difference of ≤10s is normal; a larger one still matches but reports
+`suspicious`, and the closest candidate wins, because a second row is worse than
+a flagged match. A hit reports `in_library` plus `local_track_id` (and
+`suspicious` when flagged). Both sides are expanded one hop through
 `artist_aliases` first, so `Camellia` matches a file tagged `かめりあ`.
 The action reuses that row (favorite/playlist only) unless the user explicitly
 chooses "download anyway", which registers the remote identity and enqueues.

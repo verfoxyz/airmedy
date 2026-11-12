@@ -32,7 +32,9 @@
     "yes": "Oui",
     "no": "Non",
     "open_devtools": "Ouvrir les outils de développement",
-    "back": "Retour"
+    "back": "Retour",
+    "suspicious_match": "Titre douteux",
+    "suspicious_match_hint": "La durée diffère de la source ; vérifiez."
   },
   "mobile_sync": {
     "back": "Appareils mobiles",
@@ -940,6 +942,10 @@
     "similar_empty": "Pas encore de recommandations.",
     "refresh_list": "Actualiser cette liste",
     "refresh_all": "Tout actualiser",
+    "refresh_item": "Actualiser la source de ce titre",
+    "play_all": "Tout lire",
+    "shuffle": "Lecture aléatoire",
+    "more_actions": "Plus d'actions",
     "list_empty": "Aucun titre pour l'instant."
   }
 }

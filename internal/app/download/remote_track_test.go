@@ -98,9 +98,10 @@ func TestEnsureRemoteTrack_ReusesAnOnDiskRow(t *testing.T) {
 	assert.Equal(t, 0, remotes, "no virtual remote row may be registered for the same identity")
 }
 
-// TestEnsureRemoteTrack_RegistersOutsideTheDurationTolerance: a different
-// recording of the same title must still get its own row.
-func TestEnsureRemoteTrack_RegistersOutsideTheDurationTolerance(t *testing.T) {
+// TestEnsureRemoteTrack_ReusesARecordingOutsideTheDurationHint: duration is only
+// a hint. A six-minute disagreement still reuses the on-disk row, because a
+// second row for the same title + artist set is worse than a flagged match.
+func TestEnsureRemoteTrack_ReusesARecordingOutsideTheDurationHint(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
@@ -122,8 +123,8 @@ func TestEnsureRemoteTrack_RegistersOutsideTheDurationTolerance(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	assert.NotEqual(t, "local-1", track.ID)
-	assert.True(t, track.IsRemote())
+	assert.Equal(t, "local-1", track.ID)
+	assert.False(t, track.IsRemote())
 }
 
 // TestEnsureRemoteTrack_ReusesWhenOnlyThePrimaryArtistIsKnown: the source may

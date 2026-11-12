@@ -32,7 +32,9 @@
     "yes": "はい",
     "no": "いいえ",
     "open_devtools": "開発者ツールを開く",
-    "back": "戻る"
+    "back": "戻る",
+    "suspicious_match": "この曲は要確認",
+    "suspicious_match_hint": "再生時間がソースと一致しません。確認してください。"
   },
   "mobile_sync": {
     "back": "モバイルデバイス",
@@ -940,6 +942,10 @@
     "similar_empty": "おすすめはまだありません。",
     "refresh_list": "このリストを更新",
     "refresh_all": "すべて更新",
+    "refresh_item": "この曲のソースを更新",
+    "play_all": "すべて再生",
+    "shuffle": "シャッフル",
+    "more_actions": "その他の操作",
     "list_empty": "曲はまだありません。"
   }
 }
