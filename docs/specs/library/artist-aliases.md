@@ -21,6 +21,7 @@ CREATE TABLE artist_aliases (
     alias_key   TEXT NOT NULL,      -- ArtistSetKey/单艺人归一化 key（如 "camellia"）
     canonical_key TEXT NOT NULL,    -- 另一个写法（如 "かめりあ"）
     evidence    TEXT NOT NULL DEFAULT '',  -- "merge" | "manual"
+    enabled     INTEGER NOT NULL DEFAULT 1, -- 0 = 保留但不参与匹配
     created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (alias_key, canonical_key)
 );
@@ -28,7 +29,8 @@ CREATE INDEX idx_artist_aliases_canonical ON artist_aliases(canonical_key);
 ```
 
 - 关系按**无序对**存储（A→B 与 B→A 都写入，或读取时双向展开）；
-- 只有单艺人 key（`ArtistSetKey` 拆分后的单个 artist），不是整个集合。
+- 只有单艺人 key（`ArtistSetKey` 拆分后的单个 artist），不是整个集合；
+- `enabled=0` 表示**保留记录但不参与匹配**（主要针对自动学习的别名，避免误删后又被重新学习）。
 
 ## 3. 别名从哪来
 
@@ -60,7 +62,10 @@ func ExpandArtists(ctx context.Context, keys []string) ([]string, error)
 
 设置新增「音乐库 → 艺人别名」：
 
-- 列表：`别名` → `正式名`，按创建时间倒序；每条可删除；
+- 列表：`别名` → `正式名` + 来源（自动/手动），按创建时间倒序；
+- 每条提供：
+  - **启用/禁用开关**：`enabled` 置 0/1，禁用的别名保留在库里但不参与匹配；
+  - **删除**：仅手动条目建议删除；自动条目优先用禁用；
 - 新增表单：两个输入框（别名、正式名），保存前做 `ArtistSetKey` 归一化并拒绝：
   - 空值；
   - 自己指向自己；
@@ -74,10 +79,12 @@ func ExpandArtists(ctx context.Context, keys []string) ([]string, error)
 ListArtistAliases(ctx) ([]ArtistAlias, error)
 AddArtistAlias(ctx, alias, canonical string) error
 RemoveArtistAlias(ctx, alias, canonical string) error
+SetArtistAliasEnabled(ctx, alias, canonical string, enabled bool) error
 ```
 
 - 手动添加的 `evidence='manual'`，自动学习的为 `merge`；
-- 删除 `merge` 条目时提示“这是自动学习的别名，删除后可能重新学习到”。
+- 自动学习的条目：禁用即可，不删除；删除后下次合并可能重新学习到；
+- 匹配时只读取 `enabled=1` 的别名。
 
 前端：
 
@@ -101,6 +108,7 @@ RemoveArtistAlias(ctx, alias, canonical string) error
 - 无别名的艺人行为不变；
 - 迁移 `000099` up/down；
 - 手动添加：空值/自指/重复被拒绝；添加后立即参与匹配；删除后不再参与；
+- 禁用后 `ExpandArtists` 不再返回该别名；重新启用立即恢复；
 - 删除自动学习的条目后，再次合并可重新学习。
 
 **人工**
@@ -117,4 +125,4 @@ RemoveArtistAlias(ctx, alias, canonical string) error
 
 - 自动学习依赖“合并成功”，首次仍可能匹配不到（需要一次手动纠正/播放后合并）；
 - 只有一跳，复杂别名链（A→B→C）不会全展开；
-- 误合并会把错误别名持久化，需要能在数据库里删除（后续 UI）。
+- 误合并会把错误别名持久化：用禁用开关处理，数据保留、不参与匹配。
