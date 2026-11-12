@@ -73,7 +73,10 @@ type LocalTrackMatcher interface {
 }
 ```
 
-- 查询条件：`NormalizationKey(title)` 相等 + **艺人集合相容** + 时长 ±5s（有值时）；
+- 查询条件：`NormalizationKey(title)` 相等 + **艺人集合相容**；
+- **时长不再作为硬条件**（Last.fm 的 duration 经常不准，实测同曲差异可达 60s+）：
+  - 只有多个候选时才用时长做排序/取舍，容差放宽到 ±60s；
+  - 单一候选直接命中；
 - **注意：现有实现是“集合相等”，必须改成下面的相容规则**（否则 Last.fm 只报主艺人时永远匹配不到本地多艺人行）；
 - “相容”定义（不能再用集合相等）：
   - `intersect(本地集合, 目标集合)` 非空，且
@@ -116,6 +119,7 @@ type LocalTrackMatcher interface {
 
 - `ArtistSetKey`：`"Sad Keyboard Guy;Gardens"`、`"Gardens, Sad Keyboard Guy"`、`"Gardens & Sad Keyboard Guy"` 得到同一 key；
 - 本地匹配：Last.fm 只给 `Gardens`、本地是 `Gardens + Sad Keyboard Guy` → 命中（子集规则）；
+- 本地匹配：标题+艺人相同但时长差 60s → 仍命中（时长只做 tie-breaker）；
 - 本地匹配：艺人完全不重叠 → 不命中；
 - 顺序、重复、多余空格、`feat.` 处理正确；
 - `MatchTrack`：行艺人顺序不同也能命中；
