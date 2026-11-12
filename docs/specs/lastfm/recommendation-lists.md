@@ -8,10 +8,11 @@
 
 ## 1. 页面形态
 
-- Last.fm 页顶部是**歌单卡片网格**，每张卡代表一个推荐集合：
-  - **最近常听**（`top_tracks`，来自 `user.getTopTracks`）
-  - **相似推荐**（`similar`，来自 `track.getSimilar` + 艺人兜底）
-  - 名称只是初始值，后续可加更多集合；
+- Last.fm 页顶部是**歌单卡片网格**，把现在页面上的两个区块改成歌单：
+  - **常听曲目**（`top_tracks`，现页面「常听曲目」，来自 `user.getTopTracks`）
+  - **为你推荐**（`similar`，现页面「为你推荐」，来自 `track.getSimilar` + 艺人兜底）
+  - 卡片顺序沿用现页面：为你推荐在上，常听曲目在下；
+  - 名称沿用现有 i18n key（`lastfm.similar_tracks` / 词条），不新增命名；
 - 卡片显示：标题、曲目数、封面拼图（取前 1–4 首的封面）；
 - 点击卡片 → 进入该歌单详情（路由 `/lastfm/lists/:kind`），列表行复用现有 `TopTrackRow`（匹配状态、播放、保存、封面）；
 - 每张卡片右上角有**单个刷新**按钮；页面顶部另有「刷新全部」。
@@ -91,7 +92,11 @@ RefreshAllRecommendationLists(ctx) error
 - `/lastfm/lists/:kind`：详情列表复用 `TopTrackRow`；
 - 每卡刷新按钮：请求中禁用、完成后刷新卡片与（若在详情页）列表；
 - 事件按 `kind + match_key` 更新对应行与卡片计数；
-- 12 语言新增：`lastfm.list_top_tracks`（最近常听）、`lastfm.list_similar`（相似推荐）、`lastfm.refresh_list`、`lastfm.refresh_all`、`lastfm.list_empty`。
+- 复用现有 `lastfm.similar_tracks` 等词条；只新增：
+  - `lastfm.refresh_list`
+  - `lastfm.refresh_all`
+  - `lastfm.list_empty`
+  - 卡片标题直接用两个集合现有的标题文案。
 
 ## 6. 测试
 
@@ -113,7 +118,7 @@ RefreshAllRecommendationLists(ctx) error
 
 **人工**
 
-1. 首次进入 Last.fm 页 → 出现「最近常听」「相似推荐」卡片；
+1. 首次进入 Last.fm 页 → 出现「为你推荐」「常听曲目」两张卡片；
 2. 点开卡片 → 有曲目、匹配状态与播放/保存；
 3. 返回/重启 → 内容不变；
 4. 单卡刷新 → 只有该卡变化，另一张保持不变；
