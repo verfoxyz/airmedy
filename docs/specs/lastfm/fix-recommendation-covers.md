@@ -1,6 +1,6 @@
 # Bug：推荐行没有封面（Last.fm 默认占位图 / 命中源无封面）
 
-> 状态：待开工
+> 状态：✅ 已完成（代码已合入 wip/stream-playback）
 > 现象：Last.fm 常听曲目里某些行（如 `Synthetic Fracture - Gardens`）没有封面
 > 范围：Last.fm 推荐页的封面来源与占位
 
