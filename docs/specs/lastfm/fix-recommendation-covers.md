@@ -46,6 +46,7 @@
 - 命中后：
   - Last.fm 有真实图 → **保留 Last.fm 图**，忽略源封面；
   - Last.fm 是占位图 / 无图 → 用命中行的 `cover_url_large || cover_url`；
+  - **本地命中行（`in_library`）没有 cover_url** → 用该行 `artwork_key` 生成 `/artwork/<key>`（md/sm 变体）；
   - 命中行也没有封面 → 用 `provider + external_id` 查 `covercache.AssetForIdentity` → `/cover-cache/<hash>.jpg`；
   - 仍没有 → 保持空，前端显示占位块。
 - 未匹配 → 保持空，前端显示占位块。
@@ -53,6 +54,7 @@
 ### 2.3 前端：统一占位
 
 - `cover_url` 为空、或仍是 Last.fm 占位图 URL → 渲染**首字母/音符占位块**（与相似艺人一致），不显示破图；
+- 本地命中行的封面来自后端给的 `/artwork/<key>`，不需要前端额外请求；
 - 匹配成功后若新事件带来封面，替换占位；
 - 不新增网络请求（封面来自后端字段）。
 
