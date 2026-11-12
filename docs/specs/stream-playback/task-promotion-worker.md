@@ -104,10 +104,19 @@ SetDiscardPending(ctx context.Context, track *domain.TrackDTO, pending bool) err
      - 缓存音质未知 → 视为最低；
 3. 任一步失败：保留状态，记日志，下一轮重试（不阻塞其它条目）。
 
-触发时机：
+触发时机（**事件驱动，不轮询**）：
 
-- `Service.Start` 里启动 worker：启动后立即扫一次（覆盖“播放中关闭应用”），之后每 30 秒一次；
-- `Cache.OnSessionClosed` → 唤醒一次扫描（fx 装配把回调设为 `service.WakeCacheMaintenance`，download 已依赖 `CachedAudio` 端口，stream 不依赖 download）。
+- **启动时一次**：应用启动完成后发一个「处理遗留任务」事件，扫一次库里 `pending_promote` / `discard_pending` 的行；
+- **运行中的事件**：
+  - session 关闭（`Cache.OnSessionClosed`）；
+  - 播放器停止/自然播放结束/切歌（`player:status` 中状态或 track 变化）；
+  - 保存/收藏时写入提升任务后；
+  - 合并完成（`track:merged`）。
+- **每次事件最多尝试 1–2 次**（立即一次 + 短延迟重试一次）；仍不满足条件（有活动 session / 播放器仍持有）就**停下，不排队、不轮询**，等下一个事件再试；
+- **关闭应用不处理任务**：只停 worker，未完成的任务保留在库里；
+- 不设 30 秒定时器。
+
+> 注意：`PlayingTrack()` 必须把 `Stopped` 视为“未持有”，否则队列播完后提升会一直等不到。
 
 ### 4.3 普通下载完成后的清理
 
