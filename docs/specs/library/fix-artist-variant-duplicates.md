@@ -61,7 +61,30 @@ func ArtistSetKey(names []string) string
 
 > 标题仍严格相等；时长仍 ±5s。
 
-### 3.2 注册远程行前先找本地同曲
+### 3.2 匹配顺序：先本地，再云端
+
+所有“这首歌在不在库里/该用哪一行”的匹配，一律**先查本地库，再查云端**：
+
+```go
+// LocalTrackMatcher finds an existing on-disk row by title + artist set
+// (+ duration tolerance). Implemented with a SQLite query; no network.
+type LocalTrackMatcher interface {
+    MatchLocalTrack(ctx context.Context, title string, artists []string, duration int) (*domain.TrackDTO, error)
+}
+```
+
+- 查询条件：`NormalizationKey(title)` 相等 + `ArtistSetKey` 相等（§3.1）+ 时长 ±5s（有值时）；
+- 命中 → 直接用本地行（可播放、封面已有），**不再发云端搜索**；
+- 未命中 → 才走现有的云端匹配；
+- 使用位置：
+  - Last.fm 常听曲目匹配（`matchOne` / worker）；
+  - 搜索结果里的“已在库”判断；
+  - 缓存跨源匹配；
+  - 远程行注册（§3.2 后半）。
+
+> 这一步同时减少云端请求量，缓解 Last.fm 的限流问题。
+
+### 3.3 注册远程行前先找本地同曲
 
 `EnsureRemoteTrack` / `EnsureStreamableTrack`：
 
@@ -71,7 +94,7 @@ func ArtistSetKey(names []string) string
 
 这样同一首歌不会再出现“本地 + 远程”并存。
 
-### 3.3 已有重复的清理
+### 3.4 已有重复的清理
 
 - 一次性迁移/工具（可选，本期可只做新数据）：对“标题相同 + 艺人集合相同 + 时长接近”的本地行与远程行执行 merge；
 - 不做自动删除，避免误合并；可以在文档后续单列任务。
@@ -88,6 +111,7 @@ func ArtistSetKey(names []string) string
 - `ArtistSetKey`：`"Sad Keyboard Guy;Gardens"`、`"Gardens, Sad Keyboard Guy"`、`"Gardens & Sad Keyboard Guy"` 得到同一 key；
 - 顺序、重复、多余空格、`feat.` 处理正确；
 - `MatchTrack`：行艺人顺序不同也能命中；
+- 本地优先：本地已有同曲时**不调用**云端搜索（fake matcher 断言 0 次）；本地没有才调用；
 - 注册远程行：本地已有同曲 → 返回本地行、不新建远程行、identity 合并；
 - 时长超出容差 → 仍新建远程行；
 - 缓存去重：艺术家写法不同的两份被识别为同一组。
@@ -108,4 +132,4 @@ func ArtistSetKey(names []string) string
 
 - 艺人集合归一化可能把“不同艺人的同名合作”合并（如 A & B 与 B & A 视为同一首），标题+时长仍需一致，风险可控；
 - 远程行合并到本地行后，该行只保留一个 identity，之后再从另一个源播放会走跨源匹配而不是新行；
-- 历史重复不会自动消失（§3.3 只处理新数据），需要时再做清理任务。
+- 历史重复不会自动消失（§3.4 只处理新数据），需要时再做清理任务。
