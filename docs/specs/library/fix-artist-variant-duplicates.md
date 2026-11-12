@@ -73,7 +73,12 @@ type LocalTrackMatcher interface {
 }
 ```
 
-- 查询条件：`NormalizationKey(title)` 相等 + `ArtistSetKey` 相等（§3.1）+ 时长 ±5s（有值时）；
+- 查询条件：`NormalizationKey(title)` 相等 + **艺人集合相容** + 时长 ±5s（有值时）；
+- “相容”定义（不能再用集合相等）：
+  - `intersect(本地集合, 目标集合)` 非空，且
+  - 目标集合 ⊆ 本地集合，或 本地集合 ⊆ 目标集合（允许一方只报主艺人）；
+  - 例：Last.fm 只给 `Gardens`，本地是 `Gardens + Sad Keyboard Guy` → 目标 ⊆ 本地 → 命中；
+  - 同一标题但艺人完全不重叠 → 不命中；
 - 命中 → 直接用本地行（可播放、封面已有），**不再发云端搜索**；
 - 未命中 → 才走现有的云端匹配；
 - 使用位置：
@@ -109,6 +114,8 @@ type LocalTrackMatcher interface {
 **Go**
 
 - `ArtistSetKey`：`"Sad Keyboard Guy;Gardens"`、`"Gardens, Sad Keyboard Guy"`、`"Gardens & Sad Keyboard Guy"` 得到同一 key；
+- 本地匹配：Last.fm 只给 `Gardens`、本地是 `Gardens + Sad Keyboard Guy` → 命中（子集规则）；
+- 本地匹配：艺人完全不重叠 → 不命中；
 - 顺序、重复、多余空格、`feat.` 处理正确；
 - `MatchTrack`：行艺人顺序不同也能命中；
 - 本地优先：本地已有同曲时**不调用**云端搜索（fake matcher 断言 0 次）；本地没有才调用；
@@ -127,6 +134,10 @@ type LocalTrackMatcher interface {
 - 自动：§4 全绿；
 - 人工：§4 三条成立；
 - 艺术家写法差异不再导致重复记录。
+
+## 5.1 关于“本地不存在在 Last.fm 列表”
+
+`user.getTopTracks` 只包含**该账号在 Last.fm scrobble 过的曲目**；本地文件如果从未被 scrobble（或 scrobble 失败），不会出现在 Last.fm 常听列表里，这是 Last.fm 的数据范围，不是匹配问题。
 
 ## 6. 风险
 
