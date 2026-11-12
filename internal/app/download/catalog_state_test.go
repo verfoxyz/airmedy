@@ -102,6 +102,34 @@ func TestCatalogLocalMatches_MatchesAnImportedFileByTitleArtistAndDuration(t *te
 		"a query without a duration is too weak to match")
 }
 
+// TestCatalogLocalMatches_AllowsAPrimaryArtistOnlyQuery: Last.fm names only the
+// primary artist while the imported file credits the featured one too. The local
+// row must still read as "in library" instead of offering a second download.
+func TestCatalogLocalMatches_AllowsAPrimaryArtistOnlyQuery(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	require.NoError(t, h.tracks.Upsert(ctx, &domain.Track{
+		ID:             "local-1",
+		Path:           "/library/Synthetic Fracture.flac",
+		Title:          "Synthetic Fracture",
+		Duration:       200,
+		RawArtistNames: "Gardens; Sad Keyboard Guy",
+		Availability:   domain.AvailabilityReady,
+	}))
+
+	identity := domain.CatalogIdentity{Provider: "wy", ExternalID: "1941192069"}
+	unrelated := domain.CatalogIdentity{Provider: "wy", ExternalID: "unrelated"}
+	matches, err := h.svc.CatalogLocalMatches(ctx, []domain.CatalogLocalQuery{
+		{Identity: identity, Title: "Synthetic Fracture", Artists: []string{"Gardens"}, Duration: 200},
+		{Identity: unrelated, Title: "Synthetic Fracture", Artists: []string{"Someone Else"}, Duration: 200},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "local-1", matches[identity])
+	assert.NotContains(t, matches, unrelated, "an unrelated artist must not match")
+}
+
 // TestCatalogRowStates_RetryReadsAsDownloading: a retryable failure puts the job
 // back in the queue, and the row must show progress rather than a retry button.
 func TestCatalogRowStates_RetryReadsAsDownloading(t *testing.T) {

@@ -125,6 +125,34 @@ func TestEnsureRemoteTrack_RegistersOutsideTheDurationTolerance(t *testing.T) {
 	assert.True(t, track.IsRemote())
 }
 
+// TestEnsureRemoteTrack_ReusesWhenOnlyThePrimaryArtistIsKnown: the source may
+// report one artist while the file credits the featured one as well.
+func TestEnsureRemoteTrack_ReusesWhenOnlyThePrimaryArtistIsKnown(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	require.NoError(t, h.tracks.Upsert(ctx, &domain.Track{
+		ID:             "local-1",
+		Path:           "/library/Synthetic Fracture.flac",
+		Title:          "Synthetic Fracture",
+		Duration:       200,
+		RawArtistNames: "Sad Keyboard Guy; Gardens",
+		Availability:   domain.AvailabilityReady,
+	}))
+
+	track, err := h.svc.EnsureRemoteTrack(ctx, domain.RemoteTrackSpec{
+		Provider:   "wy",
+		ExternalID: "1941192069",
+		Title:      "Synthetic Fracture",
+		Artists:    []string{"Gardens"},
+		Duration:   200,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "local-1", track.ID, "a primary-artist-only row must reuse the local file")
+	assert.Equal(t, "wy", track.Provider)
+}
+
 // TestEnsureRemoteTrack_ForceRegistersANewRow: "download anyway" and re-download
 // must ignore the on-disk copy the user explicitly overrode.
 func TestEnsureRemoteTrack_ForceRegistersANewRow(t *testing.T) {

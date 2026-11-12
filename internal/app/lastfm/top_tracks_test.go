@@ -622,6 +622,7 @@ func TestSimilarRecommendationsKeepLocalTracks(t *testing.T) {
 		localRows: map[string]*domain.TrackDTO{
 			similarTracksKey("Gardens", "Owned Song"): {Track: domain.Track{
 				ID: "local-1", Title: "Owned Song", Duration: 200,
+				ArtworkKey: "owned.jpg",
 			}},
 		},
 	}
@@ -644,6 +645,9 @@ func TestSimilarRecommendationsKeepLocalTracks(t *testing.T) {
 	}
 	if matched == nil || matched.LocalTrackID != "local-1" || !matched.Matched {
 		t.Fatalf("matched update = %+v, want the local row with local_track_id", matched)
+	}
+	if matched.CoverURL != "/artwork/owned.jpg?size=sm" {
+		t.Fatalf("cover = %q, want the local artwork path", matched.CoverURL)
 	}
 }
 

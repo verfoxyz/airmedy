@@ -115,6 +115,15 @@ different orders and with different separators, so the key is a set, not a strin
 `MatchTrack`, the stream cache `artist_key`, download local matching, and the Last.fm
 matcher.
 
+### `ArtistSetsCompatible(left, right []string) bool`
+
+The comparison rule for **local** matching. Equality is too strict because a source
+usually reports only the primary artist while the file credits the featured artist
+too. Two sets are compatible when they share at least one artist and one contains
+the other (`["Gardens"]` vs `["Gardens", "Sad Keyboard Guy"]`). Unrelated sets, or a
+partial overlap where neither side contains the other, do not match. Title and
+duration are still checked separately.
+
 ### `NormalizeSort(s string) string`
 
 Used for `sort_title` / `sort_name` — produces a user-friendly sort key:

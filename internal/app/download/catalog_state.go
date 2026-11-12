@@ -123,8 +123,8 @@ const catalogLocalTolerance = 5
 // cannot see it and the search row would offer a second download of the same
 // song. This answers the other question: does an on-disk track already look
 // like this row? The rule matches the merge heuristic — same normalised title,
-// same artist set and duration within ±5s — because a looser rule would pair a
-// live version or a cover with the studio track.
+// compatible artist set and duration within ±5s — because a looser rule would
+// pair a live version or a cover with the studio track.
 func (s *Service) CatalogLocalMatches(
 	ctx context.Context, queries []domain.CatalogLocalQuery,
 ) (map[domain.CatalogIdentity]string, error) {
@@ -177,7 +177,7 @@ func (s *Service) CatalogLocalMatches(
 			if !sameCatalogTitle(track.Title, c.query.Title) {
 				continue
 			}
-			if wantedArtists != "" && domain.ArtistSetKey(artistNames(track)) != wantedArtists {
+			if wantedArtists != "" && !domain.ArtistSetsCompatible(artistNames(track), c.query.Artists) {
 				continue
 			}
 			if bestID == "" || distance < bestDistance {
@@ -194,9 +194,9 @@ func (s *Service) CatalogLocalMatches(
 // MatchLocalTrack finds an on-disk row that already represents one song.
 //
 // It is the local-first half of every "is this song already in the library?"
-// question: title + artist set are compared against playable files, with the
-// duration narrowed to ±5s when the caller knows it. No network access. A hit
-// lets the caller skip the cloud search and reuse the row that has a real path
+// question: title + compatible artist set are compared against playable files,
+// with the duration narrowed to ±5s when the caller knows it. No network access. A
+// hit lets the caller skip the cloud search and reuse the row that has a real path
 // and artwork.
 func (s *Service) MatchLocalTrack(
 	ctx context.Context, title string, artists []string, duration int,
@@ -227,7 +227,7 @@ func (s *Service) MatchLocalTrack(
 		if domain.NormalizationKey(track.Title) != titleKey {
 			continue
 		}
-		if domain.ArtistSetKey(artistNames(track)) != wantedArtists {
+		if !domain.ArtistSetsCompatible(artistNames(track), artists) {
 			continue
 		}
 		if duration > 0 {

@@ -229,10 +229,11 @@ immediately playable.
 
 Cover priority is fixed: a real Last.fm image (`LastFmTrack.ImageURL`, placeholder
 already filtered out by the client) wins, then the matched source's `cover_url`,
-then the cover cache for the provider identity. An empty result renders
-`TopTrackRow`'s music-note placeholder; the row also treats the Last.fm star
-placeholder URL as empty. A failover reset restores the remembered Last.fm row,
-cover included, before the next source is searched.
+then the cover cache for the provider identity. A local match has no remote cover,
+so the backend returns its embedded artwork as `/artwork/<artwork_key>?size=sm`.
+An empty result renders `TopTrackRow`'s music-note placeholder; the row also treats
+the Last.fm star placeholder URL as empty. A failover reset restores the remembered
+Last.fm row, cover included, before the next source is searched.
 
 A remote row whose audio fails to load reports the failed provider identity to
 the recommender (`PlayerService.AddPlaybackFailureListener`). That provider is

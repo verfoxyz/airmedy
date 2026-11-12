@@ -816,9 +816,20 @@ func (r *Recommender) localMatch(item TopTrackItem) *domain.CatalogSearchResult 
 		Artists:      names,
 		AlbumName:    album,
 		Duration:     local.Duration,
+		CoverURL:     localArtworkURL(local.ArtworkKey),
 		State:        domain.CatalogRowStateInLibrary,
 		LocalTrackID: local.ID,
 	}
+}
+
+// localArtworkURL is the WebView path for a library row's embedded artwork.
+// A local row has no remote cover URL, so this is its cover source.
+func localArtworkURL(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	return "/artwork/" + key + "?size=sm"
 }
 
 // applyTopTrackMatch copies the catalogue identity onto the Last.fm row.

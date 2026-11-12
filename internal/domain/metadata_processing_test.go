@@ -85,6 +85,32 @@ func TestArtistSetKeyKeepsDifferentSetsApart(t *testing.T) {
 	}
 }
 
+func TestArtistSetsCompatibleAcceptsAPrimaryArtistAgainstAFullCredit(t *testing.T) {
+	local := []string{"Sad Keyboard Guy", "Gardens"}
+	if !ArtistSetsCompatible([]string{"Gardens"}, local) {
+		t.Fatal("a source that only reports the primary artist must match the full local credit")
+	}
+	if !ArtistSetsCompatible(local, []string{"Gardens"}) {
+		t.Fatal("the rule is symmetric")
+	}
+	if !ArtistSetsCompatible(local, []string{"Gardens; Sad Keyboard Guy"}) {
+		t.Fatal("the same set in a different order must match")
+	}
+}
+
+func TestArtistSetsCompatibleRejectsUnrelatedOrPartialOverlap(t *testing.T) {
+	if ArtistSetsCompatible([]string{"Artist A"}, []string{"Artist B"}) {
+		t.Fatal("no shared artist must not match")
+	}
+	// A shared member alone is not enough when neither set contains the other.
+	if ArtistSetsCompatible([]string{"Artist A", "Artist B"}, []string{"Artist B", "Artist C"}) {
+		t.Fatal("partial overlap without containment must not match")
+	}
+	if ArtistSetsCompatible(nil, []string{"Artist A"}) {
+		t.Fatal("an empty credit list must not match")
+	}
+}
+
 func TestSplitNames(t *testing.T) {
 	def := DefaultDelimiters() // [";", "\\\\", ","]
 	onlyHard := []string{";", "\\\\"}
