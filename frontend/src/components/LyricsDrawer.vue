@@ -9,7 +9,8 @@ import { useLyrics } from '../composables/useLyrics'
 import { useLyricTranslation } from '../composables/useLyricTranslation'
 import { useRomanization } from '../composables/useRomanization'
 import { useExportLyrics } from '../composables/useExportLyrics'
-import { lyricsMotionClasses, useLyricsScrollMotion } from '../composables/useLyricsScrollMotion'
+import { fullscreenLyricsMotionDuration, lyricsMotionClasses, lyricsPlacementMotionClasses, useLyricsScrollMotion } from '../composables/useLyricsScrollMotion'
+import { useLyricsLayoutMotion } from '../composables/useLyricsLayoutMotion'
 import KaraokeText from './KaraokeText.vue'
 
 const { t } = useI18n()
@@ -103,7 +104,7 @@ let resizeObserver: ResizeObserver | null = null
 let waitingForLayout = false
 let hasPositionedInitialLine = false
 let previousActiveIndex = -1
-const { scrollTo, stop: stopScrollAnimation } = useLyricsScrollMotion()
+const { scrollTo, stop: stopScrollAnimation } = useLyricsScrollMotion(fullscreenLyricsMotionDuration)
 
 // Reset stale refs when lines change so indexes stay aligned.
 watch(() => syncedLines.value, () => {
@@ -144,8 +145,15 @@ function scheduleScrollToActive(index: number, previousIndex = previousActiveInd
   })
 }
 
+function stopFollowing() {
+  stopScrollAnimation()
+  if (scrollFrame !== undefined) cancelAnimationFrame(scrollFrame)
+  scrollFrame = undefined
+}
+
 function enterBrowseMode() {
   isBrowsing.value = true
+  stopFollowing()
 }
 
 function seekAndResume(time: number, index: number) {
@@ -158,9 +166,11 @@ function seekAndResume(time: number, index: number) {
   store.seek(time)
 }
 
-watch(secondary, () => {
-  if (!isBrowsing.value) scheduleScrollToActive(activeIndex.value)
-}, { flush: 'post' })
+useLyricsLayoutMotion({
+  secondary, viewport: scrollContainer, rows: lineRefs, activeIndex,
+  following: () => hasPositionedInitialLine && store.isLyricsOpen && !isBrowsing.value,
+  stop: stopFollowing,
+})
 
 // flush:'post' → DOM patched before measuring offsets.
 watch(activeIndex, (newIndex) => {
@@ -251,7 +261,7 @@ onUnmounted(() => {
       </div>
 
       <!-- Synced view -->
-      <div v-else-if="isSynced" ref="scrollContainer" class="h-full overflow-y-auto px-4 py-6 scrollbar-hide"
+      <div v-else-if="isSynced" ref="scrollContainer" class="h-full overflow-y-auto px-4 py-6 scrollbar-hide [overflow-anchor:none]"
         @wheel.passive="enterBrowseMode" @pointerdown="enterBrowseMode">
         <div class="space-y-6">
           <div v-for="(line, index) in syncedLines" :key="index" ref="lineRefs"
@@ -268,7 +278,6 @@ onUnmounted(() => {
 
               !isBrowsing && (index === activeIndex || (activeIndex > 0 && index === activeIndex - 1) || (index === activeIndex + 1)) ? 'transform-gpu' : ''
             ]"
-            :style="line.words && store.isLyricsOpen && !isBrowsing && index === activeIndex ? { transition: 'none' } : undefined"
             @pointerdown.stop @click="seekAndResume(line.time, index)">
             <div data-test="lyric-primary" class="text-[19pt] font-bold"><KaraokeText :line="line" :position="store.isLyricsOpen && !isBrowsing && index === activeIndex ? store.position : undefined" /></div>
             <div v-if="secondaryLines[index]" data-test="lyric-secondary" class="text-[14pt] opacity-50 mt-0.5">{{ secondaryLines[index] }}</div>
@@ -278,19 +287,17 @@ onUnmounted(() => {
 
       <!-- Plain view: no timestamps, so nothing can follow playback. Say so
            instead of letting the lines look like a synced lyric that is stuck. -->
-      <div v-else class="h-full overflow-y-auto px-4 py-6 scrollbar-hide">
+      <div v-else class="h-full overflow-y-auto px-4 py-6 scrollbar-hide [overflow-anchor:none]">
         <p class="mb-4 text-xs text-dimmer" data-test="lyrics-unsynced">
           {{ t('player.lyrics_unsynced') }}
         </p>
-        <div class="space-y-3.5">
+        <TransitionGroup tag="div" :move-class="lyricsPlacementMotionClasses" class="space-y-3.5">
           <div v-for="(line, index) in plainLines" :key="index" class="leading-relaxed select-text">
             <p data-test="lyric-primary" class="text-sm text-foreground/80">{{ line.primary }}</p>
             <p v-if="secondaryLines[index]" data-test="lyric-secondary" class="text-xs text-foreground/40 mt-0.5">{{ secondaryLines[index] }}</p>
           </div>
-        </div>
+        </TransitionGroup>
       </div>
     </div>
   </div>
 </template>
-
-<style scoped></style>
