@@ -3,6 +3,7 @@
 > 状态：待开工
 > 目的：不再一次性下载整首；只预取到「当前播放位置 + N 秒」，播放推进后再继续；已拉取数据全部保留
 > 关联：`task-prebuffer.md`、`quality-fallback.md`、`media-request-state-machine.md`
+> 注意：提升流程已改为 `media_requests` 状态机（见 media-request-state-machine.md），本任务的“解除限流”由请求 worker 触发
 
 ---
 
@@ -52,11 +53,14 @@ if !s.promoteRequested && aheadBytes >= limitBytes {
 - 在 session 里新增 `progressChanged chan struct{}`（容量 1），`ReportProgress` 变化时非阻塞唤醒；
 - `waitForProgress` 用 select 等：progress 通道 / 取消 / 1s 超时（超时重算，防止位置长时间不动卡死）。
 
-### 3.3 提升请求
+### 3.3 提升/下载请求
+
+重构后“提升”由 `media_requests` 驱动，不再有 `pending_promote` 标记或旧提升 worker：
 
 - session 增加 `completeRequested` 标记；
-- `MarkPendingPromote` / `EnsureComplete` 设置该标记并唤醒下载；
-- 标记存在时忽略水位，下载到 EOF 并完成。
+- 请求 worker 决定要完整文件时（提升前补全、下载），调用 `EnsureComplete`，同时置该标记并唤醒下载；
+- 标记存在时忽略水位，下载到 EOF 并完成；
+- 请求结束（session 关闭）后标记清空。
 
 ### 3.4 结束条件
 
@@ -78,7 +82,7 @@ if !s.promoteRequested && aheadBytes >= limitBytes {
 - 推进进度到 30s：恢复下载到新水位，且**已下载字节不减少**；
 - 向后 seek：不触发新下载；
 - 向前 seek 超过水位：立即恢复下载；
-- 设置 promote：忽略水位，下载到 EOF 并写 `complete=1`；
+- 设置 complete 请求（模拟 `EnsureComplete`）：忽略水位，下载到 EOF 并写 `complete=1`；
 - duration 未知：按码率估算水位生效；
 - 取消/关闭：下载协程退出，文件保留，行 metadata 正确。
 
