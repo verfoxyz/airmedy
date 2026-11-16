@@ -1,8 +1,9 @@
 # 重构：远端流播放改由 FFmpeg 直读本地缓存文件（去掉 HTTP 解码路径）
 
-> 状态：待开工（重构）
+> 状态：✅ 已完成（FFmpeg 通过自定义 `AVIOContext` 直读缓存文件、缺字节时阻塞等待；miniaudio 新增 `ma_player_load_cache`；`Session` 返回 `Path/TotalBytes`，`WaitHead` 等 2MiB 并临时解除预取水位；远端 seek 改为本地 `avformat_seek_file`；HTTP 代理保留仅供调试）
 > 目的：彻底消除 `ma_player_load failed: -10` —— 根因是 FFmpeg 通过 HTTP 打开远端流时的大范围探测/超时
 > 关联：`fix-stream-seek.md`、`fix-seek-reload-failure.md`、`fix-cached-range-502.md`、`half-played-complete-cache.md`
+> 退出/取消语义见 `docs/specs/player/fix-exit-hang.md`：阻塞 read 必须响应 abort，`Stop` 有短超时
 
 ---
 
