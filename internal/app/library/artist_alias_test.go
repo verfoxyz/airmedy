@@ -8,12 +8,15 @@ import (
 )
 
 type stubAliasRepo struct {
-	added [][3]string
-	err   error
+	aliases   []domain.ArtistAlias
+	added     [][3]string
+	err       error
+	listCalls int
 }
 
 func (s *stubAliasRepo) ListArtistAliases(context.Context) ([]domain.ArtistAlias, error) {
-	return nil, nil
+	s.listCalls++
+	return s.aliases, nil
 }
 
 func (s *stubAliasRepo) AddArtistAlias(_ context.Context, aliasKey, canonicalKey, evidence string) error {
@@ -62,5 +65,114 @@ func TestArtistAliasService_NormalizesAndMarksManual(t *testing.T) {
 	pair := repo.added[0]
 	if pair[0] != "camellia" || pair[1] != "かめりあ" || pair[2] != domain.ArtistAliasEvidenceManual {
 		t.Fatalf("pair = %v, want normalized keys and manual evidence", pair)
+	}
+}
+
+func enabledPair(alias, canonical string) domain.ArtistAlias {
+	return domain.ArtistAlias{AliasKey: alias, CanonicalKey: canonical, Enabled: true}
+}
+
+func TestExpandSearchQueries_BidirectionalAndWholeWord(t *testing.T) {
+	repo := &stubAliasRepo{aliases: []domain.ArtistAlias{enabledPair("camellia", "かめりあ")}}
+	svc := NewArtistAliasService(repo)
+	ctx := context.Background()
+
+	got, err := svc.ExpandSearchQueries(ctx, "camellia")
+	if err != nil {
+		t.Fatalf("ExpandSearchQueries: %v", err)
+	}
+	if len(got) != 2 || got[0] != "camellia" || got[1] != "かめりあ" {
+		t.Fatalf("camellia expanded to %v", got)
+	}
+
+	// The stored direction is one-way, but expansion is bidirectional.
+	got, err = svc.ExpandSearchQueries(ctx, "かめりあ")
+	if err != nil {
+		t.Fatalf("ExpandSearchQueries: %v", err)
+	}
+	if len(got) != 2 || got[0] != "かめりあ" || got[1] != "camellia" {
+		t.Fatalf("かめりあ expanded to %v", got)
+	}
+
+	// A word that merely contains the alias is not replaced.
+	got, err = svc.ExpandSearchQueries(ctx, "camellias")
+	if err != nil {
+		t.Fatalf("ExpandSearchQueries: %v", err)
+	}
+	if len(got) != 1 || got[0] != "camellias" {
+		t.Fatalf("camellias expanded to %v, want no variant", got)
+	}
+}
+
+func TestExpandSearchQueries_ReplacesOneWordOfAMultiWordQuery(t *testing.T) {
+	repo := &stubAliasRepo{aliases: []domain.ArtistAlias{enabledPair("camellia", "かめりあ")}}
+	svc := NewArtistAliasService(repo)
+
+	got, err := svc.ExpandSearchQueries(context.Background(), "camellia remix")
+	if err != nil {
+		t.Fatalf("ExpandSearchQueries: %v", err)
+	}
+	if len(got) != 2 || got[0] != "camellia remix" || got[1] != "かめりあ remix" {
+		t.Fatalf("expanded to %v", got)
+	}
+}
+
+func TestExpandSearchQueries_CapsVariants(t *testing.T) {
+	aliases := make([]domain.ArtistAlias, 0, 6)
+	for _, name := range []string{"a", "b", "c", "d", "e", "f"} {
+		aliases = append(aliases, enabledPair(name, name+"-alias"))
+	}
+	svc := NewArtistAliasService(&stubAliasRepo{aliases: aliases})
+
+	got, err := svc.ExpandSearchQueries(context.Background(), "a b c d e f")
+	if err != nil {
+		t.Fatalf("ExpandSearchQueries: %v", err)
+	}
+	// The original plus at most four variants.
+	if len(got) != 1+maxSearchAliasVariants {
+		t.Fatalf("expanded to %d queries, want %d", len(got), 1+maxSearchAliasVariants)
+	}
+	if got[0] != "a b c d e f" {
+		t.Fatalf("the original query must stay first, got %v", got)
+	}
+}
+
+func TestExpandSearchQueries_IgnoresDisabledAliases(t *testing.T) {
+	disabled := enabledPair("camellia", "かめりあ")
+	disabled.Enabled = false
+	svc := NewArtistAliasService(&stubAliasRepo{aliases: []domain.ArtistAlias{disabled}})
+
+	got, err := svc.ExpandSearchQueries(context.Background(), "camellia")
+	if err != nil {
+		t.Fatalf("ExpandSearchQueries: %v", err)
+	}
+	if len(got) != 1 || got[0] != "camellia" {
+		t.Fatalf("disabled alias still expanded to %v", got)
+	}
+}
+
+func TestExpandSearchQueries_CacheAndInvalidation(t *testing.T) {
+	repo := &stubAliasRepo{aliases: []domain.ArtistAlias{enabledPair("camellia", "かめりあ")}}
+	svc := NewArtistAliasService(repo)
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		if _, err := svc.ExpandSearchQueries(ctx, "camellia"); err != nil {
+			t.Fatalf("ExpandSearchQueries: %v", err)
+		}
+	}
+	if repo.listCalls != 1 {
+		t.Fatalf("alias list read %d times, want one cached read", repo.listCalls)
+	}
+
+	// Adding a pair must take effect immediately, not after the TTL.
+	if err := svc.Add(ctx, "gumi", "megpoid"); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := svc.ExpandSearchQueries(ctx, "camellia"); err != nil {
+		t.Fatalf("ExpandSearchQueries: %v", err)
+	}
+	if repo.listCalls != 2 {
+		t.Fatalf("cache was not invalidated by Add (reads = %d)", repo.listCalls)
 	}
 }

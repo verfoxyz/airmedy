@@ -40,6 +40,8 @@ import (
 	"airmedy/internal/infra/wails"
 	"context"
 	"log/slog"
+	"strings"
+	"time"
 
 	"go.uber.org/fx"
 
@@ -95,6 +97,7 @@ var Module = fx.Module("app",
 		func() domain.MediaDurationProbe { return audio.NewDurationProbe() },
 		library.NewLibraryService,
 		library.NewArtistAliasService,
+		library.NewSearchService,
 		wails.NewLibraryService,
 		wails.NewPlayerService,
 		wails.NewSearchService,
@@ -189,7 +192,7 @@ var Module = fx.Module("app",
 		},
 		fx.ParamTags(``, `optional:"true"`),
 	)),
-	fx.Invoke(func(lc fx.Lifecycle, db *sqlite.DB, search domain.SearchService, lib *library.LibraryService, playerSvc *player.PlayerService, eqSvc *eq.EQService, lastfmSvc *lastfm.LastFmService, analysisSvc *analysis.AnalysisService, settingsSvc *appsettings.SettingsService, playlistSvc *playlist.PlaylistService, pairingSvc *pairing.Service, mobileSyncSvc *mobilesync.Service, downloadSvc *download.Service, cache *stream.Cache, logger *slog.Logger) {
+	fx.Invoke(func(lc fx.Lifecycle, db *sqlite.DB, search domain.SearchService, lib *library.LibraryService, playerSvc *player.PlayerService, eqSvc *eq.EQService, lastfmSvc *lastfm.LastFmService, recommender *lastfm.Recommender, analysisSvc *analysis.AnalysisService, settingsSvc *appsettings.SettingsService, playlistSvc *playlist.PlaylistService, pairingSvc *pairing.Service, mobileSyncSvc *mobilesync.Service, downloadSvc *download.Service, cache *stream.Cache, logger *slog.Logger) {
 		// Deleting a streamed row must also drop its cached audio and release the
 		// decoder that holds the loopback URL. Wired here so app/library imports
 		// neither app/stream nor app/player.
@@ -227,12 +230,24 @@ var Module = fx.Module("app",
 						if !ok {
 							return
 						}
-						playerSvc.RemapTrack(context.Background(), payload["from_track_id"], payload["to_track_id"])
+						// The listener runs on the event loop: dispatch both the
+						// player remap and the recommendation refresh off it.
+						dispatchTrackMerged(payload, playerSvc.RemapTrack, recommender.RefreshAfterMerge)
 					})
 				}
 				// Wire metadata changes to player state; favorites use their own listener.
 				lib.AddTrackUpdateListener(func(track *domain.TrackDTO) {
 					playerSvc.SyncTrack(track)
+					// A promoted/downloaded row keeps its remote identity, so the
+					// open recommendation page must stop showing "from <provider>".
+					// Identity-less imports are skipped: local-first matching
+					// already covers them on the next page build.
+					if track == nil || track.IsRemote() ||
+						domain.NormalizeProvider(track.Provider) == "" ||
+						strings.TrimSpace(track.ExternalID) == "" {
+						return
+					}
+					recommender.RefreshLocalTrack(track)
 				})
 
 				// Last.fm love/unlove only on a genuine favorite toggle — not on
@@ -347,3 +362,32 @@ var Module = fx.Module("app",
 		})
 	}),
 )
+
+// trackMergedTimeout bounds the work dispatched after a merge. A 97 MB cached
+// file can take a while to reopen, so the budget is generous; the point is that
+// it is bounded and runs off the event loop.
+const trackMergedTimeout = 10 * time.Second
+
+// dispatchTrackMerged runs the player remap and the recommendation refresh off
+// the Wails event loop.
+//
+// The listener itself must return immediately: RemapTrack reads the database,
+// waits for a stream session to close and may reopen audio, and blocking the
+// event loop freezes every open drawer and RPC with it.
+func dispatchTrackMerged(
+	payload map[string]string,
+	remap func(context.Context, string, string),
+	refresh func(context.Context, string),
+) {
+	fromTrackID := payload["from_track_id"]
+	toTrackID := payload["to_track_id"]
+	if fromTrackID == "" || toTrackID == "" {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), trackMergedTimeout)
+		defer cancel()
+		remap(ctx, fromTrackID, toTrackID)
+		refresh(ctx, toTrackID)
+	}()
+}

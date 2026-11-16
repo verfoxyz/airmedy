@@ -109,7 +109,27 @@ func filterOutIDs(list []*domain.TrackDTO, removeIDs map[string]bool) []*domain.
 
 // SetQueue replaces the entire queue and sets the current track index.
 // Shuffle is always reset to false — use ShuffleTracks to start with shuffle enabled.
+//
+// Duplicate ids are dropped (first occurrence wins): the frontend keys queue
+// rows by id, so one track occupying two slots produced rows that could not be
+// removed and that played the wrong song when clicked.
 func (s *QueueService) SetQueue(tracks []*domain.TrackDTO, startIndex int) {
+	var startID string
+	if startIndex >= 0 && startIndex < len(tracks) && tracks[startIndex] != nil {
+		startID = tracks[startIndex].ID
+	}
+	tracks = normalizeQueue(tracks)
+	if startID != "" {
+		// The requested start row may have been a duplicate that was dropped;
+		// the survivor is its first occurrence.
+		for index, track := range tracks {
+			if track.ID == startID {
+				startIndex = index
+				break
+			}
+		}
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -126,8 +146,32 @@ func (s *QueueService) SetQueue(tracks []*domain.TrackDTO, startIndex int) {
 	s.currentIndex = startIndex
 }
 
+// normalizeQueue drops nil entries and duplicate track ids, keeping the first
+// occurrence of each id. It is the single gate every queue-replacing entry
+// point uses.
+func normalizeQueue(tracks []*domain.TrackDTO) []*domain.TrackDTO {
+	if len(tracks) == 0 {
+		return tracks
+	}
+	seen := make(map[string]struct{}, len(tracks))
+	out := make([]*domain.TrackDTO, 0, len(tracks))
+	for _, track := range tracks {
+		if track == nil {
+			continue
+		}
+		if _, duplicate := seen[track.ID]; duplicate {
+			continue
+		}
+		seen[track.ID] = struct{}{}
+		out = append(out, track)
+	}
+	return out
+}
+
 // ShuffleTracks replaces the queue, enables shuffle, and shuffles all tracks.
 func (s *QueueService) ShuffleTracks(tracks []*domain.TrackDTO) {
+	tracks = normalizeQueue(tracks)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -389,6 +433,8 @@ func (s *QueueService) AppendTracks(tracks []*domain.TrackDTO) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	tracks = s.dedupeAppendedLocked(tracks)
+
 	// The current track always keeps its slot — cap the incoming batch itself
 	// to maxSize-1 so it can never crowd out every other track, current included.
 	tracks = s.capIncomingLocked(tracks)
@@ -407,6 +453,34 @@ func (s *QueueService) AppendTracks(tracks []*domain.TrackDTO) {
 	}
 
 	s.enforceMaxSizeLocked()
+}
+
+// dedupeAppendedLocked drops entries already present in the queue and repeats
+// inside the batch. Appending the same id twice would give one track two slots,
+// which the id-keyed frontend cannot render or remove correctly. Must be called
+// with s.mu held.
+func (s *QueueService) dedupeAppendedLocked(tracks []*domain.TrackDTO) []*domain.TrackDTO {
+	if len(tracks) == 0 {
+		return tracks
+	}
+	known := make(map[string]struct{}, len(s.originalList)+len(tracks))
+	for _, track := range s.originalList {
+		if track != nil {
+			known[track.ID] = struct{}{}
+		}
+	}
+	out := make([]*domain.TrackDTO, 0, len(tracks))
+	for _, track := range tracks {
+		if track == nil {
+			continue
+		}
+		if _, exists := known[track.ID]; exists {
+			continue
+		}
+		known[track.ID] = struct{}{}
+		out = append(out, track)
+	}
+	return out
 }
 
 // capIncomingLocked truncates an incoming batch of tracks (about to be added
@@ -432,6 +506,8 @@ func (s *QueueService) capIncomingLocked(tracks []*domain.TrackDTO) []*domain.Tr
 
 // InsertListAfterCurrent inserts a list of tracks immediately after the current position.
 func (s *QueueService) InsertListAfterCurrent(tracks []*domain.TrackDTO) {
+	tracks = normalizeQueue(tracks)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -544,15 +620,47 @@ func (s *QueueService) GetOriginalQueue() []*domain.TrackDTO {
 
 // Restore sets both the original and shuffled lists directly.
 func (s *QueueService) Restore(original, shuffled []*domain.TrackDTO, currentIndex int, shuffle bool, repeatMode domain.RepeatMode) {
+	var currentID string
+	switch {
+	case shuffle && currentIndex >= 0 && currentIndex < len(shuffled) && shuffled[currentIndex] != nil:
+		currentID = shuffled[currentIndex].ID
+	case !shuffle && currentIndex >= 0 && currentIndex < len(original) && original[currentIndex] != nil:
+		currentID = original[currentIndex].ID
+	}
+	original = normalizeQueue(original)
+	shuffled = normalizeQueue(shuffled)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.originalList = original
 	s.shuffledList = shuffled
-	s.currentIndex = currentIndex
 	s.shuffle = shuffle
 	s.repeatMode = repeatMode
+	if currentID != "" {
+		// A duplicate was dropped at the persisted index; point at the survivor
+		// instead of losing the restored position.
+		for index, track := range s.activeList() {
+			if track.ID == currentID {
+				currentIndex = index
+				break
+			}
+		}
+	}
+	s.currentIndex = currentIndex
 	s.enforceMaxSizeLocked()
+}
+
+// IndexOf returns the position of trackID in the active queue, or -1.
+func (s *QueueService) IndexOf(trackID string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for index, track := range s.activeList() {
+		if track != nil && track.ID == trackID {
+			return index
+		}
+	}
+	return -1
 }
 
 // IsEmpty returns true if the queue has no tracks.
@@ -687,8 +795,13 @@ func (s *QueueService) ReorderQueue(trackIDs []string) {
 	}
 
 	newActiveList := make([]*domain.TrackDTO, 0, len(trackIDs))
+	seen := make(map[string]struct{}, len(trackIDs))
 	for _, id := range trackIDs {
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
 		if t, ok := trackMap[id]; ok {
+			seen[id] = struct{}{}
 			newActiveList = append(newActiveList, t)
 		}
 	}

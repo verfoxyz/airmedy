@@ -2,19 +2,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick, reactive } from 'vue'
 import LastFmListView from './LastFmListView.vue'
+import DetailHero from '@/components/DetailHero.vue'
 
 const mocks = vi.hoisted(() => ({
   push: vi.fn(),
   replace: vi.fn(),
+  back: vi.fn(),
   getList: vi.fn(),
   refreshList: vi.fn(),
+  refreshAll: vi.fn(),
   refreshItem: vi.fn(),
   preparePlayback: vi.fn(),
   save: vi.fn(),
   playTrackIds: vi.fn(),
   handlers: new Map<string, (event: { data?: unknown }) => void>(),
   off: vi.fn(),
-  route: { params: { kind: 'top_tracks' } },
+  route: { name: 'lastfm-list', params: { kind: 'top_tracks' } as { kind?: string } },
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -28,7 +31,7 @@ vi.mock('vue-i18n', () => ({
 
 vi.mock('vue-router', () => ({
   useRoute: () => mocks.route,
-  useRouter: () => ({ push: mocks.push, replace: mocks.replace }),
+  useRouter: () => ({ push: mocks.push, replace: mocks.replace, back: mocks.back }),
 }))
 
 vi.mock('@wailsio/runtime', async (importOriginal) => ({
@@ -44,6 +47,7 @@ vi.mock('@wailsio/runtime', async (importOriginal) => ({
 vi.mock('../../bindings/airmedy/internal/infra/wails/lastfmservice', () => ({
   GetRecommendationList: mocks.getList,
   RefreshRecommendationList: mocks.refreshList,
+  RefreshAllRecommendationLists: mocks.refreshAll,
   RefreshRecommendationItem: mocks.refreshItem,
 }))
 
@@ -119,8 +123,10 @@ describe('LastFmListView (one persisted list)', () => {
   beforeEach(() => {
     mocks.push.mockReset()
     mocks.replace.mockReset()
+    mocks.back.mockReset()
     mocks.getList.mockReset()
     mocks.refreshList.mockReset()
+    mocks.refreshAll.mockReset()
     mocks.refreshItem.mockReset()
     mocks.preparePlayback.mockReset()
     mocks.save.mockReset()
@@ -128,11 +134,13 @@ describe('LastFmListView (one persisted list)', () => {
     mocks.handlers.clear()
     mocks.off.mockReset()
     document.body.innerHTML = ''
+    mocks.route.name = 'lastfm-list'
     mocks.route.params = reactive({ kind: 'top_tracks' })
     mocks.preparePlayback.mockResolvedValue('track-1')
     mocks.save.mockResolvedValue(true)
     mocks.playTrackIds.mockResolvedValue(undefined)
     mocks.refreshList.mockResolvedValue(undefined)
+    mocks.refreshAll.mockResolvedValue(undefined)
     mocks.refreshItem.mockResolvedValue(undefined)
   })
 
@@ -170,6 +178,24 @@ describe('LastFmListView (one persisted list)', () => {
     const row = wrapper.find('[data-test="top-track-row"]')
     expect(row.find('[data-test="top-track-status"]').attributes('data-state')).toBe('matched')
     expect(row.find('[data-test="top-track-play"]').exists()).toBe(true)
+  })
+
+  it('switches a promoted row to the in-library chip', async () => {
+    mocks.getList.mockResolvedValue(list([item('Hit', 'matched')]))
+    const wrapper = await mountView()
+
+    const promoted = item('Hit', 'matched')
+    promoted.state = 'in_library'
+    promoted.local_track_id = 'local-1'
+    promoted.provider = ''
+    promoted.external_id = ''
+    promoted.sources = []
+    promoted.downloadable = false
+    await emitMatch({ kind: 'top_tracks', items: [promoted], done: false })
+
+    const row = wrapper.find('[data-test="top-track-row"]')
+    expect(row.find('[data-test="top-track-status"]').text()).toBe('lastfm.in_library')
+    expect(row.find('[data-test="top-track-save"]').exists()).toBe(false)
   })
 
   it('ignores updates for another list', async () => {
@@ -259,8 +285,8 @@ describe('LastFmListView (one persisted list)', () => {
     mocks.getList.mockResolvedValue(list([item('One')]))
     const wrapper = await mountView()
 
-    await wrapper.find('[data-test="lastfm-back"]').trigger('click')
-    expect(mocks.push).toHaveBeenCalledWith('/lastfm')
+    await wrapper.findComponent(DetailHero).find('button').trigger('click')
+    expect(mocks.back).toHaveBeenCalledTimes(1)
   })
 
   it('shows the empty state with a refresh action', async () => {
@@ -302,6 +328,31 @@ describe('LastFmListView (one persisted list)', () => {
     expect(wrapper.findAll('[data-test="top-track-row"]')).toHaveLength(1)
   })
 
+  it('does not cancel the navigation when leaving the list route', async () => {
+    mocks.getList.mockResolvedValue(list([item('One')]))
+    await mountView()
+
+    // Leaving the route drops :kind. The listener must not redirect back to
+    // /lastfm, which would replace the navigation the user just started.
+    mocks.route.name = 'albums'
+    mocks.route.params.kind = undefined
+    await nextTick()
+    await flushPromises()
+
+    expect(mocks.replace).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the cards page for an unknown list kind', async () => {
+    mocks.getList.mockResolvedValue(list([item('One')]))
+    await mountView()
+
+    mocks.route.params.kind = 'unknown'
+    await nextTick()
+    await flushPromises()
+
+    expect(mocks.replace).toHaveBeenCalledWith('/lastfm')
+  })
+
   it('appends progressively built rows without duplicates', async () => {
     mocks.getList.mockResolvedValue(list([item('One')]))
     const wrapper = await mountView()
@@ -332,13 +383,13 @@ describe('LastFmListView (one persisted list)', () => {
       resolveList = resolve
     }))
     const wrapper = await mountView()
-    expect(wrapper.find('[data-test="lastfm-list-loading"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="lastfm-list-title"]').exists()).toBe(false)
 
     await emitEvent('lastfm:recommendation-items-added', {
       kind: 'similar',
       items: [item('Early', 'matching', 'similar')],
     })
-    expect(wrapper.find('[data-test="lastfm-list-loading"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="lastfm-list-title"]').exists()).toBe(true)
     expect(wrapper.findAll('[data-test="top-track-row"]')).toHaveLength(1)
 
     resolveList({ ...list([]), kind: 'similar', title: 'lastfm.similar_tracks' })

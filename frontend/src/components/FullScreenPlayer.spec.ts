@@ -129,7 +129,7 @@ describe('FullScreenPlayer', () => {
               expose({ scrollToCurrentTrack: mocks.queueScrollToCurrent })
               return {}
             },
-            template: '<button data-test="queue-play" @click="$emit(\'play-track\', 1)">play</button>',
+            template: '<button data-test="queue-play" @click="$emit(\'play-track\', { id: \'t2\' })">play</button>',
           },
         },
       },
@@ -190,14 +190,14 @@ describe('FullScreenPlayer', () => {
     wrapper.unmount()
   })
 
-  it('routes fullscreen queue clicks through playQueueIndex', async () => {
+  it('routes fullscreen queue clicks through playQueueTrack by id', async () => {
     const wrapper = mountPlayer()
     const store = usePlayerStore()
 
     await wrapper.get('[data-test="queue-play"]').trigger('click')
 
-    expect(store.playQueueIndex).toHaveBeenCalledOnce()
-    expect(store.playQueueIndex).toHaveBeenCalledWith(1)
+    expect(store.playQueueTrack).toHaveBeenCalledOnce()
+    expect(store.playQueueTrack).toHaveBeenCalledWith('t2')
     expect(store.playTracks).not.toHaveBeenCalled()
   })
 

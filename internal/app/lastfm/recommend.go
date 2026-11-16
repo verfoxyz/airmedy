@@ -149,6 +149,12 @@ type CatalogMatcher interface {
 	Sources(ctx context.Context) ([]domain.CatalogSearchSource, error)
 }
 
+// TrackLookup reads one track row by id. domain.TrackRepository satisfies it.
+// The recommender only needs the survivor of a merge, so the port stays tiny.
+type TrackLookup interface {
+	GetByID(ctx context.Context, id string) (*domain.TrackDTO, error)
+}
+
 // RecommendedTrack is one recommendation, before or after source matching.
 //
 // The first page ships Last.fm's own rows with Matching=true and no provider.
@@ -270,6 +276,9 @@ type Recommender struct {
 	// recommendationStore persists the two lists and their match state. nil in
 	// tests that only exercise the in-memory build.
 	recommendationStore domain.LastFmRecommendationRepository
+	// tracks resolves the survivor of a merge, whose inherited identity names
+	// the recommendation rows the merge invalidated. nil disables the refresh.
+	tracks TrackLookup
 	// matchingActive guards one worker run per list kind, so opening the cards
 	// page and a detail page in a burst does not search the same rows twice.
 	matchingActive map[string]bool
@@ -334,6 +343,14 @@ func (r *Recommender) recommendationStoreOrNil() domain.LastFmRecommendationRepo
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.recommendationStore
+}
+
+// SetTrackLookup installs the row lookup used after a merge. Optional: without
+// it the persisted lists still refresh on the next page load.
+func (r *Recommender) SetTrackLookup(tracks TrackLookup) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tracks = tracks
 }
 
 // SetCoverAssets installs the identity cover resolver. Optional: without it a
@@ -1499,9 +1516,20 @@ func (r *Recommender) matchedRecommended(base RecommendedTrack, row *domain.Cata
 			cover = r.coverForIdentity(row.Provider, row.ExternalID)
 		}
 	}
+	provider := row.Provider
+	externalID := row.ExternalID
+	sources := append([]string{}, row.Sources...)
+	// A local hit outranks the source it came from: a promoted row keeps its
+	// remote identity, so the chip must read "in library" and the row must not
+	// offer a download again.
+	if row.State == domain.CatalogRowStateInLibrary || strings.TrimSpace(row.LocalTrackID) != "" {
+		provider = ""
+		externalID = ""
+		sources = []string{}
+	}
 	return RecommendedTrack{
-		Provider:              row.Provider,
-		ExternalID:            row.ExternalID,
+		Provider:              provider,
+		ExternalID:            externalID,
 		Title:                 row.Title,
 		Artists:               append([]string{}, row.Artists...),
 		AlbumName:             row.AlbumName,
@@ -1512,7 +1540,7 @@ func (r *Recommender) matchedRecommended(base RecommendedTrack, row *domain.Cata
 		DownloadBlockedReason: row.DownloadBlockedReason,
 		State:                 row.State,
 		LocalTrackID:          row.LocalTrackID,
-		Sources:               append([]string{}, row.Sources...),
+		Sources:               sources,
 		Score:                 base.Score,
 		Source:                base.Source,
 		MatchKey:              base.MatchKey,

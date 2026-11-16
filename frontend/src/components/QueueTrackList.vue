@@ -81,7 +81,7 @@ defineExpose({ scrollToCurrentTrack })
           class="w-full flex items-center gap-3 pl-3 h-16 border-l-2 text-left hover:bg-foreground/[0.04] transition-colors group relative"
           :class="{ 'bg-primary/10': store.currentTrack?.id === item.id }"
           :style="{ borderLeftColor: store.currentTrack?.id === item.id ? 'var(--primary)' : 'transparent' }"
-          @click="store.playQueueIndex(index)" @dblclick="store.playQueueIndex(index)"
+          @click="store.playQueueTrack(item.id)" @dblclick="store.playQueueTrack(item.id)"
           @contextmenu.prevent="onContextMenu($event, item)">
           <div class="w-10 h-10 rounded-md bg-foreground/5 flex-shrink-0 overflow-hidden">
             <LazyImg v-if="item.artwork_key" :src="buildArtworkUrl(item.artwork_key, 'sm')" :alt="item.title"

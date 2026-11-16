@@ -502,6 +502,205 @@ func (r *Recommender) persistRecommendationItems(items []TopTrackItem) {
 	}
 }
 
+// RefreshAfterMerge moves the recommendation rows matched through the identity
+// a merge just moved onto a local survivor. The survivor keeps the remote
+// identity, so one lookup names both the affected rows and their new local id.
+func (r *Recommender) RefreshAfterMerge(ctx context.Context, toTrackID string) {
+	toTrackID = strings.TrimSpace(toTrackID)
+	if toTrackID == "" {
+		return
+	}
+	r.mu.Lock()
+	lookup := r.tracks
+	r.mu.Unlock()
+	if lookup == nil {
+		return
+	}
+	survivor, err := lookup.GetByID(ctx, toTrackID)
+	if err != nil {
+		r.logger.Warn("last.fm recommendations: load merged survivor",
+			"track_id", toTrackID, "error", err)
+		return
+	}
+	r.refreshLocalMatch(survivor, true)
+}
+
+// RefreshLocalTrack mirrors library:track-updated for an open page. Only rows
+// already cached in memory are refreshed, so a bulk import cannot scan the
+// stored lists once per file.
+func (r *Recommender) RefreshLocalTrack(track *domain.TrackDTO) {
+	r.refreshLocalMatch(track, false)
+}
+
+// refreshLocalMatch rewrites rows that were matched through the remote identity
+// a local row now owns. includeStored also scans the persisted lists, which is
+// needed when the page that shows the row is closed.
+func (r *Recommender) refreshLocalMatch(track *domain.TrackDTO, includeStored bool) {
+	if track == nil || track.IsRemote() {
+		return
+	}
+	localTrackID := strings.TrimSpace(track.ID)
+	if localTrackID == "" {
+		return
+	}
+	provider := domain.NormalizeProvider(track.Provider)
+	externalID := strings.TrimSpace(track.ExternalID)
+	matchKeys := localMatchKeys(track)
+
+	updates := make([]TopTrackItem, 0, 2)
+	seen := make(map[string]struct{})
+	add := func(item TopTrackItem) {
+		if item.Kind == "" || item.MatchKey == "" {
+			return
+		}
+		key := recommendationRowKey(item.Kind, item.MatchKey)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		applyLocalLibraryRow(&item, localTrackID)
+		updates = append(updates, item)
+	}
+
+	// Rows of the open page: the per-source cache names them by identity, and
+	// topRows keeps the complete Last.fm row the frontend renders.
+	if provider != "" && externalID != "" {
+		for _, ref := range r.topTrackKeysForIdentity(provider, externalID) {
+			r.mu.Lock()
+			base, ok := r.topRows[recommendationRowKey(ref.kind, ref.matchKey)]
+			r.mu.Unlock()
+			if ok {
+				add(base)
+			}
+		}
+	}
+
+	// Match-key fallback: a survivor whose identity was not carried still
+	// resolves the rows whose Last.fm title/artist names the same song.
+	if len(matchKeys) > 0 {
+		r.mu.Lock()
+		for _, item := range r.topRows {
+			if _, ok := matchKeys[item.MatchKey]; ok {
+				add(item)
+			}
+		}
+		r.mu.Unlock()
+	}
+
+	// Persisted rows of every list, including lists that are not open right now.
+	if includeStored {
+		if store := r.recommendationStoreOrNil(); store != nil {
+			for _, kind := range recommendationKindOrder() {
+				list, err := store.GetRecommendationList(context.Background(), kind)
+				if err != nil {
+					r.logger.Warn("last.fm recommendations: refresh stored rows",
+						"kind", kind, "error", err)
+					continue
+				}
+				if list == nil {
+					continue
+				}
+				for _, item := range list.Items {
+					if !identityMatches(item.Provider, item.ExternalID, provider, externalID) {
+						if _, ok := matchKeys[item.MatchKey]; !ok {
+							continue
+						}
+					}
+					add(recommendationItemFromDomain(item))
+				}
+			}
+		}
+	}
+
+	if len(updates) == 0 {
+		return
+	}
+
+	// The per-source cache must not hand the old provider back on the next page.
+	r.dropSourceMatches(updates, provider, externalID)
+	r.persistRecommendationItems(updates)
+	// One event per row: an update carries a single kind, and the row may belong
+	// to either list.
+	for _, item := range updates {
+		r.emitTopTrackUpdate([]TopTrackItem{item})
+	}
+}
+
+// dropSourceMatches clears cached source outcomes for rows that are now local,
+// whether the cache was found by row identity or by the row's match key.
+func (r *Recommender) dropSourceMatches(items []TopTrackItem, provider, externalID string) {
+	if len(items) == 0 {
+		return
+	}
+	refs := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		refs[recommendationRowKey(item.Kind, item.MatchKey)] = struct{}{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for cacheKey, entry := range r.sourceMatches {
+		index := strings.LastIndexByte(cacheKey, '|')
+		if index <= 0 {
+			continue
+		}
+		ref := splitRecommendationRowKey(cacheKey[:index])
+		if _, ok := refs[recommendationRowKey(ref.kind, ref.matchKey)]; ok {
+			delete(r.sourceMatches, cacheKey)
+			continue
+		}
+		if entry.row != nil && identityMatches(entry.row.Provider, entry.row.ExternalID, provider, externalID) {
+			delete(r.sourceMatches, cacheKey)
+		}
+	}
+}
+
+// identityMatches reports whether a row was matched through the given identity.
+// Both sides are normalised, so "WY" and " wy " still match.
+func identityMatches(provider, externalID, wantProvider, wantExternalID string) bool {
+	if wantProvider == "" || wantExternalID == "" {
+		return false
+	}
+	return domain.NormalizeProvider(provider) == wantProvider &&
+		strings.TrimSpace(externalID) == wantExternalID
+}
+
+// applyLocalLibraryRow rewrites a matched row to the local copy that now owns
+// the audio: the source identity is dropped because "already in library" must
+// outrank "from <provider>", and nothing remains to download.
+func applyLocalLibraryRow(item *TopTrackItem, localTrackID string) {
+	item.Provider = ""
+	item.ExternalID = ""
+	item.Sources = []string{}
+	item.State = domain.CatalogRowStateInLibrary
+	item.LocalTrackID = localTrackID
+	item.Matching = false
+	item.Matched = true
+	item.NoSource = false
+}
+
+// localMatchKeys returns every Last.fm match key the local row could stand for.
+// artist+title is what the recommendation rows are keyed by.
+func localMatchKeys(track *domain.TrackDTO) map[string]struct{} {
+	keys := make(map[string]struct{})
+	title := strings.TrimSpace(track.Title)
+	if title == "" {
+		return keys
+	}
+	artists := make([]string, 0, len(track.Artists)+1)
+	for _, artist := range track.Artists {
+		if artist != nil && strings.TrimSpace(artist.Name) != "" {
+			artists = append(artists, strings.TrimSpace(artist.Name))
+		}
+	}
+	if len(artists) == 0 && strings.TrimSpace(track.RawArtistNames) != "" {
+		artists = append(artists, strings.TrimSpace(track.RawArtistNames))
+	}
+	for _, artist := range artists {
+		keys[candidateKey(artist, title)] = struct{}{}
+	}
+	return keys
+}
+
 // resumeRecommendationMatching restarts the worker for rows a previous session
 // left matching. onlyKind limits it to the detail page's list.
 func (r *Recommender) resumeRecommendationMatching(ctx context.Context, onlyKind string) {

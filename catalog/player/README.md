@@ -439,7 +439,12 @@ flowchart TB
   decoder. `loadAndPlay`/`loadInactiveAtPosition` call `StreamCache.Open`, which
   resolves the track through the enabled plugin and serves it from a loopback
   proxy; the decoder loads a shallow copy whose `Path` is the proxy URL, while
-  `currentTrack` keeps the `remote://` identity. The session closes on a hard
+  `currentTrack` keeps the `remote://` identity. Resolution walks down from
+  `stream_quality` when the source has no link at that tier
+  (`flac → 320k → 128k`, `320k → 128k`); only a structured "no link at this
+  quality" failure degrades — network/auth failures do not. `stream_cache.quality`
+  records the tier that actually resolved, so promotion compares real quality.
+  The session closes on a hard
   load, `Stop`, natural advance and shutdown; the 500 ms ticker updates progress
   in memory, and the value reaches `stream_cache` on pause, close, completion or
   a thirty-second backstop rather than on every tick. A remote row restored at
@@ -463,14 +468,19 @@ flowchart TB
   session (a load window or a retry): `PlayerService.PlayingTrack` is the port the
   worker consults, and the 30 s sweep retries once playback moves on.
 - **Merge remap.** A finished download or promotion deletes the remote row and
-  emits `track:merged` (`from_track_id`, `to_track_id`). `PlayerService.RemapTrack`
-  replaces the current row and every queue occurrence with the survivor, closes the
-  stream session, rebinds listening/attempt bookkeeping to the new id, and reloads
-  the local file at the same position/state. Without this the decoder kept a
-  deleted row (a later write failed its foreign key) and the next attempt reopened
-  a stream cache for an already-local identity. `stream.Cache.Open` additionally
-  refuses such an identity with `domain.ErrStreamAlreadyLocal` instead of creating
-  a new entry.
+  emits `track:merged` (`from_track_id`, `to_track_id`). The listener only
+  dispatches: `RemapTrack` plus the Last.fm row refresh run in one goroutine with
+  a 10 s timeout, because the Wails event callback runs on the event loop and the
+  work reads the database, waits for a stream session and can reopen audio.
+  `RemapTrack` replaces the current row and every queue occurrence with the
+  survivor, closes the stream session, and rebinds listening/attempt bookkeeping
+  to the new id. It reloads the local file at the same position only when the
+  track is **playing or paused**; a stopped (already ended) track is not reloaded,
+  which used to reopen the decoder for no reason. Without the remap the decoder
+  kept a deleted row (a later write failed its foreign key) and the next attempt
+  reopened a stream cache for an already-local identity. `stream.Cache.Open`
+  additionally refuses such an identity with `domain.ErrStreamAlreadyLocal`
+  instead of creating a new entry.
 - Manages playback state transitions.
 - Runs a **500ms ticker** for internal logic:
   - Increments play counts and scrobbling thresholds via `checkThreshold()`.
@@ -580,6 +590,7 @@ ShuffleTracks(tracks []*TrackDTO) error
 ShuffleTrackIDs(ids []string) error
 PlayNext(track *TrackDTO)
 PlayNextTracks(tracks []*TrackDTO)
+PlayQueueTrackByID(trackID string) error
 RemoveFromQueue(trackID string)
 GetStatus() PlayerStatus
 GetQueue() []*TrackDTO
@@ -631,6 +642,30 @@ Fisher-Yates shuffle. When entering shuffle mode with a playing track, the playb
 ### Insert After Current
 
 `PlayNext(track)` / `PlayNextTracks(tracks)` inserts after the current index in both `originalList` and `shuffledList`.
+
+### Identity and Pre-queue
+
+Every entry point normalizes its input: `SetQueue`, `ShuffleTracks` and
+`InsertListAfterCurrent` run `normalizeQueue`, and `AppendTracks` additionally
+skips ids already in the queue (`dedupeAppendedLocked`). Duplicate `track.ID`s
+are dropped with the first occurrence winning, nil rows are skipped, and
+`SetQueue` remaps `startIndex`/`Restore` remaps the restored index to the
+surviving occurrence. One track therefore never occupies two slots — the
+id-keyed frontend renders and removes each row exactly once. `ReorderQueue`
+ignores repeated ids in its input.
+
+`PlayTracks` calls `clearPreQueue` before the hard load: it drops the cached
+`nextPreQueued` and calls `GaplessPlayer.ClearEnqueued`, so a successor
+pre-loaded for the replaced queue cannot surface at track end. Every hard load
+(`loadAndPlayAtPosition`, `loadInactiveAtPosition`) clears the same state.
+`resyncPreQueue` keeps its original rule — it clears and re-enqueues only when
+something was actually pre-loaded.
+
+Queue row clicks use `PlayQueueTrackByID(trackID)`; `QueueService.IndexOf`
+resolves the id in the **active** list. An id the backend no longer holds
+returns an error (the frontend shows it and resyncs the queue) instead of
+playing whatever row now sits at a stale index. `PlayQueueIndex` remains for
+internal callers.
 
 ### Max Queue Size
 
@@ -707,7 +742,7 @@ On app startup, `Load()` restores queue, seeks to saved position, but does not a
 | Event                  | When                                                   |
 | ---------------------- | ------------------------------------------------------ |
 | `player:status`        | On any state change (Play, Pause, Seek, Stop, Track Change); includes `lyrics_request_id` for the active lyric lifecycle |
-| `player:queue-updated` | Queue modified (insert, remove, reorder, new playlist) |
+| `player:queue-updated` | Queue modified (insert, remove, reorder, new playlist). Payload is the full snapshot; the frontend replaces its array and never merges |
 | `player:theme`         | New track loaded — artwork color palette               |
 | `player:lyrics`        | Current lyric lifecycle — `{ track_id, request_id, state, lyric? }`; the latest event is retained for `GetCurrentLyrics` reconciliation and stale request IDs are discarded by the UI |
 | `player:artwork-crossfade` | Automatic audio crossfade begins/ends; fullscreen artwork transition payload |
@@ -715,6 +750,12 @@ On app startup, `Load()` restores queue, seeks to saved position, but does not a
 ## Frontend Store (`stores/player.ts`)
 
 **State:** `status`, `queue`, `currentTrack`, `theme`, `lyrics`, `artworkCrossfade`, `playerMode` (`sticky | mini | fullscreen`), drawer visibility flags.
+
+**Queue rows are addressed by id.** `player:queue-updated` replaces the whole
+array (never merges), rows render with `data-key="id"`, and clicking a row calls
+`playQueueTrack(trackId)` → `PlayQueueTrackByID`. A row the backend no longer
+holds reports the error and refetches the queue, so a stale row can neither play
+the wrong song nor survive a removal.
 
 **Actions:** `setPlayerMode(mode)` is the single frontend mutation point for
 `playerMode`; components use it instead of assigning the state directly.

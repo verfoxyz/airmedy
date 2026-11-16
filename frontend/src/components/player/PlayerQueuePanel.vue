@@ -14,7 +14,7 @@ defineProps<{
 
 const emit = defineEmits<{
   (e: 'close'): void
-  (e: 'play-track', index: number): void
+  (e: 'play-track', track: TrackDTO): void
 }>()
 
 const { t } = useI18n()
@@ -66,7 +66,7 @@ defineExpose({
           :hide-header="true" variant="glass" :allow-dnd="true"
           :context-menu-options="{ showRemoveFromQueue: true }"
           class="dark"
-          @play-track="(_, index) => emit('play-track', index)"
+          @play-track="track => emit('play-track', track)"
           @reorder="tracks => playerStore.reorderQueue(tracks)"
           @navigate-album="id => navigate(`/albums/${id}`)"
           @navigate-artist="id => navigate(`/artists/${id}`)" />

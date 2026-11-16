@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"airmedy/internal/app/library"
 	"airmedy/internal/domain"
 )
 
@@ -17,7 +18,7 @@ type SearchResultSet struct {
 }
 
 type SearchService struct {
-	search    domain.SearchService
+	search    *library.SearchService
 	tracks    domain.TrackRepository
 	albums    domain.AlbumRepository
 	artists   domain.ArtistRepository
@@ -26,7 +27,7 @@ type SearchService struct {
 }
 
 func NewSearchService(
-	search domain.SearchService,
+	search *library.SearchService,
 	tracks domain.TrackRepository,
 	albums domain.AlbumRepository,
 	artists domain.ArtistRepository,

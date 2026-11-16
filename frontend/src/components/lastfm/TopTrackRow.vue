@@ -45,23 +45,28 @@ const noMatch = computed(() => !matching.value && props.item.no_source === true)
 const matched = computed(
   () => !matching.value && !noMatch.value && (!!props.item.provider || !!props.item.local_track_id),
 )
+// A promoted row keeps its remote identity, so "already in library" must win
+// over "from {source}": the song is on disk and there is nothing to download.
+const inLibrary = computed(
+  () => props.item.state === 'in_library' || !!props.item.local_track_id,
+)
 const matchedLabel = computed(() =>
-  props.item.provider
-    ? t('lastfm.matched_from', { source: props.item.provider })
-    : t('lastfm.in_library'),
+  inLibrary.value
+    ? t('lastfm.in_library')
+    : t('lastfm.matched_from', { source: props.item.provider }),
 )
 const canPlay = computed(() => matched.value)
 const canSave = computed(
-  () => matched.value && props.item.downloadable && !!props.item.provider,
+  () => matched.value && !inLibrary.value && props.item.downloadable && !!props.item.provider,
 )
 </script>
 
 <template>
   <div
-    class="group flex items-center gap-3 rounded-xl p-2 transition-colors hover:bg-foreground/[0.04]"
+    class="group flex h-14 items-center gap-3 px-2 transition-colors hover:bg-foreground/[0.04]"
     data-test="top-track-row"
   >
-    <div class="h-10 w-10 flex-shrink-0 overflow-hidden rounded-lg bg-foreground/[0.06] ring-1 ring-foreground/[0.06]">
+    <div class="h-8 w-8 flex-shrink-0 overflow-hidden rounded bg-foreground/[0.06] ring-1 ring-foreground/[0.06]">
       <LazyImg
         v-if="coverSrc && !imageFailed"
         :src="coverSrc"
@@ -70,12 +75,12 @@ const canSave = computed(
         @error="imageFailed = true"
       />
       <div v-else class="flex h-full w-full items-center justify-center text-dimmer">
-        <Music class="h-5 w-5" aria-hidden="true" />
+        <Music class="h-4 w-4" aria-hidden="true" />
       </div>
     </div>
 
     <div class="min-w-0 flex-1">
-      <p class="truncate text-sm font-semibold text-foreground" :title="item.title">{{ item.title }}</p>
+      <p class="truncate text-sm font-medium text-foreground" :title="item.title">{{ item.title }}</p>
       <p class="truncate text-xs text-dim" :title="artistLine">{{ artistLine }}</p>
       <p v-if="item.album" class="truncate text-[11px] text-dimmer">{{ item.album }}</p>
     </div>

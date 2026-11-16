@@ -1950,6 +1950,113 @@ func TestRemapTrack_SwitchesCurrentAndQueueToTheSurvivor(t *testing.T) {
 	}
 }
 
+// TestRemapTrack_StoppedTrackIsNotReloaded: a merge after the track already
+// ended must only rewrite the row and queue, not reopen the decoder. That
+// reload was the visible stall while the song-details drawer was open.
+func TestRemapTrack_StoppedTrackIsNotReloaded(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1}}
+	s, _ := newTestService(t, fp)
+	cache := newFakeStreamCache()
+	s.streamCache = cache
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID: "remote-1", Path: domain.RemotePath("wy", "42"), Title: "歌",
+		Provider: "wy", ExternalID: "42", Availability: domain.AvailabilityRemote, Duration: 120,
+	}}
+	local := &domain.TrackDTO{Track: domain.Track{
+		ID: "local-1", Path: `C:\Music\song.flac`, Title: "歌", Duration: 120, Availability: domain.AvailabilityReady,
+	}}
+	s.trackRepo = &reloadTrackRepo{track: local}
+	s.queue.SetQueue([]*domain.TrackDTO{remote}, 0)
+
+	if err := s.loadAndPlay(remote); err != nil {
+		t.Fatalf("loadAndPlay: %v", err)
+	}
+	if err := fp.Stop(); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	loadsBefore := fp.loadCalls
+
+	s.RemapTrack(context.Background(), remote.ID, local.ID)
+
+	if fp.loadCalls != loadsBefore {
+		t.Fatalf("decoder was reopened for a stopped track (%d -> %d loads)", loadsBefore, fp.loadCalls)
+	}
+	if current := s.GetCurrentTrack(); current == nil || current.ID != local.ID {
+		t.Fatalf("current track = %+v, want the surviving local row", current)
+	}
+	for _, queued := range s.GetQueue() {
+		if queued.ID != local.ID {
+			t.Fatalf("queue still holds %q, want only the survivor", queued.ID)
+		}
+	}
+	cache.mu.Lock()
+	closed := len(cache.closed)
+	cache.mu.Unlock()
+	if closed == 0 {
+		t.Fatal("the stream session was not released")
+	}
+}
+
+// TestRemapTrack_PausedTrackKeepsItsPosition: a paused survivor is reloaded
+// paused at the same position.
+func TestRemapTrack_PausedTrackKeepsItsPosition(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1}}
+	s, _ := newTestService(t, fp)
+	s.streamCache = newFakeStreamCache()
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID: "remote-1", Path: domain.RemotePath("wy", "42"), Title: "歌",
+		Provider: "wy", ExternalID: "42", Availability: domain.AvailabilityRemote, Duration: 120,
+	}}
+	local := &domain.TrackDTO{Track: domain.Track{
+		ID: "local-1", Path: `C:\Music\song.flac`, Title: "歌", Duration: 120, Availability: domain.AvailabilityReady,
+	}}
+	s.trackRepo = &reloadTrackRepo{track: local}
+	s.queue.SetQueue([]*domain.TrackDTO{remote}, 0)
+
+	if err := s.loadAndPlay(remote); err != nil {
+		t.Fatalf("loadAndPlay: %v", err)
+	}
+	if err := fp.Pause(); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	if err := fp.Seek(42); err != nil {
+		t.Fatalf("seek: %v", err)
+	}
+
+	s.RemapTrack(context.Background(), remote.ID, local.ID)
+
+	if fp.loadedPath != local.Path {
+		t.Fatalf("decoder opened %q, want the local file %q", fp.loadedPath, local.Path)
+	}
+	status := fp.GetStatus()
+	if status.PlaybackState != domain.PlaybackStatePaused || status.Position != 42 {
+		t.Fatalf("status = %+v, want paused at the previous position", status)
+	}
+}
+
+// TestRemapTrack_LookupFailureOnlyLogs: a cancelled or expired context makes
+// the survivor lookup fail; the call must return without panicking.
+type remapContextRepo struct {
+	fakeTrackRepo
+}
+
+func (r *remapContextRepo) GetByID(ctx context.Context, _ string) (*domain.TrackDTO, error) {
+	return nil, ctx.Err()
+}
+
+func TestRemapTrack_LookupFailureOnlyLogs(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1}}
+	s, _ := newTestService(t, fp)
+	s.trackRepo = &remapContextRepo{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	s.RemapTrack(ctx, "remote-1", "local-1")
+}
+
 // TestPauseAndResumeForCacheCleanupKeepsQueueAndPosition: the cleanup pauses to
 // release the cache file, then continues the same track at the same position
 // without touching the queue or playback modes.
@@ -2051,6 +2158,118 @@ func TestPlayTracks_StreamsARemoteRowThroughTheCache(t *testing.T) {
 	if len(cache.closed) != 1 {
 		t.Fatalf("cache closed %d sessions, want 1", len(cache.closed))
 	}
+}
+
+// TestPlayTracks_ReplacesAnEarlierPlayNext reproduces the reported sequence:
+// "play next" on one page, then "play all" elsewhere. The new queue must not
+// keep the inserted track, and no id may appear twice.
+func TestPlayTracks_ReplacesAnEarlierPlayNext(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1}}
+	s, _ := newTestService(t, fp)
+	a := &domain.TrackDTO{Track: domain.Track{ID: "A", Path: "/m/a.mp3", Duration: 100}}
+	b := &domain.TrackDTO{Track: domain.Track{ID: "B", Path: "/m/b.mp3", Duration: 100}}
+	c := &domain.TrackDTO{Track: domain.Track{ID: "C", Path: "/m/c.mp3", Duration: 100}}
+
+	if err := s.PlayTracks([]*domain.TrackDTO{a}, 0); err != nil {
+		t.Fatalf("PlayTracks([A]): %v", err)
+	}
+	s.PlayNext(b)
+	if err := s.PlayTracks([]*domain.TrackDTO{b, c}, 0); err != nil {
+		t.Fatalf("PlayTracks([B C]): %v", err)
+	}
+
+	queue := s.GetQueue()
+	if !sameTrackIDs(trackIDsOf(queue), []string{"B", "C"}) {
+		t.Fatalf("queue = %v, want [B C] with no A ghost", trackIDsOf(queue))
+	}
+}
+
+// TestPlayTracks_DedupesDuplicateInput: the Last.fm "play all" path can map two
+// rows onto one track id; the queue must still hold it once.
+func TestPlayTracks_DedupesDuplicateInput(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1}}
+	s, _ := newTestService(t, fp)
+	a := &domain.TrackDTO{Track: domain.Track{ID: "A", Path: "/m/a.mp3", Duration: 100}}
+	b := &domain.TrackDTO{Track: domain.Track{ID: "B", Path: "/m/b.mp3", Duration: 100}}
+
+	if err := s.PlayTracks([]*domain.TrackDTO{a, a, b}, 0); err != nil {
+		t.Fatalf("PlayTracks: %v", err)
+	}
+	if queue := s.GetQueue(); !sameTrackIDs(trackIDsOf(queue), []string{"A", "B"}) {
+		t.Fatalf("queue = %v, want [A B]", trackIDsOf(queue))
+	}
+}
+
+// TestPlayTracks_ClearsTheGaplessPreQueue: replacing the queue must drop the
+// successor pre-loaded for the old queue, then pre-load the new one.
+func TestPlayTracks_ClearsTheGaplessPreQueue(t *testing.T) {
+	fp := &fakeGaplessPlayer{fakePlayer: fakePlayer{status: domain.PlayerStatus{Volume: 1}}}
+	s, _ := newTestService(t, fp)
+	a := &domain.TrackDTO{Track: domain.Track{ID: "A", Path: "/m/a.mp3", Duration: 100}}
+	b := &domain.TrackDTO{Track: domain.Track{ID: "B", Path: "/m/b.mp3", Duration: 100}}
+	c := &domain.TrackDTO{Track: domain.Track{ID: "C", Path: "/m/c.mp3", Duration: 100}}
+	d := &domain.TrackDTO{Track: domain.Track{ID: "D", Path: "/m/d.mp3", Duration: 100}}
+
+	if err := s.PlayTracks([]*domain.TrackDTO{a, b}, 0); err != nil {
+		t.Fatalf("PlayTracks([A B]): %v", err)
+	}
+	fp.mu.Lock()
+	enqueued := fp.enqueuedTrack
+	fp.mu.Unlock()
+	if enqueued == nil || enqueued.ID != "B" {
+		t.Fatalf("pre-queued = %v, want B", enqueued)
+	}
+
+	if err := s.PlayTracks([]*domain.TrackDTO{c, d}, 0); err != nil {
+		t.Fatalf("PlayTracks([C D]): %v", err)
+	}
+	fp.mu.Lock()
+	enqueued = fp.enqueuedTrack
+	cleared := fp.clearCount
+	fp.mu.Unlock()
+	if cleared == 0 {
+		t.Fatal("the old gapless pre-queue was not cleared")
+	}
+	if enqueued == nil || enqueued.ID != "D" {
+		t.Fatalf("pre-queued = %v, want the new successor D", enqueued)
+	}
+}
+
+// TestPlayQueueTrackByID_PlaysTheRequestedRow: clicking a queue row addresses
+// the track id, so a stale snapshot can never select a different song.
+func TestPlayQueueTrackByID_PlaysTheRequestedRow(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1}}
+	s, _ := newTestService(t, fp)
+	a := &domain.TrackDTO{Track: domain.Track{ID: "A", Path: "/m/a.mp3", Duration: 100}}
+	b := &domain.TrackDTO{Track: domain.Track{ID: "B", Path: "/m/b.mp3", Duration: 100}}
+	c := &domain.TrackDTO{Track: domain.Track{ID: "C", Path: "/m/c.mp3", Duration: 100}}
+
+	if err := s.PlayTracks([]*domain.TrackDTO{a, b, c}, 0); err != nil {
+		t.Fatalf("PlayTracks: %v", err)
+	}
+	if err := s.PlayQueueTrackByID("C"); err != nil {
+		t.Fatalf("PlayQueueTrackByID(C): %v", err)
+	}
+	if current := s.GetCurrentTrack(); current == nil || current.ID != "C" {
+		t.Fatalf("current = %v, want C", current)
+	}
+
+	if err := s.PlayQueueTrackByID("missing"); err == nil {
+		t.Fatal("an id that is not in the queue must return an error")
+	}
+	if err := s.PlayQueueTrackByID("  "); err == nil {
+		t.Fatal("an empty id must return an error")
+	}
+}
+
+func trackIDsOf(queue []*domain.TrackDTO) []string {
+	ids := make([]string, 0, len(queue))
+	for _, track := range queue {
+		if track != nil {
+			ids = append(ids, track.ID)
+		}
+	}
+	return ids
 }
 
 type fakeStreamCovers struct {

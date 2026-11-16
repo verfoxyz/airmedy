@@ -15,7 +15,7 @@ vi.mock('@/stores/player', () => ({
     currentTrack: { id: 'current' },
     queue: [{ id: 'before' }, { id: 'current' }],
     reorderQueue: vi.fn(),
-    playQueueIndex: vi.fn(),
+    playQueueTrack: vi.fn(),
   }),
 }))
 vi.mock('vue-virtual-sortable', () => ({

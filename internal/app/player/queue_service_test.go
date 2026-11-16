@@ -344,6 +344,70 @@ func TestInsertAfterCurrent_DuplicateBeforeCurrent_Shuffle(t *testing.T) {
 	}
 }
 
+// TestSetQueue_DropsDuplicateIDsAndKeepsTheStartTrack: a queue-replacing entry
+// point must never give one track two slots, and a start index that pointed at
+// a dropped duplicate must still select that song.
+func TestSetQueue_DropsDuplicateIDsAndKeepsTheStartTrack(t *testing.T) {
+	q := NewQueueService(slog.Default())
+	a, b, c := makeTrack("A"), makeTrack("B"), makeTrack("C")
+	q.SetQueue([]*domain.TrackDTO{a, b, a, c}, 2)
+
+	if got := queueIDs(q); !equalSlices(got, []string{"A", "B", "C"}) {
+		t.Fatalf("queue = %v, want [A B C]", got)
+	}
+	if current := q.GetCurrentTrack(); current == nil || current.ID != "A" {
+		t.Fatalf("current = %v, want A", current)
+	}
+}
+
+func TestAppendTracks_SkipsExistingAndBatchDuplicates(t *testing.T) {
+	q := NewQueueService(slog.Default())
+	q.SetQueue([]*domain.TrackDTO{makeTrack("A"), makeTrack("B")}, 0)
+
+	q.AppendTracks([]*domain.TrackDTO{makeTrack("B"), makeTrack("C"), makeTrack("C"), makeTrack("D")})
+
+	if got := queueIDs(q); !equalSlices(got, []string{"A", "B", "C", "D"}) {
+		t.Fatalf("queue = %v, want [A B C D]", got)
+	}
+}
+
+func TestInsertListAfterCurrent_DropsDuplicates(t *testing.T) {
+	q := NewQueueService(slog.Default())
+	q.SetQueue([]*domain.TrackDTO{makeTrack("A")}, 0)
+
+	q.InsertListAfterCurrent([]*domain.TrackDTO{makeTrack("X"), makeTrack("X"), makeTrack("Y")})
+
+	if got := queueIDs(q); !equalSlices(got, []string{"A", "X", "Y"}) {
+		t.Fatalf("queue = %v, want [A X Y]", got)
+	}
+}
+
+func TestRestore_DropsDuplicatesAndKeepsTheRestoredTrack(t *testing.T) {
+	q := NewQueueService(slog.Default())
+	original := []*domain.TrackDTO{makeTrack("A"), makeTrack("B"), makeTrack("B"), makeTrack("C")}
+
+	q.Restore(original, nil, 2, false, domain.RepeatModeOff)
+
+	if got := queueIDs(q); !equalSlices(got, []string{"A", "B", "C"}) {
+		t.Fatalf("queue = %v, want [A B C]", got)
+	}
+	if current := q.GetCurrentTrack(); current == nil || current.ID != "B" {
+		t.Fatalf("current = %v, want the restored track B", current)
+	}
+}
+
+func TestIndexOf_FindsTheActiveListPosition(t *testing.T) {
+	q := NewQueueService(slog.Default())
+	q.SetQueue([]*domain.TrackDTO{makeTrack("A"), makeTrack("B"), makeTrack("C")}, 1)
+
+	if got := q.IndexOf("C"); got != 2 {
+		t.Fatalf("IndexOf(C) = %d, want 2", got)
+	}
+	if got := q.IndexOf("missing"); got != -1 {
+		t.Fatalf("IndexOf(missing) = %d, want -1", got)
+	}
+}
+
 func equalSlices(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

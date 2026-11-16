@@ -796,12 +796,25 @@ func (s *Service) execute(ctx context.Context, job *domain.DownloadJob) error {
 		return err
 	}
 
-	ref, err := s.resolver.Resolve(ctx, track, job.Quality)
+	ref, actualQuality, err := domain.ResolveWithQualityFallback(ctx, s.resolver, track, job.Quality)
 	if err != nil {
 		return fmt.Errorf("resolve stream for %s: %w", track.ID, err)
 	}
 	if strings.TrimSpace(ref.URL) == "" {
 		return fmt.Errorf("resolve stream for %s returned an empty url: %w", track.ID, domain.ErrStreamUnavailable)
+	}
+	// A source without the configured quality resolves lower instead of failing.
+	// The job records the tier that actually worked: promotion compares against
+	// it, and a retry must not probe the missing tiers again.
+	if actualQuality != "" && actualQuality != job.Quality {
+		s.logger.Info("download: quality fallback",
+			"job_id", job.ID, "track_id", track.ID,
+			"requested", job.Quality, "actual", actualQuality)
+		if err := s.jobs.UpdateQuality(ctx, job.ID, actualQuality); err != nil {
+			s.logger.Warn("download: failed to record the actual quality",
+				"job_id", job.ID, "error", err)
+		}
+		job.Quality = actualQuality
 	}
 
 	// The part file is named after the job, not the track, so a retry of the

@@ -3,11 +3,14 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Events } from '@wailsio/runtime'
-import { ArrowLeft, MoreHorizontal, Music, Play, RefreshCw, Shuffle } from '@lucide/vue'
+import { MoreVertical, Music, Play, RefreshCw, Shuffle, Clock, Search } from '@lucide/vue'
+import { DetailsButton, Input } from '@airmedy/ui'
 import ContextMenu from '@/components/ContextMenu.vue'
+import DetailPageLayout from '@/components/DetailPageLayout.vue'
 import LazyImg from '@/components/LazyImg.vue'
 import TopTrackRow from '@/components/lastfm/TopTrackRow.vue'
 import { useContextMenu } from '@/composables/useContextMenu'
+import { foldUnicode } from '@airmedy/utils'
 import {
   formatLastFmDuration,
   isPlayableLastFmRow,
@@ -72,9 +75,26 @@ const covers = computed(() => lastFmCovers(items.value.map((item) => item.cover_
 const totalDuration = computed(() => lastFmTotalDuration(items.value))
 const durationLabel = computed(() => formatLastFmDuration(totalDuration.value, t))
 
+const searchQuery = ref('')
+/** filteredItems narrows the loaded rows by title and artist, like album detail. */
+const filteredItems = computed(() => {
+  if (!searchQuery.value) return items.value
+  const query = foldUnicode(searchQuery.value)
+  return items.value.filter((item) => {
+    const artists = [item.artist, ...(item.artists ?? [])].filter(Boolean).join(' ')
+    return (
+      foldUnicode(item.title || '').includes(query) ||
+      foldUnicode(artists).includes(query)
+    )
+  })
+})
+
 async function load() {
   if (!known.value) {
-    void router.replace('/lastfm')
+    // Only an unknown kind on this route is an error; a missing kind usually
+    // means the user is already navigating away, and redirecting would win
+    // over that navigation.
+    if (route.name === 'lastfm-list') void router.replace('/lastfm')
     return
   }
   const token = ++loadToken
@@ -258,7 +278,7 @@ async function playAll(shuffle: boolean) {
   playing.value = true
   try {
     const ids: string[] = []
-    for (const row of items.value) {
+    for (const row of filteredItems.value) {
       if (!isPlayableLastFmRow(row)) continue
       const id = await catalogStore.preparePlayback(lastFmRowToCatalogRow(row))
       if (id) ids.push(id)
@@ -280,7 +300,23 @@ function shuffleIds(ids: string[]) {
   }
 }
 
-/** openHeaderMore offers the list-level refresh from the detail header. */
+/** refreshAllLists rebuilds every persisted list and reloads this one. */
+async function refreshAllLists() {
+  if (refreshing.value) return
+  refreshing.value = true
+  loadError.value = ''
+  try {
+    await LastFmService.RefreshAllRecommendationLists()
+  } catch (error) {
+    console.error('Failed to refresh all Last.fm recommendation lists', error)
+    loadError.value = 'load_failed'
+  } finally {
+    refreshing.value = false
+    await load()
+  }
+}
+
+/** openHeaderMore offers the list-level refresh actions from the detail header. */
 function openHeaderMore(event: MouseEvent) {
   rowMenu.open(event, [
     {
@@ -288,6 +324,13 @@ function openHeaderMore(event: MouseEvent) {
       icon: RefreshCw,
       action: () => {
         void refresh()
+      },
+    },
+    {
+      label: t('lastfm.refresh_all'),
+      icon: RefreshCw,
+      action: () => {
+        void refreshAllLists()
       },
     },
   ])
@@ -307,10 +350,6 @@ function saveTrack(item: TopTrackItemDTO) {
   void catalogStore.save(lastFmRowToCatalogRow(item), { favorite: true })
 }
 
-function back() {
-  void router.push('/lastfm')
-}
-
 onMounted(() => {
   offMatch = Events.On('lastfm:recommendations-matched', onRecommendationsMatched)
   offAdded = Events.On('lastfm:recommendation-items-added', onItemsAdded)
@@ -321,7 +360,10 @@ onMounted(() => {
 // only changes the parameter. Reload and drop the previous list.
 watch(kind, () => {
   if (!known.value) {
-    void router.replace('/lastfm')
+    // Leaving this route drops :kind too. Only an unknown kind while this
+    // route is still active should fall back to the cards page — redirecting
+    // on the way out would cancel the navigation the user just started.
+    if (route.name === 'lastfm-list') void router.replace('/lastfm')
     return
   }
   list.value = null
@@ -343,22 +385,37 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="h-full overflow-y-auto p-8 custom-scrollbar select-none">
-    <!-- Header: back, cover mosaic, title, count + duration, list actions -->
-    <header class="flex items-start gap-4">
-      <button
-        type="button"
-        class="mt-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-foreground/60 transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
-        :aria-label="$t('common.back')"
-        :title="$t('common.back')"
-        data-test="lastfm-back"
-        @click="back"
-      >
-        <ArrowLeft class="h-5 w-5" aria-hidden="true" />
-      </button>
+  <DetailPageLayout
+    :loading="loading && !list && items.length === 0"
+    :title="title"
+    body-class="px-2"
+    :body-fill-height="false"
+  >
+    <template #top-right>
+      <div class="relative w-64">
+        <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dim" />
+        <Input
+          v-model="searchQuery"
+          type="text"
+          :placeholder="$t('sidebar.search')"
+          class="pl-10 pr-4"
+          clearable
+        />
+      </div>
+    </template>
 
+    <template #title>
+      <h1
+        class="text-2xl @sm:text-3xl @md:text-4xl @lg:text-5xl font-bold tracking-tight line-clamp-2 leading-snug text-foreground"
+        data-test="lastfm-list-title"
+      >
+        {{ title }}
+      </h1>
+    </template>
+
+    <template #artwork>
       <div
-        class="h-32 w-32 shrink-0 overflow-hidden rounded-2xl bg-foreground/5 ring-1 ring-foreground/[0.06]"
+        class="h-48 w-48 shrink-0 overflow-hidden rounded-lg bg-foreground/5 shadow-2xl ring-1 ring-foreground/[0.08]"
         data-test="lastfm-list-cover"
       >
         <div v-if="covers.length" class="grid h-full w-full grid-cols-2 grid-rows-2 gap-0.5">
@@ -376,85 +433,54 @@ onUnmounted(() => {
             />
           </div>
         </div>
-        <div v-else class="flex h-full w-full items-center justify-center text-dimmer">
-          <Music class="h-8 w-8" aria-hidden="true" />
+        <div v-else class="flex h-full w-full items-center justify-center text-foreground opacity-30">
+          <Music class="h-24 w-24" aria-hidden="true" />
         </div>
       </div>
+    </template>
 
-      <div class="min-w-0 flex-1">
-        <h1 class="min-w-0 truncate text-4xl font-bold tracking-tight" data-test="lastfm-list-title">
-          {{ title }}
-        </h1>
-        <p class="mt-2 truncate text-sm text-dim" data-test="lastfm-list-count">
-          <span>{{ items.length }}</span>
-          <template v-if="totalDuration > 0">
-            <span> · </span>
-            <span data-test="lastfm-list-duration">{{ durationLabel }}</span>
-          </template>
-        </p>
-
-        <div class="mt-4 flex items-center gap-2">
-          <button
-            type="button"
-            class="flex h-10 w-10 items-center justify-center rounded-full bg-foreground/[0.06] text-foreground transition-colors hover:bg-foreground/[0.10] hover:text-primary disabled:opacity-40"
-            data-test="lastfm-list-play"
-            :aria-label="$t('lastfm.play_all')"
-            :title="$t('lastfm.play_all')"
-            :disabled="playing || items.length === 0"
-            @click="playAll(false)"
-          >
-            <Play class="h-4 w-4 fill-current" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            class="flex h-10 w-10 items-center justify-center rounded-full bg-foreground/[0.06] text-foreground transition-colors hover:bg-foreground/[0.10] hover:text-primary disabled:opacity-40"
-            data-test="lastfm-list-shuffle"
-            :aria-label="$t('lastfm.shuffle')"
-            :title="$t('lastfm.shuffle')"
-            :disabled="playing || items.length === 0"
-            @click="playAll(true)"
-          >
-            <Shuffle class="h-4 w-4" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            class="flex h-10 w-10 items-center justify-center rounded-full bg-foreground/[0.06] text-foreground transition-colors hover:bg-foreground/[0.10] hover:text-primary"
-            data-test="lastfm-list-more"
-            :aria-label="$t('lastfm.more_actions')"
-            :title="$t('lastfm.more_actions')"
-            @click="openHeaderMore"
-          >
-            <RefreshCw
-              v-if="refreshing"
-              class="h-4 w-4 animate-spin"
-              aria-hidden="true"
-            />
-            <MoreHorizontal v-else class="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
+    <template #metadata>
+      <div class="flex items-center gap-2" data-test="lastfm-list-count">
+        <Music class="h-4 w-4" />
+        <span>{{ items.length }}</span>
       </div>
-    </header>
-
-    <!-- Loading skeleton (only until the first streamed batch arrives) -->
-    <div
-      v-if="loading && !list && items.length === 0"
-      class="mt-12 space-y-2"
-      data-test="lastfm-list-loading"
-    >
-      <div v-for="index in 6" :key="index" class="flex items-center gap-3 p-2">
-        <div class="h-10 w-10 animate-pulse rounded-lg bg-foreground/[0.06]" />
-        <div class="flex-1 space-y-2">
-          <div class="h-3 w-1/3 animate-pulse rounded bg-foreground/[0.06]" />
-          <div class="h-3 w-1/4 animate-pulse rounded bg-foreground/[0.04]" />
-        </div>
+      <div v-if="totalDuration > 0" class="flex items-center gap-2">
+        <Clock class="h-4 w-4" />
+        <span data-test="lastfm-list-duration">{{ durationLabel }}</span>
       </div>
-    </div>
+    </template>
 
-    <template v-else>
-      <p v-if="loadError" class="mt-8 text-sm text-dim" data-test="lastfm-list-error">
+    <template #actions>
+      <DetailsButton
+        :icon="Play"
+        :label="$t('common.play')"
+        :filled-icon="true"
+        data-test="lastfm-list-play"
+        :disabled="playing || filteredItems.length === 0"
+        @click="playAll(false)"
+      />
+      <div class="flex gap-2">
+        <DetailsButton
+          :icon="Shuffle"
+          variant="outline"
+          data-test="lastfm-list-shuffle"
+          :disabled="playing || filteredItems.length === 0"
+          @click="playAll(true)"
+        />
+        <DetailsButton
+          :icon="MoreVertical"
+          variant="outline"
+          data-test="lastfm-list-more"
+          @click="openHeaderMore"
+        />
+      </div>
+    </template>
+
+    <template #body>
+      <p v-if="loadError" class="px-6 pt-4 text-sm text-dim" data-test="lastfm-list-error">
         {{ $t(`lastfm.${loadError}`) }}
       </p>
-      <p v-if="catalogStore.actionError" class="mt-2 text-sm text-dim">
+      <p v-if="catalogStore.actionError" class="px-6 pt-2 text-sm text-dim">
         {{ $t(`cloud_search.${catalogStore.actionError}`) }}
       </p>
 
@@ -478,9 +504,9 @@ onUnmounted(() => {
         </button>
       </div>
 
-      <div v-else class="mt-8 space-y-1">
+      <div v-else class="mt-4">
         <TopTrackRow
-          v-for="item in items"
+          v-for="item in filteredItems"
           :key="item.match_key"
           :item="item"
           @play="playTrack"
@@ -489,13 +515,13 @@ onUnmounted(() => {
         />
       </div>
     </template>
+  </DetailPageLayout>
 
-    <ContextMenu
-      :visible="rowMenu.visible.value"
-      :x="rowMenu.x.value"
-      :y="rowMenu.y.value"
-      :items="rowMenu.items.value"
-      @close="rowMenu.close()"
-    />
-  </div>
+  <ContextMenu
+    :visible="rowMenu.visible.value"
+    :x="rowMenu.x.value"
+    :y="rowMenu.y.value"
+    :items="rowMenu.items.value"
+    @close="rowMenu.close()"
+  />
 </template>

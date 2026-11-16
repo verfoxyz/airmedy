@@ -1101,14 +1101,19 @@ func (c *Cache) openAudio(s *cacheSession) error {
 func (c *Cache) runSession(ctx context.Context, s *cacheSession) {
 	defer close(s.done)
 
-	quality := c.streamQuality(ctx)
-	var ref domain.StreamRef
-	var err error
+	requested := c.streamQuality(ctx)
+	var (
+		ref    domain.StreamRef
+		actual string
+		err    error
+	)
 	for attempt := 0; attempt < 3; attempt++ {
 		if ctx.Err() != nil {
 			return
 		}
-		ref, err = c.resolver.Resolve(ctx, s.track, quality)
+		// The resolver walks down from the configured tier when a source has no
+		// link at that quality; actual is the tier that worked.
+		ref, actual, err = domain.ResolveWithQualityFallback(ctx, c.resolver, s.track, requested)
 		if err == nil {
 			break
 		}
@@ -1124,6 +1129,7 @@ func (c *Cache) runSession(ctx context.Context, s *cacheSession) {
 		c.fail(s, err)
 		return
 	}
+	c.recordActualQuality(s, requested, actual)
 
 	for attempt := 0; attempt < 3; attempt++ {
 		err = c.fetch(ctx, s, ref)
@@ -1546,6 +1552,22 @@ func (c *Cache) closeAllSessions() {
 	c.mu.Unlock()
 	for _, s := range sessions {
 		c.stopSession(s)
+	}
+}
+
+// recordActualQuality persists the tier that actually resolved when it differs
+// from the configured one. The cache row is what promotion and eviction compare
+// against, so leaving the requested tier there would make a 320k download look
+// like a flac one.
+func (c *Cache) recordActualQuality(s *cacheSession, requested, actual string) {
+	if actual == "" || actual == requested {
+		return
+	}
+	c.logger.Info("Stream quality fallback",
+		"cache_key", s.id, "provider", s.provider, "external_id", s.externalID,
+		"requested", requested, "actual", actual)
+	if err := c.repo.UpdateQuality(context.Background(), s.id, actual); err != nil {
+		c.logger.Warn("Failed to persist stream cache quality", "cache_key", s.id, "error", err)
 	}
 }
 

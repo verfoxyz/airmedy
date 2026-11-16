@@ -102,8 +102,10 @@ func (r *PluginResolver) resolveWith(
 	}
 	streamURL := strings.TrimSpace(result.URL)
 	if streamURL == "" {
-		return domain.StreamRef{}, fmt.Errorf("%w: plugin %q returned an empty url for track %s",
-			domain.ErrStreamUnavailable, pluginID(host), track.ID)
+		// An empty URL is the plugin's way of saying "no link at this quality":
+		// the fallback chain may still find a lower tier.
+		return domain.StreamRef{}, fmt.Errorf("%w: %w: plugin %q returned an empty url for track %s",
+			domain.ErrStreamUnavailable, domain.ErrStreamQualityUnavailable, pluginID(host), track.ID)
 	}
 
 	ref := domain.StreamRef{
@@ -192,8 +194,10 @@ func mapStreamResolveError(pluginID string, err error) error {
 			return fmt.Errorf("%w: plugin %q: %s",
 				domain.ErrStreamRateLimited, pluginID, rpcErr.Message)
 		case domain.StreamErrorUnavailable, domain.StreamErrorVIP:
-			return fmt.Errorf("%w: plugin %q: %s",
-				domain.ErrStreamUnavailable, pluginID, rpcErr.Message)
+			// "No link at this quality" (and VIP-only tiers) may still resolve
+			// lower, so the quality fallback chains treat these as degradable.
+			return fmt.Errorf("%w: %w: plugin %q: %s",
+				domain.ErrStreamUnavailable, domain.ErrStreamQualityUnavailable, pluginID, rpcErr.Message)
 		case domain.StreamErrorAuth:
 			return fmt.Errorf("%w: plugin %q: %s",
 				domain.ErrStreamAuth, pluginID, rpcErr.Message)

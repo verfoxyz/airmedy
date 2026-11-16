@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -82,6 +83,66 @@ func TestResolveDownloadQuality(t *testing.T) {
 	// would silently pick its own default and hide the bad value.
 	assert.Equal(t, DefaultDownloadQuality, ResolveDownloadQuality(""))
 	assert.Equal(t, DefaultDownloadQuality, ResolveDownloadQuality("lossless"))
+}
+
+func TestQualityFallbacks_NeverGoUp(t *testing.T) {
+	assert.Equal(t, []string{QualityFlac, Quality320k, Quality128k}, QualityFallbacks(QualityFlac))
+	assert.Equal(t, []string{Quality320k, Quality128k}, QualityFallbacks(Quality320k))
+	assert.Equal(t, []string{Quality128k}, QualityFallbacks(Quality128k))
+	// An unset/garbage value starts at the default tier, not at flac.
+	assert.Equal(t, []string{Quality320k, Quality128k}, QualityFallbacks(""))
+}
+
+// scriptedResolver answers per quality and records the order it was asked.
+type scriptedResolver struct {
+	results map[string]error
+	calls   []string
+	ref     StreamRef
+}
+
+func (r *scriptedResolver) Resolve(_ context.Context, _ *TrackDTO, quality string) (StreamRef, error) {
+	r.calls = append(r.calls, quality)
+	if err, failed := r.results[quality]; failed {
+		return StreamRef{}, err
+	}
+	return r.ref, nil
+}
+
+func TestResolveWithQualityFallback_DegradesOnlyOnMissingQuality(t *testing.T) {
+	noLink := fmt.Errorf("%w: no link", ErrStreamQualityUnavailable)
+
+	resolver := &scriptedResolver{
+		results: map[string]error{QualityFlac: noLink},
+		ref:     StreamRef{URL: "http://cdn/320.mp3"},
+	}
+	ref, actual, err := ResolveWithQualityFallback(context.Background(), resolver, nil, QualityFlac)
+	assert.NoError(t, err)
+	assert.Equal(t, "http://cdn/320.mp3", ref.URL)
+	assert.Equal(t, Quality320k, actual)
+	assert.Equal(t, []string{QualityFlac, Quality320k}, resolver.calls)
+
+	// A network failure must stop immediately: a lower tier would fail too.
+	resolver = &scriptedResolver{results: map[string]error{
+		QualityFlac: errors.New("connection reset"),
+	}}
+	_, _, err = ResolveWithQualityFallback(context.Background(), resolver, nil, QualityFlac)
+	assert.Error(t, err)
+	assert.Equal(t, []string{QualityFlac}, resolver.calls)
+}
+
+func TestResolveWithQualityFallback_ReportsTheTriedTiers(t *testing.T) {
+	resolver := &scriptedResolver{results: map[string]error{
+		QualityFlac: fmt.Errorf("%w: no link", ErrStreamQualityUnavailable),
+		Quality320k: fmt.Errorf("%w: no link", ErrStreamQualityUnavailable),
+		Quality128k: fmt.Errorf("%w: no link", ErrStreamQualityUnavailable),
+	}}
+	_, _, err := ResolveWithQualityFallback(context.Background(), resolver, nil, QualityFlac)
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrStreamUnavailable)
+	assert.Contains(t, err.Error(), "no playable quality among")
+	assert.Contains(t, err.Error(), QualityFlac)
+	assert.Contains(t, err.Error(), Quality128k)
+	assert.Equal(t, []string{QualityFlac, Quality320k, Quality128k}, resolver.calls)
 }
 
 func TestClampStreamCacheMB(t *testing.T) {

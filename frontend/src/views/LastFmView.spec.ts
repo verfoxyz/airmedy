@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { defineComponent, h, nextTick } from 'vue'
 import LastFmView from './LastFmView.vue'
 
 const mocks = vi.hoisted(() => ({
@@ -93,10 +93,26 @@ function collection(status = 'ok') {
   }
 }
 
+// The real grid virtualises through RecycleScroller, which is not installed in
+// these unit tests; this stub renders every card so the assertions can see them.
+const VirtualizedGridStub = defineComponent({
+  props: { items: { type: Array, required: true } },
+  setup(props, { slots }) {
+    return () =>
+      h(
+        'div',
+        (props.items as { id: string }[]).map((item) =>
+          h('div', { key: item.id }, slots.default!({ item })),
+        ),
+      )
+  },
+})
+
 async function mountView() {
   const wrapper = mount(LastFmView, {
     global: {
       mocks: { $t: (key: string) => key },
+      stubs: { VirtualizedGrid: VirtualizedGridStub },
     },
   })
   await flushPromises()
@@ -108,6 +124,17 @@ async function emitMatch(data: unknown) {
   expect(handler).toBeDefined()
   handler!({ data })
   await nextTick()
+}
+
+// The card transitions are released from requestAnimationFrame callbacks; the
+// queue lets a test step exactly one frame at a time.
+const frames = new Map<number, FrameRequestCallback>()
+let frameId = 0
+
+function runFrame() {
+  const callbacks = [...frames.values()]
+  frames.clear()
+  for (const callback of callbacks) callback(0)
 }
 
 describe('LastFmView (persisted recommendation cards)', () => {
@@ -126,6 +153,18 @@ describe('LastFmView (persisted recommendation cards)', () => {
     mocks.refreshAll.mockResolvedValue(undefined)
     mocks.preparePlayback.mockImplementation(async (row: { title: string }) => `id-${row.title}`)
     mocks.playTrackIds.mockResolvedValue(undefined)
+    frames.clear()
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.set(++frameId, callback)
+      return frameId
+    })
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+      frames.delete(id)
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
   })
 
   it('guides the user to settings when Last.fm is not connected', async () => {
@@ -158,6 +197,33 @@ describe('LastFmView (persisted recommendation cards)', () => {
 
     await wrapper.findAll('[data-test="lastfm-card"]')[1].trigger('click')
     expect(mocks.push).toHaveBeenCalledWith('/lastfm/lists/top_tracks')
+  })
+
+  it('suppresses card transitions until the grid has settled', async () => {
+    mocks.list.mockResolvedValue(collection())
+    const wrapper = await mountView()
+    const card = () => wrapper.findAll('[data-test="lastfm-card"]')[0]
+
+    expect(card().classes()).toContain('no-card-transition')
+
+    runFrame()
+    await nextTick()
+    expect(card().classes()).toContain('no-card-transition')
+
+    runFrame()
+    await nextTick()
+    expect(card().classes()).not.toContain('no-card-transition')
+  })
+
+  it('reuses the card element when the summaries reload', async () => {
+    mocks.list.mockResolvedValue(collection())
+    const wrapper = await mountView()
+    const before = wrapper.findAll('[data-test="lastfm-card"]')[0].element
+
+    await emitMatch({ kind: 'top_tracks', items: [], done: true })
+    await flushPromises()
+
+    expect(wrapper.findAll('[data-test="lastfm-card"]')[0].element).toBe(before)
   })
 
   it('refreshes only the clicked card', async () => {

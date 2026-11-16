@@ -300,6 +300,49 @@ func TestPluginResolverMapsStructuredErrors(t *testing.T) {
 	}
 }
 
+// TestPluginResolverMarksMissingQualityAsDegradable: only the structured
+// unavailable/vip kinds (and an empty URL) may trigger a lower-tier retry;
+// network, auth and routing failures must not.
+func TestPluginResolverMarksMissingQualityAsDegradable(t *testing.T) {
+	degradable := []struct {
+		name string
+		host *fakeHost
+	}{
+		{"unavailable", &fakeHost{err: &domain.RPCError{Code: 4201, Message: "copyright", Data: json.RawMessage(`{"kind":"unavailable"}`)}}},
+		{"vip", &fakeHost{err: &domain.RPCError{Code: 4202, Message: "vip only", Data: json.RawMessage(`{"kind":"vip"}`)}}},
+		{"empty url", &fakeHost{result: domain.PluginStreamResult{URL: " "}}},
+	}
+	for _, tc := range degradable {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := &fakeRegistry{byProvider: map[string]domain.PluginHost{"p": tc.host}}
+			resolver := NewPluginResolver(registry, testLogger())
+			_, err := resolver.Resolve(context.Background(), pluginTrack("p"), domain.QualityFlac)
+			if !domain.IsQualityUnavailable(err) {
+				t.Fatalf("error = %v, want a degradable quality failure", err)
+			}
+		})
+	}
+
+	notDegradable := []struct {
+		name string
+		host *fakeHost
+	}{
+		{"auth", &fakeHost{err: &domain.RPCError{Code: 4203, Message: "forbidden", Data: json.RawMessage(`{"kind":"auth"}`)}}},
+		{"rate limited", &fakeHost{err: &domain.RPCError{Code: 4204, Message: "slow down", Data: json.RawMessage(`{"kind":"rate_limited"}`)}}},
+		{"network", &fakeHost{err: errors.New("connection reset")}},
+	}
+	for _, tc := range notDegradable {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := &fakeRegistry{byProvider: map[string]domain.PluginHost{"p": tc.host}}
+			resolver := NewPluginResolver(registry, testLogger())
+			_, err := resolver.Resolve(context.Background(), pluginTrack("p"), domain.QualityFlac)
+			if domain.IsQualityUnavailable(err) {
+				t.Fatalf("error = %v must not degrade to another quality", err)
+			}
+		})
+	}
+}
+
 // TestPluginResolverPassesCrashesThrough is acceptance case 4: a -32000 must not
 // be swallowed, and the download service retries it.
 func TestPluginResolverPassesCrashesThrough(t *testing.T) {

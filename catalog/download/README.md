@@ -80,6 +80,17 @@ download_jobs.state:  queued ──claim──► active ──► done
 The URL is **re-resolved before every attempt**: stream URLs expire, and replaying a
 cached one is exactly why a naive retry "does nothing".
 
+### Quality fallback
+
+`download_quality` is a preferred ceiling, not a hard requirement.
+`domain.ResolveWithQualityFallback` asks the resolver for the configured tier and then each
+lower tier (`flac → 320k → 128k`, `320k → 128k`, `128k`), stopping at the first URL. It
+degrades only on `ErrStreamQualityUnavailable` — the plugin's structured `unavailable`/`vip`
+kind or an empty URL. Network, auth and rate-limit failures return immediately, because a
+lower bitrate would not fix them. The tier that resolved is written to `download_jobs.quality`
+(`UpdateQuality`), drives the target/finalize step, and is what a later promotion compares
+against; when every tier fails, the error names the tried tiers.
+
 ## Finalize
 
 1. Target path is `<download_dir>/<name>.<ext>` — flat, no artist/album subfolders. `<name>`

@@ -55,6 +55,9 @@ type StreamCacheRepository interface {
 	ListForEviction(ctx context.Context) ([]*StreamCacheEntry, error)
 	UpdateProgress(ctx context.Context, cacheKey string, seconds float64) error
 	UpdateComplete(ctx context.Context, cacheKey string, totalBytes, receivedBytes int64, complete bool) error
+	// UpdateQuality records the tier actually resolved, which is lower than the
+	// requested one after a fallback. Promotion and eviction read this value.
+	UpdateQuality(ctx context.Context, cacheKey, quality string) error
 	SetPendingPromote(ctx context.Context, cacheKey string, pending bool) error
 	// SetPromoted records that the entry's audio was moved into the library.
 	SetPromoted(ctx context.Context, cacheKey string, promoted bool) error

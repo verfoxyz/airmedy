@@ -150,6 +150,16 @@ func (r *downloadRepository) UpdateProgress(ctx context.Context, id string, byte
 	return nil
 }
 
+func (r *downloadRepository) UpdateQuality(ctx context.Context, id, quality string) error {
+	if _, err := r.db.Ext(ctx).ExecContext(ctx, `
+		UPDATE download_jobs
+		SET quality = ?, updated_at = ?
+		WHERE id = ?`, quality, time.Now(), id); err != nil {
+		return fmt.Errorf("failed to update download job quality: %w", err)
+	}
+	return nil
+}
+
 func (r *downloadRepository) MarkDone(ctx context.Context, id, targetPath string) error {
 	now := time.Now()
 	res, err := r.db.Ext(ctx).ExecContext(ctx, `

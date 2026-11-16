@@ -227,7 +227,7 @@ onUnmounted(() => {
               :class="store.isQueueOpen ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-1/2'"
               :inert="!store.isQueueOpen" :aria-hidden="!store.isQueueOpen">
               <PlayerQueuePanel v-if="hasOpenedQueue" ref="queuePanel" :queue="store.queue"
-                @close="store.closeAllDrawers()" @play-track="(index) => store.playQueueIndex(index)" />
+                @close="store.closeAllDrawers()" @play-track="(track) => store.playQueueTrack(track.id)" />
             </div>
 
             <div data-test="fullscreen-lyrics-panel-motion"

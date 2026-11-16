@@ -90,4 +90,11 @@ describe('TopTrackRow covers', () => {
     const wrapper = mountRow({ provider: '', external_id: '', local_track_id: 'local-1' })
     expect(wrapper.find('[data-test="top-track-status"]').text()).toBe('lastfm.in_library')
   })
+
+  it('prefers the local copy over a stale provider chip', () => {
+    const wrapper = mountRow({ state: 'in_library', local_track_id: 'local-1' })
+    expect(wrapper.find('[data-test="top-track-status"]').text()).toBe('lastfm.in_library')
+    expect(wrapper.find('[data-test="top-track-save"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="top-track-play"]').exists()).toBe(true)
+  })
 })

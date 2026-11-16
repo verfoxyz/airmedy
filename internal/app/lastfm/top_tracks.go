@@ -1042,6 +1042,14 @@ func (r *Recommender) applyTopTrackMatch(item *TopTrackItem, row *domain.Catalog
 	item.BlockedReason = row.DownloadBlockedReason
 	item.Sources = append([]string{}, row.Sources...)
 	item.Suspicious = row.Suspicious
+	// A local hit wins over the source it came from: a promoted row keeps its
+	// remote identity, and showing "from wy" for a file already in the library
+	// is both wrong in the chip and offers a download that already happened.
+	if item.State == domain.CatalogRowStateInLibrary || strings.TrimSpace(item.LocalTrackID) != "" {
+		item.Provider = ""
+		item.ExternalID = ""
+		item.Sources = []string{}
+	}
 }
 
 // topTrackSources returns every available source in the priority order, capped

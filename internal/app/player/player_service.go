@@ -699,7 +699,12 @@ func (s *PlayerService) ShuffleTrackIDs(ctx context.Context, trackIDs []string) 
 // PlayTracks sets a new queue and starts playing from the specified index.
 func (s *PlayerService) PlayTracks(tracks []*domain.TrackDTO, startIndex int) error {
 	s.queue.SetQueue(tracks, startIndex)
+	// A new queue supersedes whatever was pre-loaded for gapless playback; the
+	// hard load below pre-loads the new successor. Clearing here as well keeps a
+	// stale engine entry from ever surfacing at track end.
+	s.clearPreQueue()
 	s.emitQueue()
+	s.logger.Info("player: queue replaced", "length", len(tracks), "start_index", startIndex)
 	track := s.queue.GetCurrentTrack()
 	if track == nil {
 		return nil
@@ -824,6 +829,9 @@ func (s *PlayerService) PlayNext(track *domain.TrackDTO) {
 	// any cached pre-queued track from before this insert is stale.
 	s.resyncPreQueue()
 	s.emitQueue()
+	if track != nil {
+		s.logger.Info("player: queue insert next", "track_id", track.ID)
+	}
 }
 
 // PlayNextTracks inserts a list of tracks immediately after the currently playing track.
@@ -831,6 +839,7 @@ func (s *PlayerService) PlayNextTracks(tracks []*domain.TrackDTO) {
 	s.queue.InsertListAfterCurrent(tracks)
 	s.resyncPreQueue()
 	s.emitQueue()
+	s.logger.Info("player: queue insert next batch", "count", len(tracks))
 }
 
 // AppendTracks adds tracks to the end of the queue in a single mutation.
@@ -877,6 +886,23 @@ func (s *PlayerService) PlayQueueIndex(index int) error {
 		return fmt.Errorf("no track at queue index %d", index)
 	}
 	return s.loadAndPlay(track)
+}
+
+// PlayQueueTrackByID plays the queue entry with the given id.
+//
+// The frontend must use this instead of an index: an index captured from a
+// queue snapshot that has since changed points at a different song, which is
+// how clicking a stale row used to play the wrong track.
+func (s *PlayerService) PlayQueueTrackByID(trackID string) error {
+	trackID = strings.TrimSpace(trackID)
+	if trackID == "" {
+		return fmt.Errorf("play queue track: empty track id")
+	}
+	index := s.queue.IndexOf(trackID)
+	if index < 0 {
+		return fmt.Errorf("track %q is no longer in the queue", trackID)
+	}
+	return s.PlayQueueIndex(index)
 }
 
 // ReorderQueue updates the order of tracks in the queue using track IDs.
@@ -949,9 +975,11 @@ func (s *PlayerService) PlayingTrack(_ context.Context) (string, bool) {
 //
 // It replaces the current row and every queue occurrence, releases the stream
 // session (the decoder must stop reading a cache the promotion is moving), and
-// reloads the survivor from disk at the same position. Analytics bookkeeping is
-// rebound to the survivor id, because an attempt or listen row keyed on the
-// deleted id would fail its foreign key later.
+// reloads the survivor from disk at the same position when the track is playing
+// or paused. A stopped track is not reloaded: it already ended, and reopening
+// the decoder there only stalled the caller. Analytics bookkeeping is rebound to
+// the survivor id, because an attempt or listen row keyed on the deleted id
+// would fail its foreign key later.
 func (s *PlayerService) RemapTrack(ctx context.Context, fromTrackID, toTrackID string) {
 	if strings.TrimSpace(fromTrackID) == "" || strings.TrimSpace(toTrackID) == "" || fromTrackID == toTrackID {
 		return
@@ -972,6 +1000,7 @@ func (s *PlayerService) RemapTrack(ctx context.Context, fromTrackID, toTrackID s
 	// Replace the queue before touching playback: a natural advance may run
 	// between the two steps, and it must already resolve the local row.
 	s.queue.ReplaceTrack(fromTrackID, survivor)
+	s.logger.Info("player: queue remapped after merge", "from", fromTrackID, "to", survivor.ID)
 
 	s.mu.Lock()
 	current := s.currentTrack
@@ -1001,14 +1030,21 @@ func (s *PlayerService) RemapTrack(ctx context.Context, fromTrackID, toTrackID s
 	s.dropStreamSession()
 	s.emitQueue()
 
+	// A stopped track is not playing any audio: reloading it here would reopen
+	// the decoder for a track that already ended, and the next explicit play
+	// resolves the new local id anyway. Only an active (or paused) row needs the
+	// decoder moved onto the survivor.
+	if status.PlaybackState != domain.PlaybackStatePlaying &&
+		status.PlaybackState != domain.PlaybackStatePaused {
+		return
+	}
+
 	var loadErr error
 	switch status.PlaybackState {
 	case domain.PlaybackStatePlaying:
 		loadErr = s.loadAndPlayAtPosition(survivor, status.Position, domain.PlaybackEndStopped)
 	case domain.PlaybackStatePaused:
 		loadErr = s.loadInactiveAtPosition(survivor, status.Position, true)
-	default:
-		loadErr = s.loadInactiveAtPosition(survivor, status.Position, false)
 	}
 	if loadErr != nil {
 		s.logger.Warn("player: cannot continue from the surviving file",
@@ -1360,9 +1396,7 @@ func (s *PlayerService) loadInactiveAtPosition(track *domain.TrackDTO, position 
 	}
 
 	s.stopPositionTicker()
-	s.mu.Lock()
-	s.nextPreQueued = nil
-	s.mu.Unlock()
+	s.clearPreQueue()
 
 	s.swapStreamSession(streamSession)
 	if err := s.player.Load(playable); err != nil {
@@ -1427,9 +1461,7 @@ func (s *PlayerService) loadAndPlayAtPosition(track *domain.TrackDTO, position f
 	s.stopPositionTicker()
 
 	// Clear any stale pre-queue — hard load supersedes gapless pre-loading.
-	s.mu.Lock()
-	s.nextPreQueued = nil
-	s.mu.Unlock()
+	s.clearPreQueue()
 	const gapless = true
 
 	s.swapStreamSession(streamSession)
@@ -1930,6 +1962,9 @@ func (s *PlayerService) emitRemoteState() {
 
 func (s *PlayerService) emitQueue() {
 	queue := s.queue.GetQueue()
+	// A queue snapshot is the frontend's source of truth; the head ids make a
+	// duplicated or stale runtime queue visible in the log without dumping it.
+	s.logger.Debug("player: queue snapshot", "length", len(queue), "head", queueHeadIDs(queue, 5))
 
 	s.mu.RLock()
 	listeners := make([]func([]*domain.TrackDTO), len(s.queueListeners))
@@ -1944,6 +1979,20 @@ func (s *PlayerService) emitQueue() {
 	if app != nil && app.Event != nil {
 		app.Event.Emit("player:queue-updated", queue)
 	}
+}
+
+// queueHeadIDs returns up to limit track ids from the front of the queue.
+func queueHeadIDs(queue []*domain.TrackDTO, limit int) []string {
+	if limit > len(queue) {
+		limit = len(queue)
+	}
+	ids := make([]string, 0, limit)
+	for _, track := range queue[:limit] {
+		if track != nil {
+			ids = append(ids, track.ID)
+		}
+	}
+	return ids
 }
 
 // emitQueueOrder notifies queue listeners and the frontend of a pure reorder
@@ -2410,6 +2459,24 @@ func (s *PlayerService) preEnqueueNext() {
 	s.mu.Lock()
 	s.nextPreQueued = next
 	s.mu.Unlock()
+}
+
+// clearPreQueue drops the cached gapless successor and any track the engine
+// already holds for it. A hard load or a queue replacement supersedes both:
+// leaving the engine entry behind is how a track that is no longer next could
+// still surface at track end.
+func (s *PlayerService) clearPreQueue() {
+	s.mu.Lock()
+	hadPreQueued := s.nextPreQueued != nil
+	s.nextPreQueued = nil
+	s.mu.Unlock()
+
+	if !hadPreQueued {
+		return
+	}
+	if gp, ok := s.player.(domain.GaplessPlayer); ok {
+		gp.ClearEnqueued()
+	}
 }
 
 // resyncPreQueue clears a stale gapless pre-queue and recomputes it from the

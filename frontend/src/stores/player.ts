@@ -554,9 +554,25 @@ export const usePlayerStore = defineStore('player', () => {
     }
   }
 
-  async function playQueueIndex(index: number) {
-    currentTrack.value = queue.value[index] ?? null
-    await PlayerService.PlayQueueIndex(index)
+  /**
+   * playQueueTrack starts the queue entry with this id. Rows carry ids, not
+   * indexes: an index from a stale snapshot points at a different song, which is
+   * how clicking an old row used to play the wrong track. A row the backend no
+   * longer holds reports the error and resyncs the queue.
+   */
+  async function playQueueTrack(trackId: string) {
+    if (!trackId) return
+    const track = queue.value.find(t => t.id === trackId)
+    if (track) currentTrack.value = track
+    playError.value = ''
+    try {
+      await PlayerService.PlayQueueTrackByID(trackId)
+    } catch (e) {
+      console.error('Failed to play queue track', e)
+      playError.value = String(e)
+      const q = await PlayerService.GetQueue()
+      queue.value = (q.filter(Boolean) as TrackDTO[])
+    }
   }
 
   /**
@@ -724,7 +740,7 @@ export const usePlayerStore = defineStore('player', () => {
     playTrackIds,
     playError,
     retryPlayback,
-    playQueueIndex,
+    playQueueTrack,
     shuffleTracks,
     reorderQueue,
     toggleQueue,

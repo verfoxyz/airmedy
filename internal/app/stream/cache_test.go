@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -134,6 +135,10 @@ func (f *fakeStreamCacheRepo) UpdateComplete(_ context.Context, key string, tota
 		entry.ReceivedBytes = receivedBytes
 		entry.Complete = complete
 	})
+}
+
+func (f *fakeStreamCacheRepo) UpdateQuality(_ context.Context, key, quality string) error {
+	return f.update(key, func(entry *domain.StreamCacheEntry) { entry.Quality = quality })
 }
 
 func (f *fakeStreamCacheRepo) SetPendingPromote(_ context.Context, key string, pending bool) error {
@@ -334,6 +339,130 @@ func TestCacheProxiesFullBodyAndRange(t *testing.T) {
 	}
 	if want := data[1000:]; !bytes.Equal(body, want) {
 		t.Fatalf("ranged body = %d bytes, want %d", len(body), len(want))
+	}
+}
+
+// qualityScriptResolver answers per requested tier and records the order, so a
+// test can assert the fallback chain.
+type qualityScriptResolver struct {
+	mu    sync.Mutex
+	refs  map[string]domain.StreamRef
+	errs  map[string]error
+	calls []string
+}
+
+func (r *qualityScriptResolver) Resolve(_ context.Context, _ *domain.TrackDTO, quality string) (domain.StreamRef, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, quality)
+	if err, failed := r.errs[quality]; failed {
+		return domain.StreamRef{}, err
+	}
+	return r.refs[quality], nil
+}
+
+func (r *qualityScriptResolver) tried() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.calls...)
+}
+
+func newFallbackCache(t *testing.T, resolver domain.StreamResolver, repo domain.StreamCacheRepository) *Cache {
+	t.Helper()
+	cache := NewCache(
+		&config.Config{DataDir: t.TempDir()},
+		repo,
+		resolver,
+		&fakeSettings{settings: &domain.AppSettings{
+			StreamQuality: domain.QualityFlac,
+			StreamCacheMB: domain.DefaultStreamCacheMB,
+		}},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	if err := cache.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = cache.Stop(context.Background()) })
+	return cache
+}
+
+// TestCacheFallsBackToTheNextQuality: a source without a flac link must stream
+// 320k instead of failing, and the cache row records the tier that worked.
+func TestCacheFallsBackToTheNextQuality(t *testing.T) {
+	data := bytes.Repeat([]byte{0x11}, 4096)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "audio/flac")
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		_, _ = w.Write(data)
+	}))
+	defer upstream.Close()
+
+	repo := newFakeStreamCacheRepo()
+	resolver := &qualityScriptResolver{
+		refs: map[string]domain.StreamRef{domain.Quality320k: {URL: upstream.URL + "/song.flac"}},
+		errs: map[string]error{domain.QualityFlac: fmt.Errorf(
+			"%w: no flac link", domain.ErrStreamQualityUnavailable)},
+	}
+	cache := newFallbackCache(t, resolver, repo)
+
+	session, err := cache.Open(context.Background(), remoteTrack())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+
+	if tried := resolver.tried(); len(tried) != 2 || tried[0] != domain.QualityFlac || tried[1] != domain.Quality320k {
+		t.Fatalf("resolver tried %v, want [flac 320k]", tried)
+	}
+	entry := repo.get(t, session.ID)
+	if entry.Quality != domain.Quality320k {
+		t.Fatalf("cache quality = %q, want the actual tier 320k", entry.Quality)
+	}
+	if !entry.Complete {
+		t.Fatal("the fallback stream never completed")
+	}
+}
+
+// TestCacheReportsEveryTriedQualityWhenAllFail: the error names the attempted
+// tiers, and no lower tier is retried past the configured floor.
+func TestCacheReportsEveryTriedQualityWhenAllFail(t *testing.T) {
+	noLink := func(quality string) error {
+		return fmt.Errorf("%w: no %s link", domain.ErrStreamQualityUnavailable, quality)
+	}
+	resolver := &qualityScriptResolver{errs: map[string]error{
+		domain.QualityFlac: noLink(domain.QualityFlac),
+		domain.Quality320k: noLink(domain.Quality320k),
+		domain.Quality128k: noLink(domain.Quality128k),
+	}}
+	cache := newFallbackCache(t, resolver, newFakeStreamCacheRepo())
+
+	_, err := cache.Open(context.Background(), remoteTrack())
+	if err == nil {
+		t.Fatal("expected the stream to fail when every tier has no link")
+	}
+	if !strings.Contains(err.Error(), "no playable quality among") {
+		t.Fatalf("error = %v, want the tried tiers", err)
+	}
+	if tried := resolver.tried(); len(tried) != 3 {
+		t.Fatalf("resolver tried %v, want all three tiers", tried)
+	}
+}
+
+// TestCacheDoesNotDegradeOnTransportFailures: a network failure is not a
+// missing quality, so the chain must stop after the configured tier.
+func TestCacheDoesNotDegradeOnTransportFailures(t *testing.T) {
+	resolver := &qualityScriptResolver{errs: map[string]error{
+		domain.QualityFlac: errors.New("connection reset"),
+	}}
+	cache := newFallbackCache(t, resolver, newFakeStreamCacheRepo())
+
+	_, err := cache.Open(context.Background(), remoteTrack())
+	if err == nil {
+		t.Fatal("expected the stream to fail on a transport error")
+	}
+	if tried := resolver.tried(); len(tried) != 1 || tried[0] != domain.QualityFlac {
+		t.Fatalf("resolver tried %v, want only the configured tier", tried)
 	}
 }
 

@@ -152,6 +152,12 @@ func (s *PlayerService) PlayQueueIndex(index int) error {
 	return s.service.PlayQueueIndex(index)
 }
 
+// PlayQueueTrackByID plays the queue entry with the given id. The frontend uses
+// this instead of an index so a stale queue snapshot cannot play the wrong row.
+func (s *PlayerService) PlayQueueTrackByID(trackID string) error {
+	return s.service.PlayQueueTrackByID(trackID)
+}
+
 func (s *PlayerService) ReorderQueue(tracks []*domain.TrackDTO) {
 	ids := make([]string, len(tracks))
 	for i, t := range tracks {

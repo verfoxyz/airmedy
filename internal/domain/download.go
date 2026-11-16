@@ -119,6 +119,9 @@ type DownloadJobRepository interface {
 	// It returns (nil, nil) when nothing is due.
 	ClaimNext(ctx context.Context, now time.Time) (*DownloadJob, error)
 	UpdateProgress(ctx context.Context, id string, bytesDone, bytesTotal int64) error
+	// UpdateQuality records the tier actually resolved when the quality fallback
+	// chain had to degrade, so the task page and promotion see the real tier.
+	UpdateQuality(ctx context.Context, id, quality string) error
 	MarkDone(ctx context.Context, id, targetPath string) error
 	// MarkFailed records the failure. nextRetryAt == nil means "permanent";
 	// otherwise the row returns to queued with next_retry_at set.
@@ -142,6 +145,10 @@ var (
 	ErrStreamUnavailable = errors.New("stream unavailable")   // VIP / copyright / no url
 	ErrStreamRateLimited = errors.New("stream rate limited")  // 429, back off and retry
 	ErrStreamAuth        = errors.New("stream auth rejected") // 403, retrying cannot help
+	// ErrStreamQualityUnavailable means the source has no link at the requested
+	// quality. It is the only failure the quality fallback chain degrades on:
+	// retrying a lower tier can succeed, while network/auth failures cannot.
+	ErrStreamQualityUnavailable = errors.New("stream quality unavailable")
 )
 
 // ErrStreamAlreadyLocal means the identity now belongs to a library file, so a
@@ -196,6 +203,64 @@ func ResolveDownloadQuality(quality string) string {
 		return quality
 	}
 	return DefaultDownloadQuality
+}
+
+// QualityFallbacks returns the tiers to try, best first, starting at the
+// requested one and walking down: flac → 320k → 128k, 320k → 128k, 128k.
+// It never goes up, so a configured 320k never asks a source for flac.
+func QualityFallbacks(requested string) []string {
+	start := ResolveDownloadQuality(requested)
+	// ValidDownloadQualities is ordered worst → best.
+	for index := len(ValidDownloadQualities) - 1; index >= 0; index-- {
+		if ValidDownloadQualities[index] != start {
+			continue
+		}
+		fallbacks := make([]string, 0, index+1)
+		for candidate := index; candidate >= 0; candidate-- {
+			fallbacks = append(fallbacks, ValidDownloadQualities[candidate])
+		}
+		return fallbacks
+	}
+	return []string{DefaultDownloadQuality}
+}
+
+// IsQualityUnavailable reports whether a resolve failure means "this tier has no
+// playable link" rather than a transport, auth or routing problem.
+func IsQualityUnavailable(err error) bool {
+	return errors.Is(err, ErrStreamQualityUnavailable)
+}
+
+// ResolveWithQualityFallback asks resolver for the requested tier and then each
+// lower tier until one returns a URL. It returns the ref together with the tier
+// that actually resolved, which callers must persist instead of the requested
+// one. Only ErrStreamQualityUnavailable degrades: a network, auth or rate-limit
+// failure is returned immediately, because a lower bitrate would not fix it.
+func ResolveWithQualityFallback(
+	ctx context.Context, resolver StreamResolver, track *TrackDTO, requested string,
+) (StreamRef, string, error) {
+	if resolver == nil {
+		return StreamRef{}, "", fmt.Errorf("%w: no stream resolver", ErrStreamUnavailable)
+	}
+	qualities := QualityFallbacks(requested)
+	var lastErr error
+	for _, quality := range qualities {
+		ref, err := resolver.Resolve(ctx, track, quality)
+		if err == nil {
+			return ref, quality, nil
+		}
+		lastErr = err
+		if !IsQualityUnavailable(err) {
+			return StreamRef{}, "", err
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return StreamRef{}, "", ctxErr
+		}
+	}
+	if lastErr == nil {
+		lastErr = ErrStreamUnavailable
+	}
+	return StreamRef{}, "", fmt.Errorf(
+		"%w: no playable quality among %v: %w", ErrStreamUnavailable, qualities, lastErr)
 }
 
 // Stream playback cache limits. The cache holds tracks the user streamed but

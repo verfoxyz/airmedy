@@ -10,7 +10,9 @@ Full-text search across tracks, albums, artists, playlists, and composers using 
 | ---------------------------------------- | ------------------------------- |
 | `internal/infra/bleve/bleve.go`          | Index creation, indexing, query |
 | `internal/domain/search.go`              | SearchService interface         |
-| `internal/infra/wails/search_service.go` | Wails binding                   |
+| `internal/app/library/search.go`         | Alias expansion, variant merge  |
+| `internal/app/library/artist_alias.go`   | Alias table reads and the expansion rules |
+| `internal/infra/wails/search_service.go` | Wails binding (entity hydration only) |
 
 ## SearchService Interface
 
@@ -70,7 +72,19 @@ func Search(ctx, query string) ([]SearchResult, error)
 4. **AND all terms:** All per-term disjunctions are combined with a ConjunctionQuery.
 5. **Phrase boost:** If query has multiple terms, add an exact phrase MatchPhraseQuery with boost `2.0` — exact phrase matches rank higher.
 
-**Result:** Returns `[]SearchResult{ID, Type, Score}` sorted by score descending. The Wails binding resolves full entity objects from the DB for each result ID.
+**Result:** Returns `[]SearchResult{ID, Type, Score}` sorted by score descending. The app-layer `library.SearchService` expands the query through artist aliases and merges the variant results (see below); the Wails binding then resolves full entity objects from the DB for each result ID.
+
+## Alias Expansion
+
+Local search expands a query through the **enabled** artist aliases (`artist_aliases`, the same table matching uses), so `camellia` also finds tracks filed under `かめりあ` and vice versa. Expansion is query-time only: the Bleve index is never rebuilt for an alias.
+
+- **Whole words only.** The whole query is checked first (an artist name may contain spaces), then each whitespace-separated word. A word is replaced only when its `NormalizationKey` equals an alias key, so `camellias` is not rewritten. Case/accent/full-width differences are handled by that normalization.
+- **Bidirectional.** One stored direction (alias → canonical) yields both replacements.
+- **Bounded.** At most four variants besides the original. Pairs whose key contains the multi-artist separator (`\x1f`) are skipped: they cannot be substituted into a search box as one word.
+- **Cached.** The enabled alias list is read once and cached for 30 s; `Add`, `Remove` and `SetEnabled` invalidate it immediately.
+- **Merged.** The original query runs first and keeps its rank; variant hits are appended by `type + id` deduplication and the merged list is capped at the per-query limit (200). A variant failure is logged and skipped; only the original query's failure fails the search. A query without a matching alias runs exactly one index query.
+
+No transliteration is inferred: only names explicitly present in the alias table expand.
 
 ## SearchResult
 

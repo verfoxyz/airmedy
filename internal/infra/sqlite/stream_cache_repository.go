@@ -122,6 +122,16 @@ func (r *streamCacheRepository) UpdateProgress(ctx context.Context, cacheKey str
 	return nil
 }
 
+func (r *streamCacheRepository) UpdateQuality(ctx context.Context, cacheKey, quality string) error {
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE stream_cache SET quality = ? WHERE cache_key = ?`,
+		quality, cacheKey,
+	); err != nil {
+		return fmt.Errorf("failed to update stream cache quality %s: %w", cacheKey, err)
+	}
+	return nil
+}
+
 func (r *streamCacheRepository) UpdateComplete(ctx context.Context, cacheKey string, totalBytes, receivedBytes int64, complete bool) error {
 	if _, err := r.db.ExecContext(ctx,
 		`UPDATE stream_cache

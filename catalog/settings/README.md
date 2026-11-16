@@ -57,7 +57,7 @@ type AppSettings struct {
     LivingArtworkBackground  bool              // fullscreen animated artwork background; false uses a solid artwork tint, default true
     AutoAdvanceNotificationsEnabled bool       // macOS-only silent notification when playback automatically advances, default true
     StreamCacheMB          int                 // temporary stream-playback cache cap in MB, clamped to [256, 20480], default 2048
-    StreamQuality          string              // quality passed to stream.resolve: 128k | 320k | flac, default 320k
+    StreamQuality          string              // preferred stream.resolve quality: 128k | 320k | flac, default 320k; resolution degrades downward when a source has no link
 }
 ```
 

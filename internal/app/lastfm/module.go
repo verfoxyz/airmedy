@@ -45,6 +45,15 @@ var Module = fx.Module("lastfm",
 		},
 		fx.ParamTags(``, `optional:"true"`),
 	)),
+	// A merge moves the remote identity onto the local survivor, so the
+	// recommender needs the survivor row to refresh rows that still say "from
+	// <provider>". Optional: without it the lists refresh on their next load.
+	fx.Invoke(fx.Annotate(
+		func(recommender *Recommender, tracks domain.TrackRepository) {
+			recommender.SetTrackLookup(tracks)
+		},
+		fx.ParamTags(``, `optional:"true"`),
+	)),
 	fx.Invoke(func(lc fx.Lifecycle, s *LastFmService, logger *slog.Logger) {
 		lc.Append(fx.Hook{
 			OnStart: func(ctx context.Context) error {
