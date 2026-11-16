@@ -179,6 +179,7 @@ describe('LyricsDrawer secondary line', () => {
   })
 
   it('pins the active line before painting secondary changes and preserves browsing', async () => {
+    useAppStore().lyricsSecondaryMode = 'romanization'
     vi.useFakeTimers()
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => window.setTimeout(() => callback(Date.now()), 16))
     vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))

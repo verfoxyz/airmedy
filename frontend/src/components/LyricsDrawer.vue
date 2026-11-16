@@ -167,7 +167,7 @@ function seekAndResume(time: number, index: number) {
 }
 
 useLyricsLayoutMotion({
-  secondary, viewport: scrollContainer, rows: lineRefs, activeIndex,
+  secondary: secondaryLines, viewport: scrollContainer, rows: lineRefs, activeIndex,
   following: () => hasPositionedInitialLine && store.isLyricsOpen && !isBrowsing.value,
   stop: stopFollowing,
 })
