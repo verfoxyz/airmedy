@@ -51,11 +51,8 @@ func TestStreamCacheRepository_UpsertAndUpdates(t *testing.T) {
 	if err := repo.UpdateComplete(ctx, "key-1", 1000, 400, false); err != nil {
 		t.Fatalf("UpdateComplete: %v", err)
 	}
-	if err := repo.SetPendingPromote(ctx, "key-1", true); err != nil {
-		t.Fatalf("SetPendingPromote: %v", err)
-	}
 	got, _ = repo.GetByIdentity(ctx, "wy", "42")
-	if got.PlaybackProgress != 42.5 || got.TotalBytes != 1000 || got.ReceivedBytes != 400 || got.PendingPromote != true {
+	if got.PlaybackProgress != 42.5 || got.TotalBytes != 1000 || got.ReceivedBytes != 400 {
 		t.Fatalf("updates not applied: %+v", got)
 	}
 
@@ -155,60 +152,6 @@ func TestStreamCacheRepository_ListForEvictionIsLeastRecentlyUsedFirst(t *testin
 	}
 }
 
-func TestStreamCacheRepository_PromotedFlagAndPendingList(t *testing.T) {
-	_, repo := newStreamCacheTestRepo(t)
-	ctx := context.Background()
-
-	upsert := func(key string, pending bool) {
-		t.Helper()
-		if err := repo.Upsert(ctx, &domain.StreamCacheEntry{
-			CacheKey: key, Provider: "wy", ExternalID: key,
-			AudioPath: key + ".audio", PendingPromote: pending,
-		}); err != nil {
-			t.Fatalf("Upsert %s: %v", key, err)
-		}
-	}
-	upsert("pending", true)
-	upsert("idle", false)
-
-	if err := repo.SetPromoted(ctx, "pending", true); err != nil {
-		t.Fatalf("SetPromoted: %v", err)
-	}
-	entry, err := repo.GetByIdentity(ctx, "wy", "pending")
-	if err != nil {
-		t.Fatalf("GetByIdentity: %v", err)
-	}
-	if entry == nil || !entry.Promoted {
-		t.Fatalf("entry = %+v, want promoted", entry)
-	}
-
-	entries, err := repo.ListPendingPromote(ctx)
-	if err != nil {
-		t.Fatalf("ListPendingPromote: %v", err)
-	}
-	if len(entries) != 1 || entries[0].CacheKey != "pending" {
-		t.Fatalf("pending = %+v, want only the flagged row", entries)
-	}
-
-	if err := repo.SetPendingPromote(ctx, "pending", false); err != nil {
-		t.Fatalf("SetPendingPromote: %v", err)
-	}
-	if entries, err = repo.ListPendingPromote(ctx); err != nil || len(entries) != 0 {
-		t.Fatalf("pending after clear = %+v, err = %v", entries, err)
-	}
-
-	if err := repo.SetDiscardPending(ctx, "idle", true); err != nil {
-		t.Fatalf("SetDiscardPending: %v", err)
-	}
-	discards, err := repo.ListPendingDiscard(ctx)
-	if err != nil {
-		t.Fatalf("ListPendingDiscard: %v", err)
-	}
-	if len(discards) != 1 || discards[0].CacheKey != "idle" {
-		t.Fatalf("discards = %+v, want only the flagged row", discards)
-	}
-}
-
 func TestStreamCacheMigration_UpDown(t *testing.T) {
 	db, _ := newStreamCacheTestRepo(t)
 	tableExists := func() bool {
@@ -253,41 +196,36 @@ func TestStreamCacheMigration_UpDown(t *testing.T) {
 	}
 }
 
-// TestPromotionMigrations_UpDown proves the promoted flag and the history table
-// behind the promotion worker can be added and removed cleanly.
-func TestPromotionMigrations_UpDown(t *testing.T) {
+// TestRetiredPromotionSchemaIsDropped proves the promotion columns and history
+// table still exist at migration 103 (the upgrade point) and are gone at the
+// latest version, where media requests are authoritative.
+func TestRetiredPromotionSchemaIsDropped(t *testing.T) {
 	db, _ := newStreamCacheTestRepo(t)
 
-	hasPromotedColumn := func() bool {
+	hasColumn := func(name string) bool {
 		var count int
 		if err := db.Get(&count,
-			`SELECT COUNT(*) FROM pragma_table_info('stream_cache') WHERE name = 'promoted'`,
+			`SELECT COUNT(*) FROM pragma_table_info('stream_cache') WHERE name = ?`, name,
 		); err != nil {
 			t.Fatalf("pragma_table_info query: %v", err)
 		}
 		return count > 0
 	}
-	hasDiscardColumn := func() bool {
+	hasTable := func(name string) bool {
 		var count int
 		if err := db.Get(&count,
-			`SELECT COUNT(*) FROM pragma_table_info('stream_cache') WHERE name = 'discard_pending'`,
-		); err != nil {
-			t.Fatalf("pragma_table_info query: %v", err)
-		}
-		return count > 0
-	}
-	hasTasksTable := func() bool {
-		var count int
-		if err := db.Get(&count,
-			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'promotion_tasks'`,
+			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name,
 		); err != nil {
 			t.Fatalf("sqlite_master query: %v", err)
 		}
 		return count > 0
 	}
 
-	if !hasPromotedColumn() || !hasDiscardColumn() || !hasTasksTable() {
-		t.Fatal("the promotion migrations did not apply")
+	if hasColumn("promoted") || hasColumn("discard_pending") || hasColumn("pending_promote") {
+		t.Fatal("the retired promotion columns are still present at the latest version")
+	}
+	if hasTable("promotion_tasks") {
+		t.Fatal("promotion_tasks is still present at the latest version")
 	}
 
 	driver, err := sqlite3.WithInstance(db.DB.DB, &sqlite3.Config{})
@@ -303,25 +241,25 @@ func TestPromotionMigrations_UpDown(t *testing.T) {
 		t.Fatalf("failed to create migrator: %v", err)
 	}
 
-	if err := m.Migrate(93); err != nil {
+	if err := m.Migrate(103); err != nil {
 		t.Fatalf("down migration failed: %v", err)
 	}
-	if hasPromotedColumn() || hasDiscardColumn() || hasTasksTable() {
-		t.Fatal("the promotion schema should be gone after the down migrations")
+	if !hasColumn("promoted") || !hasColumn("discard_pending") || !hasTable("promotion_tasks") {
+		t.Fatal("the promotion schema should exist before 000104/000105")
 	}
-	if err := m.Migrate(97); err != nil {
+	if err := m.Up(); err != nil {
 		t.Fatalf("re-applying up migrations failed: %v", err)
 	}
-	if !hasPromotedColumn() || !hasDiscardColumn() || !hasTasksTable() {
-		t.Fatal("the promotion schema is missing after re-applying the up migrations")
+	if hasColumn("promoted") || hasColumn("discard_pending") || hasTable("promotion_tasks") {
+		t.Fatal("the promotion schema is back after re-applying the up migrations")
 	}
 }
 
-// TestUpgradeFromVersion95AddsDiscardPending covers the upgrade path that a
-// fresh-database test cannot: a database that already ran 000094/000095 must
-// gain discard_pending from 000096 without being marked dirty. This is the
-// regression that made stream_cache unreadable ("no such column").
-func TestUpgradeFromVersion95AddsDiscardPending(t *testing.T) {
+// TestUpgradeFromVersion95RetiresThePromotionSchema covers the upgrade path that
+// a fresh-database test cannot: a database that already ran 000094/000095 must
+// reach the latest version without being marked dirty, and must not keep the
+// retired columns.
+func TestUpgradeFromVersion95RetiresThePromotionSchema(t *testing.T) {
 	db, _ := newStreamCacheTestRepo(t)
 
 	hasColumn := func(name string) bool {
@@ -330,6 +268,15 @@ func TestUpgradeFromVersion95AddsDiscardPending(t *testing.T) {
 			`SELECT COUNT(*) FROM pragma_table_info('stream_cache') WHERE name = ?`, name,
 		); err != nil {
 			t.Fatalf("pragma_table_info query: %v", err)
+		}
+		return count > 0
+	}
+	hasTable := func(name string) bool {
+		var count int
+		if err := db.Get(&count,
+			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name,
+		); err != nil {
+			t.Fatalf("sqlite_master query: %v", err)
 		}
 		return count > 0
 	}
@@ -365,10 +312,13 @@ func TestUpgradeFromVersion95AddsDiscardPending(t *testing.T) {
 	if dirty {
 		t.Fatal("the upgrade left the schema dirty")
 	}
-	if version != 101 {
-		t.Fatalf("version = %d, want 101", version)
+	if version != 108 {
+		t.Fatalf("version = %d, want 108", version)
 	}
-	if !hasColumn("promoted") || !hasColumn("discard_pending") {
-		t.Fatal("the upgraded database is missing a promotion column")
+	if hasColumn("promoted") || hasColumn("discard_pending") || hasTable("promotion_tasks") {
+		t.Fatal("the upgrade kept the retired promotion schema")
+	}
+	if !hasTable("media_requests") {
+		t.Fatal("the upgraded database is missing media_requests")
 	}
 }

@@ -86,6 +86,14 @@ const canSave = computed(
     </div>
 
     <span
+      v-if="item.play_count > 0"
+      class="shrink-0 text-xs tabular-nums text-dim"
+      data-test="top-track-plays"
+    >
+      {{ t('lastfm.plays_count', { count: item.play_count }) }}
+    </span>
+
+    <span
       v-if="matching"
       class="shrink-0 rounded-full bg-foreground/[0.06] px-2.5 py-1 text-xs text-dim"
       data-test="top-track-status"

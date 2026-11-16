@@ -854,6 +854,12 @@
     "tab_failed": "Erreurs",
     "kind_download": "Téléchargement",
     "kind_promote": "Promotion",
+    "kind_request": "Demande",
+    "kind_cache": "Cache",
+    "phase_resolving": "Résolution",
+    "phase_downloading": "Téléchargement",
+    "phase_promoting": "Promotion",
+    "phase_verifying": "Vérification",
     "empty_all": "Aucune tâche enregistrée",
     "empty_active": "Aucune tâche en cours",
     "empty_done": "Aucune tâche terminée pour l'instant",
@@ -946,6 +952,17 @@
     "play_all": "Tout lire",
     "shuffle": "Lecture aléatoire",
     "more_actions": "Plus d'actions",
-    "list_empty": "Aucun titre pour l'instant."
+    "list_empty": "Aucun titre pour l'instant.",
+    "play_matching": "Les sources sont encore en cours d'association. Réessayez dans un instant.",
+    "play_unavailable": "Aucune piste lisible dans cette liste.",
+    "play_skipped": "{count} pistes illisibles ont été ignorées.",
+    "discover": "Découvrir",
+    "weekly_echo": "Écho hebdomadaire",
+    "week_prev": "Semaine précédente",
+    "week_next": "Semaine suivante",
+    "plays_count": "{count} écoutes",
+    "auto_refresh": "Rechercher automatiquement de nouvelles recommandations",
+    "load_more": "Charger plus",
+    "no_more": "Plus de recommandations"
   }
 }

@@ -65,6 +65,11 @@ type TopTrackItem struct {
 	// MatchKey is artist + "\x00" + title, the stable key the frontend uses to
 	// update a row in place.
 	MatchKey string `json:"match_key"`
+	// PlayCount is Last.fm's playcount for a weekly chart row; zero otherwise.
+	PlayCount int `json:"play_count"`
+	// WeekFrom / WeekTo are the chart window of a weekly row, in Unix seconds.
+	WeekFrom int64 `json:"week_from"`
+	WeekTo   int64 `json:"week_to"`
 }
 
 // TopTrackPage is the immediate response: every Last.fm top track, plus the

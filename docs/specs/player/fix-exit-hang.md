@@ -1,6 +1,6 @@
 # Bug：播放失败时退出应用很慢
 
-> 状态：待开工
+> 状态：✅ 已完成（shutdown 先取消 service context → 停 ticker/看门狗 → 保存状态 → `Unload` 取消 FFmpeg 缓存读 → `Close`/`ma_player_destroy` 关闭设备；缓存 session 并行关闭、每个最多等 500ms 并告警；HTTP server 改为 `Close()`）
 > 现象：远端曲目播放失败后退出应用要等很久（数秒到数十秒）
 > 关联：`cache-file-decoder.md`（缓存文件直读）、`fix-seek-reload-failure.md`（WaitReady）
 

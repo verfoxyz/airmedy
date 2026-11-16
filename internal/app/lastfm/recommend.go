@@ -118,6 +118,9 @@ const (
 // are testable without HTTP; *LastFmService is the production implementation.
 type TrackSource interface {
 	GetRecentTracks(ctx context.Context, limit int) ([]LastFmTrack, error)
+	// GetRecentTracksPage is the paged form discovery uses to build its
+	// "heard recently" exclusion set.
+	GetRecentTracksPage(ctx context.Context, page, limit int) ([]LastFmTrack, error)
 	GetTopTracks(ctx context.Context, period string, limit int) ([]LastFmTrack, error)
 	GetLovedTracks(ctx context.Context, limit int) ([]LastFmTrack, error)
 	GetSimilarTracks(ctx context.Context, artist, title string, limit int) ([]LastFmTrack, error)
@@ -127,6 +130,12 @@ type TrackSource interface {
 	GetArtistTopTags(ctx context.Context, artist string, limit int) ([]LastFmTag, error)
 	GetTagTopTracks(ctx context.Context, tag string, limit int) ([]LastFmTrack, error)
 	GetChartTopTracks(ctx context.Context, limit int) ([]LastFmTrack, error)
+	// Weekly charts. The windows come from the chart list and are passed back
+	// unchanged.
+	GetWeeklyChartList(ctx context.Context) ([]LastFmWeek, error)
+	GetWeeklyTrackChart(ctx context.Context, from, to int64) ([]LastFmTrack, error)
+	// Discovery seeds rotate between the all-time and six-month artist charts.
+	GetUserTopArtists(ctx context.Context, period string, limit int) ([]LastFmArtist, error)
 	// GetStatus reports whether an account is connected, its username and avatar.
 	GetStatus() (connected bool, username string, avatarURL string)
 }
@@ -273,6 +282,10 @@ type Recommender struct {
 	// similarRecs caches the "for you" answer per seed set for 30 minutes, so a
 	// reopen does not spend the track.getSimilar request budget again.
 	similarRecs map[string]cachedSimilarRecommendation
+	// weeklyChart caches the user's chart window list for a day; the discover
+	// seeds are stable inside one ISO week.
+	weeklyChart   cachedWeeklyChart
+	discoverCache cachedDiscoverSeeds
 	// recommendationStore persists the two lists and their match state. nil in
 	// tests that only exercise the in-memory build.
 	recommendationStore domain.LastFmRecommendationRepository

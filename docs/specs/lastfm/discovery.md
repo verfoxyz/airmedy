@@ -1,6 +1,6 @@
 # 任务：Last.fm 页新增「发现」列表（只推没听过的歌）
 
-> 状态：待开工
+> 状态：✅ 已完成（`kind=discover`、ISO 周种子轮换、≤30 请求预算、本地/近期 scrobble/每艺人 2 首过滤、候选池持久化与加载更多、12h TTL 受自动刷新开关控制；行与「为你推荐」一致先入列表再后台匹配）
 > 目的：解决“软件缺少新歌推荐”——现有常听/收藏/最近播放都是已知歌曲
 > 关联：`recommendation-lists.md`（歌单卡片与持久化）、`single-request-top-tracks.md`（匹配队列）、`fix-card-play-all.md`、`media-request-state-machine.md`
 

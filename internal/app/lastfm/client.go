@@ -55,6 +55,14 @@ type LastFmArtist struct {
 	URL       string
 }
 
+// LastFmWeek is one chart window from user.getWeeklyChartList. Both bounds are
+// Unix seconds and must be used verbatim: Last.fm answers an arbitrary window
+// with an empty chart.
+type LastFmWeek struct {
+	From int64
+	To   int64
+}
+
 // LastFmTag is one tag and how strongly a user or artist is associated with it.
 type LastFmTag struct {
 	Name  string
@@ -134,9 +142,18 @@ func (l *rateLimiter) acquire(ctx context.Context) (func(), error) {
 
 // GetRecentTracks returns the user's most recent scrobbles, newest first.
 func (s *LastFmService) GetRecentTracks(ctx context.Context, limit int) ([]LastFmTrack, error) {
+	return s.GetRecentTracksPage(ctx, 1, limit)
+}
+
+// GetRecentTracksPage returns one page of recent scrobbles. Discovery walks a
+// few pages to build its "heard recently" exclusion set.
+func (s *LastFmService) GetRecentTracksPage(ctx context.Context, page, limit int) ([]LastFmTrack, error) {
 	user, err := s.requireUser()
 	if err != nil {
 		return nil, err
+	}
+	if page < 1 {
+		page = 1
 	}
 
 	var response struct {
@@ -148,6 +165,7 @@ func (s *LastFmService) GetRecentTracks(ctx context.Context, limit int) ([]LastF
 		"method": "user.getRecentTracks",
 		"user":   user,
 		"limit":  strconv.Itoa(clampLimit(limit, 50)),
+		"page":   strconv.Itoa(page),
 	}, &response)
 	if err != nil {
 		return nil, err
@@ -200,6 +218,95 @@ func (s *LastFmService) GetTopTracks(ctx context.Context, period string, limit i
 		tracks = append(tracks, track)
 	}
 	return tracks, nil
+}
+
+// GetUserTopArtists returns the user's most played artists in one period.
+func (s *LastFmService) GetUserTopArtists(ctx context.Context, period string, limit int) ([]LastFmArtist, error) {
+	user, err := s.requireUser()
+	if err != nil {
+		return nil, err
+	}
+	period = strings.TrimSpace(period)
+	if period == "" {
+		period = "overall"
+	}
+
+	var response struct {
+		TopArtists struct {
+			Artist flexList[lastFmSimilarArtistWire] `json:"artist"`
+		} `json:"topartists"`
+	}
+	err = s.callRead(ctx, map[string]string{
+		"method": "user.getTopArtists",
+		"user":   user,
+		"period": period,
+		"limit":  strconv.Itoa(clampLimit(limit, 10)),
+	}, &response)
+	if err != nil {
+		return nil, err
+	}
+	return parseArtistList(response.TopArtists.Artist), nil
+}
+
+// GetWeeklyChartList returns every weekly window Last.fm has for the user,
+// oldest first. The bounds must be passed back verbatim.
+func (s *LastFmService) GetWeeklyChartList(ctx context.Context) ([]LastFmWeek, error) {
+	user, err := s.requireUser()
+	if err != nil {
+		return nil, err
+	}
+
+	var response struct {
+		WeeklyChartList struct {
+			Chart flexList[lastFmWeekWire] `json:"chart"`
+		} `json:"weeklychartlist"`
+	}
+	err = s.callRead(ctx, map[string]string{
+		"method": "user.getWeeklyChartList",
+		"user":   user,
+	}, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	weeks := make([]LastFmWeek, 0, len(response.WeeklyChartList.Chart))
+	for _, wire := range response.WeeklyChartList.Chart {
+		if wire.From <= 0 || wire.To <= wire.From {
+			continue
+		}
+		weeks = append(weeks, LastFmWeek{From: int64(wire.From), To: int64(wire.To)})
+	}
+	return weeks, nil
+}
+
+// GetWeeklyTrackChart returns one week's tracks with their playcount. from/to
+// are the values the chart list reported; any other window answers empty.
+func (s *LastFmService) GetWeeklyTrackChart(
+	ctx context.Context, from, to int64,
+) ([]LastFmTrack, error) {
+	user, err := s.requireUser()
+	if err != nil {
+		return nil, err
+	}
+	if from <= 0 || to <= from {
+		return nil, fmt.Errorf("last.fm weekly chart: invalid window")
+	}
+
+	var response struct {
+		WeeklyTrackChart struct {
+			Track flexList[lastFmTrackWire] `json:"track"`
+		} `json:"weeklytrackchart"`
+	}
+	err = s.callRead(ctx, map[string]string{
+		"method": "user.getWeeklyTrackChart",
+		"user":   user,
+		"from":   strconv.FormatInt(from, 10),
+		"to":     strconv.FormatInt(to, 10),
+	}, &response)
+	if err != nil {
+		return nil, err
+	}
+	return parseTrackList(response.WeeklyTrackChart.Track), nil
 }
 
 // GetLovedTracks returns the user's loved tracks, most recent first.
@@ -457,6 +564,23 @@ func parseTrackList(wireTracks flexList[lastFmTrackWire]) []LastFmTrack {
 	return tracks
 }
 
+func parseArtistList(wireArtists flexList[lastFmSimilarArtistWire]) []LastFmArtist {
+	artists := make([]LastFmArtist, 0, len(wireArtists))
+	for _, wire := range wireArtists {
+		name := strings.TrimSpace(wire.Name)
+		if name == "" {
+			continue
+		}
+		artists = append(artists, LastFmArtist{
+			Name:      name,
+			ImageURL:  usableImage(largestImage(wire.Image)),
+			Listeners: int(wire.Listeners),
+			URL:       strings.TrimSpace(wire.URL),
+		})
+	}
+	return artists
+}
+
 func parseTagList(wireTags flexList[lastFmTagWire]) []LastFmTag {
 	tags := make([]LastFmTag, 0, len(wireTags))
 	for _, wire := range wireTags {
@@ -619,6 +743,11 @@ type lastFmTagWire struct {
 	Count flexInt `json:"count"`
 }
 
+type lastFmWeekWire struct {
+	From flexInt64 `json:"from"`
+	To   flexInt64 `json:"to"`
+}
+
 // largestImage picks the biggest rendition Last.fm reported.
 //
 // The array is ordered small→extralarge, but the largest entry is sometimes
@@ -667,5 +796,22 @@ func (n *flexInt) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("flex int %q: %w", text, err)
 	}
 	*n = flexInt(value)
+	return nil
+}
+
+// flexInt64 is flexInt for Unix timestamps, which overflow a 32-bit int.
+type flexInt64 int64
+
+func (n *flexInt64) UnmarshalJSON(data []byte) error {
+	text := strings.Trim(strings.TrimSpace(string(data)), `"`)
+	if text == "" || text == "null" {
+		*n = 0
+		return nil
+	}
+	value, err := strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		return fmt.Errorf("flex int64 %q: %w", text, err)
+	}
+	*n = flexInt64(value)
 	return nil
 }

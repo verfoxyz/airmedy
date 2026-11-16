@@ -1,6 +1,6 @@
 # Bug：删除本地文件后，再次保存/加歌单不会重新提升
 
-> 状态：待开工
+> 状态：✅ 已完成（删除本地文件：`DeleteTrackFile` 经 `MediaRequestInvalidator` 把该 identity 的 `done` 请求重置为 `wanted` 并唤醒 worker，同时 `StreamCacheDiscarder` 清缓存；`Upsert` 遇 `done` 同意图时用 `HasLocalTrack` 校验，文件不存在则重开；worker 启动时对账所有 `done` 行。测试：`go test ./internal/app/mediarequest/ ./internal/app/library/ ./internal/infra/sqlite/`）
 > 现象：应用内「删除文件」→ 重新播放 → 添加到歌单，但没有任何提升/下载，文件不会回来
 > 关联：`media-request-state-machine.md`、`fix-bulk-playlist-add.md`、`fix-promoted-cover.md`
 

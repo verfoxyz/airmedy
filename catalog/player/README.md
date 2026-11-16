@@ -453,6 +453,78 @@ flowchart TB
   second source to pre-open. Entry metadata lives in `stream_cache`; an identity
   miss reuses the same normalized title/artist cached under another provider
   when their durations agree within 5 s, without changing the entry's identity.
+  The download behind a session is **bounded**: it runs at most
+  `prefetchAheadSeconds` (45 s) ahead of the reported playback position, pauses
+  there with the unread tail still upstream, resumes when `ReportProgress`
+  advances or a seek moves the water mark, and keeps every byte already fetched
+  so a backward seek needs no network. The 500 ms ticker also reports the
+  decoder's current file position (`SetDecodeOffset`): while the reader is
+  within 2 MiB of the write edge the water mark is lifted, because a demuxer
+  seeking or probing must never be starved by prefetch; it re-arms once the
+  download is 4 MiB ahead again. The water mark is derived from
+  `total_bytes`/duration when both are known and from the resolved tier's byte
+  rate otherwise; an unknown tier is estimated as 320k. A promotion or explicit
+  download calls `EnsureComplete`, which sets `completeRequested` and lets the
+  download run to EOF; closing the session keeps the partial file and its
+  metadata for a later resume. Reaching half the track (reported by the 500 ms
+  ticker as `position >= duration/2`) also sets `completeRequested` once, so the
+  rest arrives without the water mark; it does not promote the entry. Playback
+  decodes the **local cache file**: `preparePlayable` waits until
+  `min(2 MiB, total)` is on disk (lifting the prefetch water mark for that
+  window), then sets `StreamCachePath`/`StreamTotalBytes` and the miniaudio
+  backend calls `ma_player_load_cache`. FFmpeg opens the file through a custom
+  `AVIOContext` (`ffmpeg_cache_io.h`) whose read blocks in 5 ms polls while the
+  requested bytes have not been downloaded; a probe therefore behaves like a
+  local file and no HTTP `rw_timeout` applies (cache mode caps `probesize` at
+  1.8 MB so it cannot ask for more than the buffered head). The read fills the
+  whole AVIO buffer and returns a short count only at the **real** end: the
+  announced total is reached, or a download of unknown length reports
+  completion (`ma_player_mark_stream_complete`). A short read before that is
+  what made libavformat set `eof_reached` and stop playback inside the
+  downloaded range. A read that waits `FFMPEG_CACHE_WAIT_MS` (30 s) without
+  progress returns an error instead of EOF. `AVSEEK_SIZE` and `SEEK_END` report
+  only the bytes already on disk until the download finishes; exposing the
+  announced total made FFmpeg seek into the undownloaded tail and then read
+  EOF there (the "position moves but the track is silent" bug). A seek inside
+  the announced total but past the write edge blocks on the AVIO (5 ms polls,
+  cancellable, same 30 s bound) until the download covers it; a seek past the
+  announced total is an error. A remote seek has a single path
+  (`docs/specs/stream-playback/seek-metadata-duration.md`): the target time
+  comes from track **metadata** (the partial file is never fully probed);
+  `EnsureSeekable` lifts the prefetch water mark until the target position plus
+  a 1 MiB margin is on disk (30 s timeout, download failure surfaces); the
+  session is then closed, reopened, and the decoder performs an ordinary
+  timestamp seek inside downloaded bytes. No in-place or byte-offset seek is
+  attempted. While the seek buffers and rebuilds the decoder, `HandleTrackEnd`
+  ignores end callbacks so a stale EOF cannot advance the queue. A track with
+  no duration fails the seek with `player:playback-failed` instead of landing at
+  zero and later switching tracks.
+  Every seek logs one `seek` Info line (`track`,
+  `from`/`to`, `remote`, `cached`, `covers`, `player_seek_rc`); when the backend
+  implements `GetDiagnostics` (miniaudio), a second `seek: after 1s` line reports
+  the decoder reads/frames/empty reads, cache AVIO waits and wait time, cursor,
+  file growth, the sound/engine volumes, what the seek saw
+  (`requested`/`received`/`total`/`seek_ok`),
+  plus a `verdict`
+  (`decode_blocked`/`decoder_state`/`engine_not_consuming`/`output_silent`) from
+  the table in `docs/specs/player/diagnose-seek-silence.md`. The counters are
+  per-seek (reset by `ffmpeg_seek`) and atomic because the audio thread writes
+  them. The HTTP `/stream/<hash>` proxy and 1 MiB prebuffer
+  still exist for tests and debugging but are no longer on the playback path. A
+  readiness or load failure pauses playback at the last position and emits
+  `player:playback-failed`, which sets the footer's `playError` and shows the
+  shared retry action. The 500 ms ticker runs a stall watchdog that separates
+  buffering from a stall: while the cache file is still growing, a static
+  position is normal and never triggers a reload; only a failed download
+  (reported by the session) pauses and shows the failure, and only a stalled
+  download falls through to the 2 s / 10 s / 60 s backoff, at most three times.
+  A manual play or retry clears the counter. **Shutdown
+  aborts first**: `PlayerService.shutdown` cancels the service context (every
+  `Open`/`WaitHead` uses it) before saving state, then unloads the backend,
+  which sets the FFmpeg cancel flag and aborts a decoder parked in the cache
+  AVIO read, and destroys the engine (`ma_player_destroy`). Cache session stops
+  wait at most 500 ms each and run in parallel; the HTTP server is closed
+  instead of gracefully drained, so a failed stream cannot delay exit.
   Opening or completing a streamed entry pins the cover cached for that
   identity; deleting the entry unpins it. `PlayerStatus.stream_artwork_url`
   carries the host-local `/cover-cache/...` path for the playing identity; the
@@ -461,12 +533,12 @@ flowchart TB
   that cover: the cached bytes go through `ArtworkCache.Save`, the resulting key
   is written to `tracks.artwork_key`, and `library:track-updated` is emitted, so
   every list renders the row through the normal artwork pipeline instead of a
-  placeholder. A row that already has a key is skipped. A pending promotion cannot
+  placeholder. A row that already has a key is skipped. A pending request cannot
   move the cached file while any session owns it: closing the session fires the
-  cache's `OnSessionClosed` observer, which wakes the download cache-maintenance
-  worker. Promotion also refuses to move a file the decoder has loaded without a
-  session (a load window or a retry): `PlayerService.PlayingTrack` is the port the
-  worker consults, and the 30 s sweep retries once playback moves on.
+  cache's `OnSessionClosed` observer, which wakes the media request worker.
+  Promotion also refuses to move a file the decoder has loaded without a
+  session (a load window or a retry): `PlayerService.PlayingTrack` is the port
+  the executor consults, and the worker's deferral is retried on the next wake.
 - **Merge remap.** A finished download or promotion deletes the remote row and
   emits `track:merged` (`from_track_id`, `to_track_id`). The listener only
   dispatches: `RemapTrack` plus the Last.fm row refresh run in one goroutine with

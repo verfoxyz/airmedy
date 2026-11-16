@@ -96,6 +96,49 @@ describe('duplicate timestamps', () => {
   })
 })
 
+describe('KuGou KRC word tags', () => {
+  it('reads <offsetMs,durationMs> tags and never leaves them in the text', () => {
+    const { syncedLines, plainLines } = parse('[00:04.102]<520,-520>Hook')
+    expect(syncedLines.value[0].text).toBe('Hook')
+    expect(syncedLines.value[0].words).toEqual([{ text: 'Hook', start: 4.622, end: 5.622 }])
+    expect(plainLines.value[0].primary).toBe('Hook')
+  })
+
+  it('uses the next tag as the end when the duration is negative', () => {
+    const { syncedLines } = parse('[00:03]<3040,-3040>Hold<5960,4680> up')
+    expect(syncedLines.value[0].text).toBe('Hold up')
+    expect(syncedLines.value[0].words).toEqual([
+      { text: 'Hold', start: 6.04, end: 8.96 },
+      { text: ' up', start: 8.96, end: 13.64 },
+    ])
+  })
+
+  it('honors a positive duration instead of the next tag', () => {
+    const { syncedLines } = parse('[00:01]<1000,500>A<2000,500>B')
+    expect(syncedLines.value[0].words).toEqual([
+      { text: 'A', start: 2, end: 2.5 },
+      { text: 'B', start: 3, end: 3.5 },
+    ])
+  })
+
+  it('ends the last word at the next line, capped at one second', () => {
+    const near = parse('[00:01]<0,0>A\n[00:01.5]B')
+    expect(near.syncedLines.value[0].words).toEqual([{ text: 'A', start: 1, end: 1.5 }])
+    const far = parse('[00:01]<0,0>A\n[00:10]B')
+    expect(far.syncedLines.value[0].words).toEqual([{ text: 'A', start: 1, end: 2 }])
+  })
+
+  it('keeps standard LRC and plain lyrics unchanged', () => {
+    const standard = parse('[00:01]<00:01>Hello <00:02>world<00:03>')
+    expect(standard.syncedLines.value[0].words).toEqual([
+      { text: 'Hello ', start: 1, end: 2 }, { text: 'world', start: 2, end: 3 },
+    ])
+    expect(parse('Just plain lyrics').plainLines.value).toEqual([
+      { primary: 'Just plain lyrics', secondary: undefined },
+    ])
+  })
+})
+
 describe('Enhanced LRC', () => {
   it('uses the line timestamp for the first word and preserves Vietnamese and spaces', () => {
     const { syncedLines, plainLines } = parse('[00:01.62]Người <00:01.79>hỏi <00:02.05>anh\u00a0<00:02.30>rằng\n[00:02.58]')

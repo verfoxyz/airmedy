@@ -46,7 +46,7 @@ func TestModuleResolvesWithThePortsAppModuleProvides(t *testing.T) {
 			func() LibraryImporter { return stubLibrary{} },
 			func() PlaylistAdder { return stubPlaylist{} },
 			func() CachedAudio { return stubCachedAudio{} },
-			func() domain.PromotionTaskRepository { return stubPromotionTasks{} },
+			func() domain.MediaRequestRepository { return stubMediaRequests{} },
 			func() domain.CoverIdentityAssets { return stubCoverAssetsPort{} },
 		),
 		Module,
@@ -67,20 +67,9 @@ func (stubCachedAudio) EnsureComplete(context.Context, *domain.TrackDTO) (<-chan
 	close(done)
 	return done, nil
 }
-func (stubCachedAudio) MarkPendingPromote(context.Context, *domain.TrackDTO) error { return nil }
-func (stubCachedAudio) DiscardEntry(context.Context, *domain.TrackDTO) error       { return nil }
-func (stubCachedAudio) PendingPromotions(context.Context) ([]*domain.StreamCacheEntry, error) {
-	return nil, nil
-}
-func (stubCachedAudio) PendingDiscards(context.Context) ([]*domain.StreamCacheEntry, error) {
-	return nil, nil
-}
-func (stubCachedAudio) HasActiveSession(string, string) bool                      { return false }
-func (stubCachedAudio) SetPromoted(context.Context, *domain.TrackDTO, bool) error { return nil }
-func (stubCachedAudio) SetDiscardPending(context.Context, *domain.TrackDTO, bool) error {
-	return nil
-}
-func (stubCachedAudio) ClearPendingPromote(context.Context, *domain.TrackDTO) error { return nil }
+func (stubCachedAudio) DiscardEntry(context.Context, *domain.TrackDTO) error { return nil }
+func (stubCachedAudio) HasActiveSession(string, string) bool                 { return false }
+func (stubCachedAudio) HasPlayingSession(string, string) bool                { return false }
 func (stubCachedAudio) AllEntries(context.Context) ([]*domain.StreamCacheEntry, error) {
 	return nil, nil
 }
@@ -89,7 +78,7 @@ func (stubCachedAudio) OrphanFiles(context.Context) ([]domain.StreamCacheOrphan,
 }
 func (stubCachedAudio) DeleteFile(string) error { return nil }
 
-type stubPromotionTasks struct{ domain.PromotionTaskRepository }
+type stubMediaRequests struct{ domain.MediaRequestRepository }
 
 type stubCoverAssetsPort struct {
 	asset  string

@@ -3,7 +3,7 @@ import { computed, onActivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Events } from '@wailsio/runtime'
-import { ListMusic, MoreHorizontal, Music, Play, Radio, RefreshCw, Shuffle } from '@lucide/vue'
+import { ListMusic, MoreHorizontal, Music, Play, Radio, RefreshCw, Shuffle, Timer } from '@lucide/vue'
 import { IconButton } from '@airmedy/ui'
 import ContextMenu from '@/components/ContextMenu.vue'
 import LazyImg from '@/components/LazyImg.vue'
@@ -11,10 +11,10 @@ import VirtualizedGrid from '@/components/VirtualizedGrid.vue'
 import { useContextMenu } from '@/composables/useContextMenu'
 import {
   formatLastFmDuration,
-  isPlayableLastFmRow,
+  formatLastFmWeekRange,
   lastFmCoverClass,
   lastFmCovers,
-  lastFmRowToCatalogRow,
+  planLastFmPlayback,
 } from '@/lib/lastfmTracks'
 import { useCatalogStore } from '@/stores/catalog'
 import { usePlayerStore } from '@/stores/player'
@@ -44,8 +44,42 @@ const loadError = ref('')
 const refreshingAll = ref(false)
 const refreshingKinds = ref<Record<string, boolean>>({})
 const busyKind = ref('')
+/** playNotice is a machine key (plus count) the template words. */
+const playNoticeKey = ref('')
+const playNoticeCount = ref(0)
+const playNotice = computed(() => {
+  if (!playNoticeKey.value) return ''
+  if (playNoticeKey.value === 'play_skipped') {
+    return t('lastfm.play_skipped', { count: playNoticeCount.value })
+  }
+  return t(`lastfm.${playNoticeKey.value}`)
+})
 const rowMenu = useContextMenu()
 let offMatch: (() => void) | null = null
+
+// The auto-refresh toggle is a page preference, so it survives restarts without
+// a settings round-trip. Off means opening the page never checks the discover
+// TTL or a new weekly chart.
+const AUTO_REFRESH_KEY = 'lastfm:auto-refresh'
+const autoRefresh = ref(readAutoRefresh())
+
+function readAutoRefresh(): boolean {
+  try {
+    return localStorage.getItem(AUTO_REFRESH_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
+
+function toggleAutoRefresh() {
+  autoRefresh.value = !autoRefresh.value
+  try {
+    localStorage.setItem(AUTO_REFRESH_KEY, autoRefresh.value ? '1' : '0')
+  } catch {
+    // A blocked storage write only loses the preference for this session.
+  }
+  if (autoRefresh.value) void load()
+}
 
 const lists = computed(() => collection.value?.lists ?? [])
 /** cards adapts the summaries to the grid's `{ id }` item contract. */
@@ -63,7 +97,7 @@ async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    collection.value = await LastFmService.ListRecommendationLists()
+    collection.value = await LastFmService.ListRecommendationLists(autoRefresh.value)
   } catch (error) {
     console.error('Failed to load Last.fm recommendation lists', error)
     loadError.value = 'load_failed'
@@ -112,27 +146,39 @@ function totalDuration(list: RecommendationListSummaryDTO): string {
   return formatLastFmDuration(list.total_duration ?? 0, t)
 }
 
+/** weekRange words a weekly echo card's window. */
+function weekRange(list: RecommendationListSummaryDTO): string {
+  return formatLastFmWeekRange(list.week_from, list.week_to)
+}
+
 /**
  * playList resolves the list's playable rows and starts playback.
  *
  * The card only holds a summary, so the rows are read from the store first;
  * shuffle randomizes the resolved IDs, which is the same playback queue in a
- * different order.
+ * different order. A row that cannot be resolved is skipped instead of
+ * aborting the batch, and an empty result is always worded.
  */
 async function playList(list: RecommendationListSummaryDTO, shuffle: boolean) {
   if (busyKind.value === list.kind || list.track_count === 0) return
   busyKind.value = list.kind
+  playNoticeKey.value = ''
   try {
     const detail = await LastFmService.GetRecommendationList(list.kind)
-    const ids: string[] = []
-    for (const row of detail.items ?? []) {
-      if (!isPlayableLastFmRow(row)) continue
-      const id = await catalogStore.preparePlayback(lastFmRowToCatalogRow(row))
-      if (id) ids.push(id)
+    const plan = await planLastFmPlayback(
+      detail.items ?? [],
+      (row) => catalogStore.preparePlayback(row),
+    )
+    if (plan.ids.length === 0) {
+      playNoticeKey.value = plan.matching ? 'play_matching' : 'play_unavailable'
+      return
     }
-    if (ids.length === 0) return
-    if (shuffle) shuffleIds(ids)
-    await playerStore.playTrackIds(ids)
+    if (shuffle) shuffleIds(plan.ids)
+    await playerStore.playTrackIds(plan.ids)
+    if (plan.skipped > 0) {
+      playNoticeKey.value = 'play_skipped'
+      playNoticeCount.value = plan.skipped
+    }
   } catch (error) {
     console.error('Failed to play a Last.fm recommendation list', error)
   } finally {
@@ -255,15 +301,26 @@ onActivated(() => {
         <p class="mt-2 text-xl text-dim">{{ $t('lastfm.subtitle') }}</p>
       </div>
 
-      <IconButton
-        data-test="lastfm-refresh-all"
-        :aria-label="$t('lastfm.refresh_all')"
-        :title="$t('lastfm.refresh_all')"
-        :disabled="isRefreshing || notConnected"
-        @click="refreshAll"
-      >
-        <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': refreshingAll }" aria-hidden="true" />
-      </IconButton>
+      <div class="flex items-center gap-1">
+        <IconButton
+          data-test="lastfm-auto-refresh"
+          :active="autoRefresh"
+          :aria-label="$t('lastfm.auto_refresh')"
+          :title="$t('lastfm.auto_refresh')"
+          @click="toggleAutoRefresh"
+        >
+          <Timer class="h-4 w-4" aria-hidden="true" />
+        </IconButton>
+        <IconButton
+          data-test="lastfm-refresh-all"
+          :aria-label="$t('lastfm.refresh_all')"
+          :title="$t('lastfm.refresh_all')"
+          :disabled="isRefreshing || notConnected"
+          @click="refreshAll"
+        >
+          <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': refreshingAll }" aria-hidden="true" />
+        </IconButton>
+      </div>
     </header>
 
     <!-- Not connected -->
@@ -301,6 +358,14 @@ onActivated(() => {
     <div v-else class="flex min-h-0 flex-1 flex-col">
       <p v-if="loadError" class="px-8 pt-4 text-sm text-dim" data-test="lastfm-error">
         {{ $t(`lastfm.${loadError}`) }}
+      </p>
+      <p
+        v-if="playNotice"
+        class="px-8 pt-2 text-sm text-dim"
+        role="status"
+        data-test="lastfm-play-notice"
+      >
+        {{ playNotice }}
       </p>
 
       <!-- No lists at all -->
@@ -427,7 +492,11 @@ onActivated(() => {
               <h2 class="truncate text-sm font-medium text-foreground transition-colors group-hover:text-foreground">{{ $t(card.title) }}</h2>
               <p class="truncate text-xs text-dim" data-test="lastfm-card-meta">
                 <span data-test="lastfm-card-count">{{ card.track_count }}</span>
-                <template v-if="card.total_duration > 0">
+                <template v-if="card.kind === 'weekly_echo' && card.week_from > 0">
+                  <span> · </span>
+                  <span data-test="lastfm-card-week">{{ weekRange(card) }}</span>
+                </template>
+                <template v-else-if="card.total_duration > 0">
                   <span> · </span>
                   <span data-test="lastfm-card-duration">{{ totalDuration(card) }}</span>
                 </template>

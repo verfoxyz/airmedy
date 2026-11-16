@@ -47,7 +47,8 @@ describe('locale coverage', () => {
 
   it('keeps the tasks page keys in all 12 locales', () => {
     expect(taskKeys).toEqual(expect.arrayContaining([
-      'title', 'tab_all', 'tab_active', 'tab_done', 'tab_failed', 'kind_download', 'kind_promote',
+      'title', 'tab_all', 'tab_active', 'tab_done', 'tab_failed', 'kind_request', 'kind_cache',
+      'phase_resolving', 'phase_downloading', 'phase_promoting', 'phase_verifying',
       'empty_all', 'empty_active', 'empty_done', 'empty_failed', 'clear', 'clear_title',
       'clear_message', 'clear_confirm', 'clear_cancel', 'clear_done',
     ]))

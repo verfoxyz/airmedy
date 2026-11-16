@@ -64,6 +64,19 @@ describe('usePlayerStore', () => {
     vi.clearAllMocks()
   })
 
+  it('surfaces a background playback failure event', async () => {
+    mockGetStatus.mockResolvedValue({ track_id: 'a' })
+    mockGetQueue.mockResolvedValue([{ id: 'a' }])
+    mockGetCurrentLyrics.mockResolvedValue(null)
+    const store = usePlayerStore()
+    await store.init()
+
+    const handler = vi.mocked(Events.On).mock.calls.find(([name]) => name === 'player:playback-failed')![1]
+    handler({ data: { track_id: 'a', error: 'stream unavailable' } } as any)
+
+    expect(store.playError).toBe('stream unavailable')
+  })
+
   it('patches only favorite data without status, theme or lyrics changes', async () => {
     mockGetStatus.mockResolvedValue({ track_id: 'a' })
     mockGetQueue.mockResolvedValue([{ id: 'a', title: 'Original', is_favorite: false }, { id: 'b' }, { id: 'a', is_favorite: false }])

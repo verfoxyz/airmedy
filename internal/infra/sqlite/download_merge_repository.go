@@ -129,6 +129,36 @@ func (r *downloadMergeRepository) CarryIdentity(ctx context.Context, trackID, pr
 	return nil
 }
 
+// CarryArtworkKey gives the imported row (and its album) the cover it was
+// showing while it was streamed. Only rows without a key are written: artwork
+// extracted from the downloaded file is more accurate and must win.
+func (r *downloadMergeRepository) CarryArtworkKey(ctx context.Context, trackID, artworkKey string) error {
+	trackID = strings.TrimSpace(trackID)
+	artworkKey = strings.TrimSpace(artworkKey)
+	if trackID == "" || artworkKey == "" {
+		return nil
+	}
+	now := time.Now()
+	if _, err := r.db.Ext(ctx).ExecContext(ctx,
+		`UPDATE tracks
+		    SET artwork_key = ?, updated_at = ?
+		  WHERE id = ? AND (artwork_key IS NULL OR artwork_key = '')`,
+		artworkKey, now, trackID); err != nil {
+		return fmt.Errorf("carry artwork to %s: %w", trackID, err)
+	}
+	// Album grids read albums.artwork_key, not the track column; fill it too when
+	// the import could not extract one.
+	if _, err := r.db.Ext(ctx).ExecContext(ctx,
+		`UPDATE albums
+		    SET artwork_key = ?, updated_at = ?
+		  WHERE id = (SELECT album_id FROM tracks WHERE id = ?)
+		    AND (artwork_key IS NULL OR artwork_key = '')`,
+		artworkKey, now, trackID); err != nil {
+		return fmt.Errorf("carry artwork to the album of %s: %w", trackID, err)
+	}
+	return nil
+}
+
 func (r *downloadMergeRepository) MoveLyrics(ctx context.Context, fromTrackID, toTrackID string) error {
 	if fromTrackID == "" || toTrackID == "" || fromTrackID == toTrackID {
 		return nil

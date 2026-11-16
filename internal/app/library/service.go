@@ -128,6 +128,7 @@ type LibraryService struct {
 	trackDeletedListeners   []func([]string)
 	cachedAudio             StreamCacheDiscarder
 	playbackRemover         PlaybackRemover
+	mediaRequests           MediaRequestInvalidator
 	syncFinishedListeners   []func()
 	artistArtworkQueue      chan artistArtworkJob
 	pendingArtistArtwork    map[string]struct{}
@@ -276,8 +277,13 @@ func (s *LibraryService) AddTrackDeletedListener(l func([]string)) {
 // app/stream, and a destination without stream playback can ignore it.
 type StreamCacheDiscarder interface {
 	DiscardEntry(ctx context.Context, track *domain.TrackDTO) error
-	// SetDiscardPending flags a cache the current session prevented deleting.
-	SetDiscardPending(ctx context.Context, track *domain.TrackDTO, pending bool) error
+}
+
+// MediaRequestInvalidator re-opens the finished request for an identity whose
+// local file was deleted, so the next save promotes or downloads again instead
+// of being treated as already complete. *mediarequest.Saver implements it.
+type MediaRequestInvalidator interface {
+	InvalidateLocalFile(ctx context.Context, provider, externalID string) error
 }
 
 // PlaybackRemover detaches a row that is being deleted from the player and the
@@ -299,6 +305,45 @@ func (s *LibraryService) SetPlaybackRemover(remover PlaybackRemover) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.playbackRemover = remover
+}
+
+// SetMediaRequestInvalidator wires the request store a file deletion must
+// reopen. A nil invalidator means deletions do not touch media requests.
+func (s *LibraryService) SetMediaRequestInvalidator(invalidator MediaRequestInvalidator) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mediaRequests = invalidator
+}
+
+// invalidateMediaRequest re-opens the identity's finished request after its
+// local file was deleted. Failures are logged: the deletion itself succeeded.
+func (s *LibraryService) invalidateMediaRequest(ctx context.Context, provider, externalID string) {
+	s.mu.RLock()
+	invalidator := s.mediaRequests
+	s.mu.RUnlock()
+	if invalidator == nil {
+		return
+	}
+	if err := invalidator.InvalidateLocalFile(ctx, provider, externalID); err != nil {
+		s.logger.Warn("Failed to re-open the media request of a deleted track",
+			"provider", provider, "external_id", externalID, "error", err)
+	}
+}
+
+// discardStreamCache drops cached audio left behind for the identity. A session
+// that still owns the file defers the deletion; the cache handles that itself.
+func (s *LibraryService) discardStreamCache(ctx context.Context, track *domain.TrackDTO) {
+	s.mu.RLock()
+	discarder := s.cachedAudio
+	s.mu.RUnlock()
+	if discarder == nil {
+		return
+	}
+	if err := discarder.DiscardEntry(ctx, track); err != nil &&
+		!errors.Is(err, domain.ErrStreamDiscardDeferred) {
+		s.logger.Warn("Failed to discard the deleted track's stream cache",
+			"track_id", track.ID, "error", err)
+	}
 }
 
 func (s *LibraryService) notifyTracksDeleted(ids []string) {
@@ -1767,6 +1812,14 @@ func (s *LibraryService) DeleteTrackFile(ctx context.Context, id string) error {
 		return fmt.Errorf("delete track: %s: %w", id, err)
 	}
 
+	// The row is gone but the identity still names what the user wants. Re-open a
+	// finished request and drop any leftover stream cache, or the next save /
+	// playlist add would be treated as already complete.
+	if track.Provider != "" && track.ExternalID != "" {
+		s.invalidateMediaRequest(ctx, track.Provider, track.ExternalID)
+		s.discardStreamCache(ctx, &domain.TrackDTO{Track: track.Track})
+	}
+
 	if err := s.searchService.DeleteTracksFromIndex(ctx, []string{id}); err != nil {
 		// The row is gone; a stale document only pollutes search until the next
 		// reindex, so this is a warning rather than a failed deletion.
@@ -1830,19 +1883,11 @@ func (s *LibraryService) RemoveTrackFromLibrary(ctx context.Context, trackID str
 	if discarder != nil {
 		// A cache that cannot be cleared (file in use, row already gone) must not
 		// keep the row in the library; the user asked for it to disappear. A
-		// deferred discard is normal: the promotion worker finishes it after the
+		// deferred discard is normal: the cache deletes the file itself once the
 		// session closes.
-		if err := discarder.DiscardEntry(ctx, track); err != nil {
-			if errors.Is(err, domain.ErrStreamDiscardDeferred) {
-				// The decoder still owns the file; the maintenance worker deletes
-				// the cache once the session closes.
-				if markErr := discarder.SetDiscardPending(ctx, track, true); markErr != nil {
-					s.logger.Warn("remove track: cannot flag the cache for cleanup",
-						"track_id", trackID, "error", markErr)
-				}
-			} else {
-				s.logger.Warn("remove track: cannot discard the stream cache", "track_id", trackID, "error", err)
-			}
+		if err := discarder.DiscardEntry(ctx, track); err != nil &&
+			!errors.Is(err, domain.ErrStreamDiscardDeferred) {
+			s.logger.Warn("remove track: cannot discard the stream cache", "track_id", trackID, "error", err)
 		}
 	}
 

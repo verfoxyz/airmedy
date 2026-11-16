@@ -19,6 +19,9 @@ var Module = fx.Module("download",
 		// The adapters arrive as domain ports; the service asks for them under
 		// its own narrow interfaces, so name them explicitly.
 		func(ports Ports) AudioDownloader { return ports.Downloader },
+		// The media request worker delegates execution here instead of importing
+		// this package.
+		func(svc *Service) domain.MediaRequestExecutor { return svc },
 		// The library and playlist services are concrete app types; taking them
 		// as interface values keeps finalize's dependencies visible.
 		func(ports Ports, lib LibraryImporter, playlists PlaylistAdder, logger *slog.Logger) *Finalizer {
@@ -54,6 +57,27 @@ var Module = fx.Module("download",
 			merger.SetArtistAliases(aliases)
 		},
 		fx.ParamTags(``, ``, `optional:"true"`),
+	)),
+	// Cache sessions are the tasks page's other kind; optional for graphs
+	// without the stream cache.
+	fx.Invoke(fx.Annotate(
+		func(svc *Service, tasks domain.StreamCacheTaskRepository) {
+			svc.SetStreamCacheTasks(tasks)
+		},
+		fx.ParamTags(``, `optional:"true"`),
+	)),
+	// The tasks page and the search chips read the authoritative request store;
+	// without it the page would have no rows at all.
+	fx.Invoke(func(svc *Service, requests domain.MediaRequestRepository) {
+		svc.SetMediaRequests(requests)
+	}),
+	// Promotion keeps the cover a streamed row was showing when the downloaded
+	// file has no embedded art. Optional for graphs that have no artwork cache.
+	fx.Invoke(fx.Annotate(
+		func(svc *Service, cache domain.ArtworkCache) {
+			svc.SetArtworkCache(cache)
+		},
+		fx.ParamTags(``, `optional:"true"`),
 	)),
 	fx.Invoke(func(lc fx.Lifecycle, svc *Service, logger *slog.Logger) {
 		lc.Append(fx.Hook{

@@ -1,6 +1,6 @@
 # 最终方案：时长取自元数据，seek 只走「等数据 + 重开解码器」
 
-> 状态：待开工
+> 状态：✅ 已完成（远端 seek 统一为「元数据时长 → EnsureSeekable 补数据（目标 + 1 MiB，30s 超时）→ 关闭并重开会话 → 时间戳 seek」；字节 seek 与回退状态已删除；seek 期间忽略 end 回调，duration 缺失报错。测试：`go test ./internal/app/stream/ ./internal/app/player/`、`go test -tags ffmpeg_cache_io ./internal/infra/audio/`）
 > 目的：结束字节 seek/回退反复失败；用一条可靠路径解决“不完整文件下拖动无声/切歌”
 > 关联：`fix-prefetch-seek-deadlock.md`、`fix-byte-seek-offset.md`、`cache-file-decoder.md`
 

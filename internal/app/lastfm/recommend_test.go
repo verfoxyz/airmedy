@@ -45,6 +45,19 @@ type fakeTrackSource struct {
 	similarArtistCalls int
 	seedCalls          int
 	topCalls           int
+
+	// Weekly chart and discovery seed answers.
+	weeks            []LastFmWeek
+	weeksErr         error
+	weeklyCharts     map[int64][]LastFmTrack
+	weeklyChartErr   map[int64]error
+	topArtists       map[string][]LastFmArtist
+	topArtistsErr    map[string]error
+	weeklyCalls      int
+	weeklyChartCalls int
+	topArtistCalls   int
+	topArtistPeriods []string
+	recentPages      []int
 	// topPeriods and topLimits record what the top-tracks page asked for, so a
 	// test can pin the window and page size.
 	topPeriods []string
@@ -67,10 +80,50 @@ func (f *fakeTrackSource) GetStatus() (bool, string, string) {
 }
 
 func (f *fakeTrackSource) GetRecentTracks(_ context.Context, _ int) ([]LastFmTrack, error) {
+	return f.GetRecentTracksPage(context.Background(), 1, 0)
+}
+
+func (f *fakeTrackSource) GetRecentTracksPage(_ context.Context, page, _ int) ([]LastFmTrack, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.seedCalls++
+	f.recentPages = append(f.recentPages, page)
 	return append([]LastFmTrack{}, f.recent...), nil
+}
+
+func (f *fakeTrackSource) GetWeeklyChartList(_ context.Context) ([]LastFmWeek, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.weeklyCalls++
+	if f.weeksErr != nil {
+		return nil, f.weeksErr
+	}
+	return append([]LastFmWeek{}, f.weeks...), nil
+}
+
+func (f *fakeTrackSource) GetWeeklyTrackChart(
+	_ context.Context, from, to int64,
+) ([]LastFmTrack, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.weeklyChartCalls++
+	if err := f.weeklyChartErr[from]; err != nil {
+		return nil, err
+	}
+	return append([]LastFmTrack{}, f.weeklyCharts[from]...), nil
+}
+
+func (f *fakeTrackSource) GetUserTopArtists(
+	_ context.Context, period string, _ int,
+) ([]LastFmArtist, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.topArtistCalls++
+	f.topArtistPeriods = append(f.topArtistPeriods, period)
+	if err := f.topArtistsErr[period]; err != nil {
+		return nil, err
+	}
+	return append([]LastFmArtist{}, f.topArtists[period]...), nil
 }
 
 func (f *fakeTrackSource) GetTopTracks(_ context.Context, period string, limit int) ([]LastFmTrack, error) {
@@ -329,6 +382,10 @@ func connectedSource(recent []LastFmTrack) *fakeTrackSource {
 		artistTopTagsErr:   map[string]error{},
 		tagTopTracks:       map[string][]LastFmTrack{},
 		tagTopTracksErr:    map[string]error{},
+		weeklyCharts:       map[int64][]LastFmTrack{},
+		weeklyChartErr:     map[int64]error{},
+		topArtists:         map[string][]LastFmArtist{},
+		topArtistsErr:      map[string]error{},
 	}
 }
 

@@ -1,6 +1,6 @@
 # 最终修复：预取死锁 + seek 边界二分
 
-> 状态：待开工
+> 状态：✅ 已完成（demand 预取：解码位置距写入边界 <2 MiB 时抬水位、>4 MiB 后恢复；~~字节 seek~~ 已由 `seek-metadata-duration.md` 改为「补数据 + 重开解码器 + 时间戳 seek」。测试：`go test -tags ffmpeg_cache_io ./internal/infra/audio/`、`go test ./internal/app/stream/ ./internal/app/player/`）
 > 现象：明明有缓存，拖动后仍无声 / 停在 0s 也无法恢复
 > 关联：`cache-file-decoder.md`、`fix-cache-seek-eof.md`、`diagnose-seek-silence.md`、`bounded-prefetch.md`
 

@@ -19,8 +19,7 @@ func NewStreamCacheRepository(db *DB) domain.StreamCacheRepository {
 
 const streamCacheColumns = `cache_key, provider, external_id, title, title_key,
 	artist, artist_key, artists, album, duration_ms, quality, audio_path,
-	total_bytes, received_bytes, complete, playback_progress, pending_promote,
-	promoted, discard_pending, created_at, last_used`
+	total_bytes, received_bytes, complete, playback_progress, created_at, last_used`
 
 // Upsert writes the whole row. created_at is preserved on conflict so a replay
 // cannot rewrite the entry's age.
@@ -30,7 +29,7 @@ func (r *streamCacheRepository) Upsert(ctx context.Context, entry *domain.Stream
 	}
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO stream_cache (`+streamCacheColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(cache_key) DO UPDATE SET
 		   provider = excluded.provider,
 		   external_id = excluded.external_id,
@@ -47,15 +46,11 @@ func (r *streamCacheRepository) Upsert(ctx context.Context, entry *domain.Stream
 		   received_bytes = excluded.received_bytes,
 		   complete = excluded.complete,
 		   playback_progress = excluded.playback_progress,
-		   pending_promote = excluded.pending_promote,
-		   promoted = excluded.promoted,
-		   discard_pending = excluded.discard_pending,
 		   last_used = excluded.last_used`,
 		entry.CacheKey, entry.Provider, entry.ExternalID, entry.Title, entry.TitleKey,
 		entry.Artist, entry.ArtistKey, entry.Artists, entry.Album, entry.DurationMs,
 		entry.Quality, entry.AudioPath, entry.TotalBytes, entry.ReceivedBytes,
-		entry.Complete, entry.PlaybackProgress, entry.PendingPromote, entry.Promoted,
-		entry.DiscardPending, entry.CreatedAt, entry.LastUsed,
+		entry.Complete, entry.PlaybackProgress, entry.CreatedAt, entry.LastUsed,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to upsert stream cache entry %s: %w", entry.CacheKey, err)
@@ -142,67 +137,6 @@ func (r *streamCacheRepository) UpdateComplete(ctx context.Context, cacheKey str
 		return fmt.Errorf("failed to update stream cache bytes %s: %w", cacheKey, err)
 	}
 	return nil
-}
-
-func (r *streamCacheRepository) SetPendingPromote(ctx context.Context, cacheKey string, pending bool) error {
-	if _, err := r.db.ExecContext(ctx,
-		`UPDATE stream_cache SET pending_promote = ? WHERE cache_key = ?`,
-		pending, cacheKey,
-	); err != nil {
-		return fmt.Errorf("failed to set stream cache promotion flag %s: %w", cacheKey, err)
-	}
-	return nil
-}
-
-// SetPromoted records that the entry's audio now lives in the library. The row
-// is kept until the cache file is cleaned up; a promoted entry is never
-// completed again.
-func (r *streamCacheRepository) SetPromoted(ctx context.Context, cacheKey string, promoted bool) error {
-	if _, err := r.db.ExecContext(ctx,
-		`UPDATE stream_cache SET promoted = ? WHERE cache_key = ?`,
-		promoted, cacheKey,
-	); err != nil {
-		return fmt.Errorf("failed to set stream cache promoted flag %s: %w", cacheKey, err)
-	}
-	return nil
-}
-
-// ListPendingPromote returns every entry the promotion worker must look at,
-// oldest request first so a backlog drains in order.
-func (r *streamCacheRepository) ListPendingPromote(ctx context.Context) ([]*domain.StreamCacheEntry, error) {
-	var entries []*domain.StreamCacheEntry
-	if err := r.db.SelectContext(ctx, &entries,
-		`SELECT `+streamCacheColumns+` FROM stream_cache
-		 WHERE pending_promote = 1
-		 ORDER BY last_used ASC`,
-	); err != nil {
-		return nil, fmt.Errorf("failed to list pending promotions: %w", err)
-	}
-	return entries, nil
-}
-
-// SetDiscardPending flags a cache for deletion once it goes idle.
-func (r *streamCacheRepository) SetDiscardPending(ctx context.Context, cacheKey string, pending bool) error {
-	if _, err := r.db.ExecContext(ctx,
-		`UPDATE stream_cache SET discard_pending = ? WHERE cache_key = ?`,
-		pending, cacheKey,
-	); err != nil {
-		return fmt.Errorf("failed to set stream cache discard flag %s: %w", cacheKey, err)
-	}
-	return nil
-}
-
-// ListPendingDiscard returns every entry whose cache must be deleted.
-func (r *streamCacheRepository) ListPendingDiscard(ctx context.Context) ([]*domain.StreamCacheEntry, error) {
-	var entries []*domain.StreamCacheEntry
-	if err := r.db.SelectContext(ctx, &entries,
-		`SELECT `+streamCacheColumns+` FROM stream_cache
-		 WHERE discard_pending = 1
-		 ORDER BY last_used ASC`,
-	); err != nil {
-		return nil, fmt.Errorf("failed to list pending discards: %w", err)
-	}
-	return entries, nil
 }
 
 func (r *streamCacheRepository) Delete(ctx context.Context, cacheKey string) error {

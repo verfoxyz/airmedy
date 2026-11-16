@@ -67,6 +67,14 @@ func (p *MiniAudioPlayer) Close() {
 	if p.np != nil {
 		p.np.close()
 	}
+	if p.ptr == nil {
+		return
+	}
+	// Destroy cancels a decoder blocked in the cache AVIO read, then tears down
+	// the sound, EQ nodes and engine. Without it an exit during a failed stream
+	// waits for that read's 30s timeout.
+	C.ma_player_destroy((*C.MaPlayer)(p.ptr))
+	p.ptr = nil
 }
 
 func (p *MiniAudioPlayer) Play() error {
@@ -134,6 +142,22 @@ func (p *MiniAudioPlayer) SetMuted(muted bool) error {
 }
 
 func (p *MiniAudioPlayer) Load(track *domain.TrackDTO) error {
+	// Cache mode: the decoder reads the growing cache file through a blocking
+	// AVIO, so FFmpeg never performs network I/O or re-probes an HTTP URL.
+	if track.StreamCachePath != "" {
+		cPath := C.CString(track.StreamCachePath)
+		defer C.free(unsafe.Pointer(cPath))
+		if rc := C.ma_player_load_cache(
+			(*C.MaPlayer)(p.ptr), cPath, C.int64_t(track.StreamTotalBytes),
+		); rc != 0 {
+			return fmt.Errorf("ma_player_load_cache failed: %d (path: %s)", rc, track.StreamCachePath)
+		}
+		p.status.TrackID = track.ID
+		p.status.Duration = float64(C.ma_player_get_length((*C.MaPlayer)(p.ptr)))
+		p.status.Position = 0
+		return nil
+	}
+
 	cPath := C.CString(track.Path)
 	defer C.free(unsafe.Pointer(cPath))
 
@@ -156,6 +180,43 @@ func (p *MiniAudioPlayer) Unload() error {
 	p.status.Duration = 0
 	p.status.Position = 0
 	return nil
+}
+
+// MarkStreamComplete tells the cache-mode decoder that a download with no
+// announced length has finished; its next read at the file edge becomes EOF.
+func (p *MiniAudioPlayer) MarkStreamComplete() {
+	if p.ptr == nil {
+		return
+	}
+	C.ma_player_mark_stream_complete((*C.MaPlayer)(p.ptr))
+}
+
+// GetDiagnostics snapshots the decoder/output counters for the seek-silence
+// investigation. Cheap enough to call once per seek.
+func (p *MiniAudioPlayer) GetDiagnostics() domain.PlayerDiagnostics {
+	if p.ptr == nil {
+		return domain.PlayerDiagnostics{}
+	}
+	var diag C.MaPlayerDiag
+	C.ma_player_get_diag((*C.MaPlayer)(p.ptr), &diag)
+	return domain.PlayerDiagnostics{
+		Reads:         int64(diag.reads),
+		Frames:        int64(diag.frames),
+		EmptyReads:    int64(diag.empty_reads),
+		AVIOWaits:     int64(diag.avio_waits),
+		AVIOWaitMS:    int64(diag.avio_wait_ms),
+		FilePos:       int64(diag.file_pos),
+		FileSize:      int64(diag.file_size),
+		ExpectedSize:  int64(diag.expected_size),
+		CursorSeconds: float64(diag.cursor_seconds),
+		SoundVolume:   float64(diag.sound_volume),
+		EngineVolume:  float64(diag.engine_volume),
+		Loaded:        diag.loaded != 0,
+		SeekRequested: float64(diag.seek_requested),
+		SeekReceived:  int64(diag.seek_received),
+		SeekTotal:     int64(diag.seek_total),
+		SeekOK:        diag.seek_ok != 0,
+	}
 }
 
 func (p *MiniAudioPlayer) GetStatus() domain.PlayerStatus {

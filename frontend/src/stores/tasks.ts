@@ -6,29 +6,58 @@ import type { TaskRun } from '../../bindings/airmedy/internal/domain/models'
 import type { DownloadJobState, DownloadJobView } from './download'
 
 /**
- * One row of the tasks page: a download or a promotion, already normalised by
- * the backend into TaskRun. It keeps the DownloadJobView shape so the page can
- * reuse the queue row's visuals; the fields a promotion does not have (bytes,
- * attempts) stay zero.
+ * One row of the tasks page: a media request or a stream-cache session, already
+ * normalised by the backend into TaskRun. It keeps the DownloadJobView shape so
+ * the page can reuse the queue row's visuals; the fields a request or cache
+ * session does not have (bytes, attempts) stay zero.
  */
 export interface TaskRunView extends DownloadJobView {
-  kind: 'download' | 'promote'
+  kind: 'request' | 'cache'
+  /** MediaRequestPhase* while the request runs; empty otherwise. */
+  phase: string
   createdAt: string
+  /** Stable media request key; survives the merge that replaces trackId. */
+  requestId: string
+  provider: string
+  externalId: string
 }
 
 export type TaskTab = 'all' | 'active' | 'done' | 'failed'
 
-const TAB_STATE: Record<TaskTab, (state: DownloadJobState) => boolean> = {
-  all: () => true,
-  active: state => state === 'active',
-  done: state => state === 'done',
-  failed: state => state === 'failed' || state === 'canceled',
+/**
+ * A cache session canceled by a track switch, shutdown or user stop is history,
+ * not a failure (nothing went wrong), so it belongs to "done". A canceled
+ * download request still needs the user's attention and stays in "failed".
+ */
+export function taskInTab(task: TaskRunView, tab: TaskTab): boolean {
+  switch (tab) {
+    case 'all':
+      return true
+    case 'active':
+      return task.state === 'active'
+    case 'done':
+      return task.state === 'done' || (task.kind === 'cache' && task.state === 'canceled')
+    case 'failed':
+      return task.state === 'failed' || (task.kind !== 'cache' && task.state === 'canceled')
+  }
+}
+
+const TASK_KINDS: TaskRunView['kind'][] = ['request', 'cache']
+
+function taskKind(kind: string | undefined): TaskRunView['kind'] {
+  return TASK_KINDS.includes(kind as TaskRunView['kind'])
+    ? (kind as TaskRunView['kind'])
+    : 'request'
 }
 
 function fromRun(run: TaskRun): TaskRunView {
+  const kind = taskKind(run.kind)
   return {
-    jobId: run.id,
-    trackId: run.track_id ?? '',
+    // A request's stable key is its request id: a merge replaces track_id, and
+    // keying by it would leave the old row behind beside the new one.
+    jobId: run.request_id || run.id,
+    // Request rows never show a bare track id; the snapshot/title is the label.
+    trackId: kind === 'cache' ? (run.track_id ?? '') : '',
     playlistId: '',
     state: (run.state || 'active') as DownloadJobState,
     bytesDone: 0,
@@ -40,8 +69,12 @@ function fromRun(run: TaskRun): TaskRunView {
     maxAttempts: 0,
     title: run.title ?? '',
     artist: run.artist ?? '',
-    kind: run.kind === 'promote' ? 'promote' : 'download',
+    kind,
+    phase: run.phase ?? '',
     createdAt: run.created_at ?? '',
+    requestId: run.request_id ?? '',
+    provider: run.provider ?? '',
+    externalId: run.external_id ?? '',
   }
 }
 
@@ -52,9 +85,9 @@ export const useTasksStore = defineStore('tasks', () => {
 
   const byTab = computed<Record<TaskTab, TaskRunView[]>>(() => ({
     all: tasks.value,
-    active: tasks.value.filter(task => TAB_STATE.active(task.state)),
-    done: tasks.value.filter(task => TAB_STATE.done(task.state)),
-    failed: tasks.value.filter(task => TAB_STATE.failed(task.state)),
+    active: tasks.value.filter(task => taskInTab(task, 'active')),
+    done: tasks.value.filter(task => taskInTab(task, 'done')),
+    failed: tasks.value.filter(task => taskInTab(task, 'failed')),
   }))
 
   const counts = computed(() => ({
@@ -64,7 +97,7 @@ export const useTasksStore = defineStore('tasks', () => {
     failed: byTab.value.failed.length,
   }))
 
-  /** hydrate loads both tables merged; a second call while one is in flight joins it. */
+  /** hydrate loads requests and cache sessions; a second call while one is in flight joins it. */
   async function hydrate(): Promise<void> {
     if (_hydrating) return _hydrating
     _hydrating = (async () => {
@@ -88,13 +121,13 @@ export const useTasksStore = defineStore('tasks', () => {
     await hydrate()
   }
 
-  async function cancel(jobId: string): Promise<void> {
-    await DownloadService.CancelDownload(jobId)
+  async function cancel(taskId: string): Promise<void> {
+    await DownloadService.CancelTask(taskId)
     await hydrate()
   }
 
-  async function retry(jobId: string): Promise<void> {
-    await DownloadService.RetryDownload(jobId)
+  async function retry(taskId: string): Promise<void> {
+    await DownloadService.RetryTask(taskId)
     await hydrate()
   }
 

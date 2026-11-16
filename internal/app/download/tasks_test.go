@@ -2,7 +2,6 @@ package download_test
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -12,169 +11,179 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestListTasks_MergesDownloadsAndPromotionsNewestFirst(t *testing.T) {
+// seedMediaRequest inserts one request row in the given state. Requests are the
+// tasks page's rows, so the fixtures create them directly instead of driving the
+// worker.
+func seedMediaRequest(
+	t *testing.T, h *harness, id, provider, externalID, trackID, state string,
+) *domain.MediaRequest {
+	t.Helper()
+	ctx := context.Background()
+	request := &domain.MediaRequest{
+		ID:         id,
+		Provider:   provider,
+		ExternalID: externalID,
+		TrackID:    trackID,
+		Desired:    domain.MediaRequestDesiredPromote,
+		State:      domain.MediaRequestStateWanted,
+		CreatedAt:  time.Now().Add(-time.Minute),
+		UpdatedAt:  time.Now().Add(-time.Minute),
+	}
+	require.NoError(t, h.requests.Ensure(ctx, request))
+	switch state {
+	case domain.MediaRequestStateRunning:
+		require.NoError(t, h.requests.MarkRunning(ctx, id, domain.MediaRequestPhaseDownloading, trackID, time.Now()))
+	case domain.MediaRequestStateDone:
+		require.NoError(t, h.requests.MarkDone(ctx, id, trackID, time.Now()))
+	case domain.MediaRequestStateFailed:
+		require.NoError(t, h.requests.MarkFailed(ctx, id, "403 forbidden", 1, nil, time.Now()))
+	case domain.MediaRequestStateCanceled:
+		require.NoError(t, h.requests.MarkCanceled(ctx, id, time.Now()))
+	}
+	return request
+}
+
+func TestListTasks_ListsOneRowPerRequestNewestFirst(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
-	downloadTrack := h.seedRemote(t, "dl-done")
-	seedJob(t, h, "job-done", downloadTrack.ID, domain.DownloadStateActive)
-	require.NoError(t, h.jobs.MarkDone(ctx, "job-done", "/music/晴天.mp3"))
-
-	taskID, err := h.promotions.EnsureQueued(ctx, &domain.PromotionTask{
-		TrackID: "remote-promoted", Provider: "wy", ExternalID: "promoted",
-		Title: "提升曲", Artist: "歌手", Quality: domain.Quality320k,
-	})
-	require.NoError(t, err)
-	// A later finish time makes the order deterministic regardless of clock
-	// granularity between the two tables.
-	require.NoError(t, h.promotions.MarkFinished(ctx, taskID, domain.PromotionStateFailed,
-		"disk full", time.Now().Add(time.Minute)))
+	doneTrack := h.seedRemote(t, "request-done")
+	seedMediaRequest(t, h, "request-done", "wy", "request-done", doneTrack.ID, domain.MediaRequestStateDone)
+	failedTrack := h.seedRemote(t, "request-failed")
+	seedMediaRequest(t, h, "request-failed", "wy", "request-failed", failedTrack.ID, domain.MediaRequestStateFailed)
 
 	runs, err := h.svc.ListTasks(ctx)
 	require.NoError(t, err)
 	require.Len(t, runs, 2)
 
-	promotion := runs[0]
-	assert.Equal(t, domain.TaskKindPromote, promotion.Kind)
-	assert.Equal(t, domain.TaskStateFailed, promotion.State)
-	assert.Equal(t, "提升曲", promotion.Title)
-	assert.Equal(t, "歌手", promotion.Artist)
-	assert.Equal(t, "disk full", promotion.Error)
+	byID := map[string]domain.TaskRun{}
+	for _, run := range runs {
+		byID[run.ID] = run
+	}
 
-	download := runs[1]
-	assert.Equal(t, domain.TaskKindDownload, download.Kind)
-	assert.Equal(t, domain.TaskStateDone, download.State)
-	assert.Equal(t, "晴天", download.Title)
+	failed := byID["request-failed"]
+	assert.Equal(t, domain.TaskKindRequest, failed.Kind)
+	assert.Equal(t, domain.TaskStateFailed, failed.State)
+	assert.Equal(t, "晴天", failed.Title)
+	assert.Equal(t, "403 forbidden", failed.Error)
+
+	done := byID["request-done"]
+	assert.Equal(t, domain.TaskKindRequest, done.Kind)
+	assert.Equal(t, domain.TaskStateDone, done.State)
+	assert.Equal(t, "晴天", done.Title)
 }
 
-func TestClearTaskHistory_KeepsActiveWork(t *testing.T) {
+func TestListTasks_UsesSnapshotWhenTheTrackRowIsGone(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
-	activeTrack := h.seedRemote(t, "dl-active")
-	seedJob(t, h, "job-active", activeTrack.ID, domain.DownloadStateQueued)
+	// A promotion merged the remote row into a local one and deleted it. The
+	// request still points at the deleted id, but the snapshot keeps its label.
+	now := time.Now().Add(-time.Minute)
+	request := &domain.MediaRequest{
+		ID:         "request-merged",
+		Provider:   "wy",
+		ExternalID: "42",
+		TrackID:    "deleted-track-id",
+		Title:      "All Eyes On Me",
+		Artist:     "Artist",
+		Desired:    domain.MediaRequestDesiredPromote,
+		State:      domain.MediaRequestStateDone,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		FinishedAt: &now,
+	}
+	require.NoError(t, h.requests.Ensure(ctx, request))
 
-	doneTrack := h.seedRemote(t, "dl-history-done")
-	seedJob(t, h, "job-history-done", doneTrack.ID, domain.DownloadStateActive)
-	require.NoError(t, h.jobs.MarkDone(ctx, "job-history-done", "/music/done.mp3"))
-
-	failedTrack := h.seedRemote(t, "dl-history-failed")
-	seedJob(t, h, "job-history-failed", failedTrack.ID, domain.DownloadStateActive)
-	require.NoError(t, h.jobs.MarkFailed(ctx, "job-history-failed", "403", nil))
-
-	promotionDone, err := h.promotions.EnsureQueued(ctx, &domain.PromotionTask{
-		Provider: "wy", ExternalID: "promo-done",
-	})
+	runs, err := h.svc.ListTasks(ctx)
 	require.NoError(t, err)
-	require.NoError(t, h.promotions.MarkFinished(ctx, promotionDone, domain.PromotionStateDone, "", time.Now()))
-	promotionActive, err := h.promotions.EnsureQueued(ctx, &domain.PromotionTask{
-		Provider: "wy", ExternalID: "promo-active",
-	})
+	run := findRun(t, runs, "request-merged")
+
+	assert.Equal(t, "All Eyes On Me", run.Title)
+	assert.Equal(t, "Artist", run.Artist)
+	assert.NotEqual(t, run.TrackID, run.Title)
+	assert.Equal(t, "request-merged", run.RequestID)
+	assert.Equal(t, "wy", run.Provider)
+	assert.Equal(t, "42", run.ExternalID)
+}
+
+func findRun(t *testing.T, runs []domain.TaskRun, id string) domain.TaskRun {
+	t.Helper()
+	for _, run := range runs {
+		if run.ID == id {
+			return run
+		}
+	}
+	t.Fatalf("task run %q not found in %+v", id, runs)
+	return domain.TaskRun{}
+}
+
+func TestListTasks_RepeatedSavesKeepOneRow(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	track := h.seedRemote(t, "repeat")
+	request := seedMediaRequest(t, h, "request-repeat", "wy", "repeat", track.ID, domain.MediaRequestStateWanted)
+
+	// The unique key is the identity: re-saving updates the row, never appends.
+	require.NoError(t, h.requests.UpdateIntent(
+		ctx, request.ID, domain.MediaRequestDesiredDownload, domain.QualityFlac, track.ID, false, time.Now(),
+	))
+
+	runs, err := h.svc.ListTasks(ctx)
 	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	assert.Equal(t, domain.TaskKindRequest, runs[0].Kind)
+	assert.Equal(t, domain.TaskStateActive, runs[0].State)
+	assert.Equal(t, domain.QualityFlac, runs[0].Quality)
+}
+
+func TestListTasks_MapsEveryRequestState(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	track := h.seedRemote(t, "states")
+	seedMediaRequest(t, h, "wanted", "wy", "wanted", track.ID, domain.MediaRequestStateWanted)
+	seedMediaRequest(t, h, "running", "wy", "running", track.ID, domain.MediaRequestStateRunning)
+	seedMediaRequest(t, h, "canceled", "wy", "canceled", track.ID, domain.MediaRequestStateCanceled)
+
+	runs, err := h.svc.ListTasks(ctx)
+	require.NoError(t, err)
+	states := map[string]string{}
+	for _, run := range runs {
+		states[run.ID] = run.State
+	}
+	assert.Equal(t, domain.TaskStateActive, states["wanted"])
+	assert.Equal(t, domain.TaskStateActive, states["running"])
+	assert.Equal(t, domain.TaskStateCanceled, states["canceled"])
+}
+
+func TestClearTaskHistory_KeepsActiveRequests(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	activeTrack := h.seedRemote(t, "request-active")
+	seedMediaRequest(t, h, "request-active", "wy", "request-active", activeTrack.ID, domain.MediaRequestStateRunning)
+
+	doneTrack := h.seedRemote(t, "request-history-done")
+	seedMediaRequest(t, h, "request-history-done", "wy", "request-history-done", doneTrack.ID, domain.MediaRequestStateDone)
+
+	failedTrack := h.seedRemote(t, "request-history-failed")
+	seedMediaRequest(t, h, "request-history-failed", "wy", "request-history-failed", failedTrack.ID, domain.MediaRequestStateFailed)
 
 	require.NoError(t, h.svc.ClearTaskHistory(ctx))
 
 	runs, err := h.svc.ListTasks(ctx)
 	require.NoError(t, err)
-	require.Len(t, runs, 2, "only the active download and promotion remain")
-
-	ids := []string{runs[0].ID, runs[1].ID}
-	assert.ElementsMatch(t, []string{"job-active", promotionActive}, ids)
-	for _, run := range runs {
-		assert.Equal(t, domain.TaskStateActive, run.State)
-	}
+	require.Len(t, runs, 1, "only the active request remains")
+	assert.Equal(t, "request-active", runs[0].ID)
+	assert.Equal(t, domain.TaskStateActive, runs[0].State)
 }
 
-func TestTrimFinished_KeepsTheNewestRows(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-	track := h.seedRemote(t, "trim")
-
-	for i := 0; i < 502; i++ {
-		require.NoError(t, h.jobs.Create(ctx, &domain.DownloadJob{
-			ID:      fmt.Sprintf("trim-%d", i),
-			TrackID: track.ID,
-			State:   domain.DownloadStateDone,
-		}))
-	}
-	require.NoError(t, h.jobs.Create(ctx, &domain.DownloadJob{
-		ID: "trim-active", TrackID: track.ID, State: domain.DownloadStateQueued,
-	}))
-
-	deleted, err := h.jobs.TrimFinished(ctx, 500)
-	require.NoError(t, err)
-	assert.EqualValues(t, 2, deleted)
-
-	var remaining int
-	require.NoError(t, h.db.Get(&remaining, `SELECT COUNT(*) FROM download_jobs WHERE state = ?`, domain.DownloadStateDone))
-	assert.Equal(t, 500, remaining)
-
-	deleted, err = h.jobs.TrimFinished(ctx, 0)
-	require.NoError(t, err)
-	assert.EqualValues(t, 500, deleted)
-
-	var active int
-	require.NoError(t, h.db.Get(&active, `SELECT COUNT(*) FROM download_jobs WHERE id = 'trim-active'`))
-	assert.Equal(t, 1, active, "active work is never trimmed")
-}
-
-// TestListTasks_DerivesTitleFromTheFinishedFilePath: the merge deletes the
-// remote row the job pointed at, so the file name is the only readable record.
-func TestListTasks_DerivesTitleFromTheFinishedFilePath(t *testing.T) {
-	tests := []struct {
-		name        string
-		namingOrder string
-		targetPath  string
-		title       string
-		artist      string
-	}{
-		{
-			name:       "title-artist",
-			targetPath: "/music/QuomodocunquizE - かめりあ.flac",
-			title:      "QuomodocunquizE",
-			artist:     "かめりあ",
-		},
-		{
-			name:        "artist-title",
-			namingOrder: domain.NamingOrderArtistTitle,
-			targetPath:  "/music/かめりあ - QuomodocunquizE.flac",
-			title:       "QuomodocunquizE",
-			artist:      "かめりあ",
-		},
-		{
-			name:       "no separator",
-			targetPath: "/music/QuomodocunquizE.flac",
-			title:      "QuomodocunquizE",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			h := newHarness(t)
-			h.settings = stubSettings{dir: h.dir, namingOrder: tt.namingOrder}
-			h.rebuild()
-			ctx := context.Background()
-
-			track := h.seedRemote(t, "remote-path")
-			seedJob(t, h, "job-path", track.ID, domain.DownloadStateActive)
-			require.NoError(t, h.jobs.MarkDone(ctx, "job-path", tt.targetPath))
-			require.NoError(t, h.tracks.Delete(ctx, track.ID))
-
-			runs, err := h.svc.ListTasks(ctx)
-			require.NoError(t, err)
-			require.Len(t, runs, 1)
-			assert.Equal(t, tt.title, runs[0].Title)
-			assert.Equal(t, tt.artist, runs[0].Artist)
-		})
-	}
-}
-
-func TestListTasks_FallsBackToTheTrackIDWhenNothingElseExists(t *testing.T) {
+func TestListTasks_FallsBackToTheTrackIDWhenTheRowIsGone(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
-	track := h.seedRemote(t, "remote-no-title")
-	seedJob(t, h, "job-no-title", track.ID, domain.DownloadStateActive)
-	require.NoError(t, h.jobs.MarkDone(ctx, "job-no-title", ""))
+	track := h.seedRemote(t, "request-no-title")
+	seedMediaRequest(t, h, "request-no-title", "wy", "request-no-title", track.ID, domain.MediaRequestStateDone)
 	require.NoError(t, h.tracks.Delete(ctx, track.ID))
 
 	runs, err := h.svc.ListTasks(ctx)
@@ -183,6 +192,82 @@ func TestListTasks_FallsBackToTheTrackIDWhenNothingElseExists(t *testing.T) {
 	assert.Equal(t, track.ID, runs[0].Title)
 	assert.Empty(t, runs[0].Artist)
 	assert.Equal(t, domain.TaskStateDone, runs[0].State)
+}
+
+// TestListTasks_MergesStreamCacheSessions: caching stays its own kind on the
+// tasks page, ordered by the same finish-or-start rule as the requests.
+func TestListTasks_MergesStreamCacheSessions(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	started := time.Now()
+
+	require.NoError(t, h.cacheTasks.Start(ctx, &domain.StreamCacheTask{
+		ID: "cache-done", Provider: "wy", ExternalID: "done", Title: "缓存完成",
+		Artist: "歌手", Quality: domain.Quality320k, StartedAt: started,
+	}))
+	require.NoError(t, h.cacheTasks.Finish(ctx, "cache-done", 2048, 2048, started.Add(time.Minute)))
+	require.NoError(t, h.cacheTasks.Start(ctx, &domain.StreamCacheTask{
+		ID: "cache-active", Provider: "wy", ExternalID: "active", Title: "缓存中",
+		Artist: "歌手", StartedAt: started.Add(2 * time.Minute),
+	}))
+
+	runs, err := h.svc.ListTasks(ctx)
+	require.NoError(t, err)
+	require.Len(t, runs, 2)
+
+	assert.Equal(t, domain.TaskKindCache, runs[0].Kind)
+	assert.Equal(t, domain.TaskStateActive, runs[0].State)
+	assert.Equal(t, "缓存中", runs[0].Title)
+
+	assert.Equal(t, domain.TaskKindCache, runs[1].Kind)
+	assert.Equal(t, domain.TaskStateDone, runs[1].State)
+	assert.Equal(t, "缓存完成", runs[1].Title)
+	assert.Equal(t, "歌手", runs[1].Artist)
+}
+
+// TestListTasks_MapsACanceledCacheSessionToCanceled: an intentional stop (track
+// switch, shutdown) is history, not an error, so ListTasks must not report it as
+// failed.
+func TestListTasks_MapsACanceledCacheSessionToCanceled(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	started := time.Now()
+
+	require.NoError(t, h.cacheTasks.Start(ctx, &domain.StreamCacheTask{
+		ID: "cache-canceled", Provider: "wy", ExternalID: "42", Title: "切歌中断",
+		Artist: "歌手", Quality: domain.Quality320k, StartedAt: started,
+	}))
+	require.NoError(t, h.cacheTasks.Cancel(ctx, "cache-canceled", 4096, 1024, started.Add(time.Minute)))
+
+	runs, err := h.svc.ListTasks(ctx)
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	assert.Equal(t, domain.TaskKindCache, runs[0].Kind)
+	assert.Equal(t, domain.TaskStateCanceled, runs[0].State)
+	assert.Empty(t, runs[0].Error)
+}
+
+func TestClearTaskHistory_KeepsActiveStreamCacheSessions(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	started := time.Now()
+
+	require.NoError(t, h.cacheTasks.Start(ctx, &domain.StreamCacheTask{
+		ID: "cache-done", Provider: "wy", ExternalID: "done", Title: "缓存完成", StartedAt: started,
+	}))
+	require.NoError(t, h.cacheTasks.Finish(ctx, "cache-done", 1, 1, started.Add(time.Minute)))
+	require.NoError(t, h.cacheTasks.Start(ctx, &domain.StreamCacheTask{
+		ID: "cache-active", Provider: "wy", ExternalID: "active", Title: "缓存中", StartedAt: started,
+	}))
+
+	require.NoError(t, h.svc.ClearTaskHistory(ctx))
+
+	runs, err := h.svc.ListTasks(ctx)
+	require.NoError(t, err)
+	require.Len(t, runs, 1, "only the in-flight cache session remains")
+	assert.Equal(t, "cache-active", runs[0].ID)
+	assert.Equal(t, domain.TaskKindCache, runs[0].Kind)
+	assert.Equal(t, domain.TaskStateActive, runs[0].State)
 }
 
 func TestDownloadCompletionEmitsTaskUpdated(t *testing.T) {

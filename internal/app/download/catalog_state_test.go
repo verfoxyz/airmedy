@@ -41,11 +41,10 @@ func TestCatalogRowStates_ReportsTheThreeKnownStates(t *testing.T) {
 	}))
 
 	active := h.seedRemote(t, "active")
-	seedJob(t, h, "job-active", active.ID, domain.DownloadStateQueued)
+	seedMediaRequest(t, h, "request-active", "wy", active.ExternalID, active.ID, domain.MediaRequestStateWanted)
 
 	failed := h.seedRemote(t, "failed")
-	seedJob(t, h, "job-failed", failed.ID, domain.DownloadStateActive)
-	require.NoError(t, h.jobs.MarkFailed(ctx, "job-failed", "403 forbidden", nil))
+	seedMediaRequest(t, h, "request-failed", "wy", failed.ExternalID, failed.ID, domain.MediaRequestStateFailed)
 
 	states, err := h.svc.CatalogRowStates(ctx, []domain.CatalogIdentity{
 		{Provider: "wy", ExternalID: "ready"},
@@ -130,73 +129,68 @@ func TestCatalogLocalMatches_AllowsAPrimaryArtistOnlyQuery(t *testing.T) {
 	assert.NotContains(t, matches, unrelated, "an unrelated artist must not match")
 }
 
-// TestCatalogRowStates_RetryReadsAsDownloading: a retryable failure puts the job
-// back in the queue, and the row must show progress rather than a retry button.
+// TestCatalogRowStates_RetryReadsAsDownloading: a retryable failure keeps the
+// request waiting for its next attempt, and the row shows progress rather than a
+// retry button.
 func TestCatalogRowStates_RetryReadsAsDownloading(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
 	track := h.seedRemote(t, "retrying")
-	seedJob(t, h, "job-retry", track.ID, domain.DownloadStateActive)
+	require.NoError(t, h.requests.Ensure(ctx, &domain.MediaRequest{
+		ID: "request-retry", Provider: "wy", ExternalID: track.ExternalID, TrackID: track.ID,
+		Desired: domain.MediaRequestDesiredPromote,
+		State:   domain.MediaRequestStateWanted, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}))
 	retryAt := time.Now().Add(time.Minute)
-	require.NoError(t, h.jobs.MarkFailed(ctx, "job-retry", "429 too many requests", &retryAt))
+	require.NoError(t, h.requests.MarkFailed(ctx, "request-retry", "429 too many requests", 1, &retryAt, time.Now()))
 
 	states, err := h.svc.CatalogRowStates(ctx, []domain.CatalogIdentity{{Provider: "wy", ExternalID: "retrying"}})
 	require.NoError(t, err)
 	assert.Equal(t, domain.CatalogRowStateDownloading, states[domain.CatalogIdentity{Provider: "wy", ExternalID: "retrying"}])
 }
 
-// TestCatalogRowStates_RegisteredButIdle: a canceled job leaves a registered
-// row with nothing in flight. It reads as "saved" (metadata only) rather than
-// as a download that never started.
+// TestCatalogRowStates_RegisteredButIdle: a registered row with no request is
+// metadata only. It reads as "saved" rather than as a download that never
+// started.
 func TestCatalogRowStates_RegisteredButIdle(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
 	track := h.seedRemote(t, "idle")
-	seedJob(t, h, "job-idle", track.ID, domain.DownloadStateQueued)
-	require.NoError(t, h.jobs.Cancel(ctx, "job-idle"))
+	_ = track
 
 	states, err := h.svc.CatalogRowStates(ctx, []domain.CatalogIdentity{{Provider: "wy", ExternalID: "idle"}})
 	require.NoError(t, err)
 	assert.Equal(t, domain.CatalogRowStateSaved, states[domain.CatalogIdentity{Provider: "wy", ExternalID: "idle"}])
 }
 
-// TestCatalogRowStates_ActivePromotionReadsAsDownloading: the search row no
-// longer distinguishes a promotion from a download. A queued promotion is a
-// task, so it reports the same state as a queued job.
-func TestCatalogRowStates_ActivePromotionReadsAsDownloading(t *testing.T) {
+// TestCatalogRowStates_ActiveRequestReadsAsDownloading: a request still in
+// flight is the search row's one "task" state regardless of phase.
+func TestCatalogRowStates_ActiveRequestReadsAsDownloading(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
 	track := h.seedRemote(t, "promoting")
-	_, err := h.promotions.EnsureQueued(ctx, &domain.PromotionTask{
-		TrackID: track.ID, Provider: "wy", ExternalID: "promoting",
-	})
-	require.NoError(t, err)
+	seedMediaRequest(t, h, "request-promoting", "wy", track.ExternalID, track.ID, domain.MediaRequestStateRunning)
 
 	states, err := h.svc.CatalogRowStates(ctx, []domain.CatalogIdentity{{Provider: "wy", ExternalID: "promoting"}})
 	require.NoError(t, err)
 	assert.Equal(t, domain.CatalogRowStateDownloading, states[domain.CatalogIdentity{Provider: "wy", ExternalID: "promoting"}])
 }
 
-// TestCatalogRowStates_FinishedPromotionLeavesSaved: history is not work. Once
-// the promotion is done the cache worker has moved the audio (or the merge is
-// about to), and an idle registered row reads as metadata-only.
-func TestCatalogRowStates_FinishedPromotionLeavesSaved(t *testing.T) {
+// TestCatalogRowStates_FinishedRequestReadsInLibrary: a done request whose
+// merge failed still means the audio is in the library.
+func TestCatalogRowStates_FinishedRequestReadsInLibrary(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
 	track := h.seedRemote(t, "promoted")
-	id, err := h.promotions.EnsureQueued(ctx, &domain.PromotionTask{
-		TrackID: track.ID, Provider: "wy", ExternalID: "promoted",
-	})
-	require.NoError(t, err)
-	require.NoError(t, h.promotions.MarkFinished(ctx, id, domain.PromotionStateDone, "", time.Now()))
+	seedMediaRequest(t, h, "request-promoted", "wy", track.ExternalID, track.ID, domain.MediaRequestStateDone)
 
 	states, err := h.svc.CatalogRowStates(ctx, []domain.CatalogIdentity{{Provider: "wy", ExternalID: "promoted"}})
 	require.NoError(t, err)
-	assert.Equal(t, domain.CatalogRowStateSaved, states[domain.CatalogIdentity{Provider: "wy", ExternalID: "promoted"}])
+	assert.Equal(t, domain.CatalogRowStateInLibrary, states[domain.CatalogIdentity{Provider: "wy", ExternalID: "promoted"}])
 }
 
 func TestCatalogRowStates_EmptyPageIsFree(t *testing.T) {
@@ -226,7 +220,7 @@ func TestCatalogRowStates_NormalisesTheProvider(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	track := h.seedRemote(t, "cased")
-	seedJob(t, h, "job-cased", track.ID, domain.DownloadStateQueued)
+	seedMediaRequest(t, h, "request-cased", "wy", track.ExternalID, track.ID, domain.MediaRequestStateWanted)
 
 	states, err := h.svc.CatalogRowStates(ctx, []domain.CatalogIdentity{{Provider: "WY", ExternalID: "cased"}})
 	require.NoError(t, err)

@@ -3,6 +3,7 @@ package lastfm
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,15 +22,26 @@ type RecommendationListSummary struct {
 	MatchingCount int       `json:"matching_count"`
 	TotalDuration int       `json:"total_duration"`
 	CoverURLs     []string  `json:"cover_urls"`
+	WeekFrom      int64     `json:"week_from"`
+	WeekTo        int64     `json:"week_to"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // RecommendationList is one list's rows in Last.fm order.
+//
+// WeekFrom/WeekTo and PrevFrom/NextFrom are only set for the weekly echo list:
+// they drive the detail page's week switch. HasMore tells the discover page
+// whether its candidate pool still has another page.
 type RecommendationList struct {
 	Kind      string         `json:"kind"`
 	Title     string         `json:"title"`
 	Items     []TopTrackItem `json:"items"`
 	UpdatedAt time.Time      `json:"updated_at"`
+	WeekFrom  int64          `json:"week_from"`
+	WeekTo    int64          `json:"week_to"`
+	PrevFrom  int64          `json:"prev_from"`
+	NextFrom  int64          `json:"next_from"`
+	HasMore   bool           `json:"has_more"`
 }
 
 // RecommendationListCollection is the cards page payload. Status is the same
@@ -39,27 +51,44 @@ type RecommendationListCollection struct {
 	Lists  []RecommendationListSummary `json:"lists"`
 }
 
-// recommendationKindOrder is the card order: "for you" above the top tracks.
+// recommendationKindOrder is the card order: discovery, the weekly echo, the
+// "for you" list, then the all-time top tracks.
 func recommendationKindOrder() []string {
-	return []string{domain.LastFmRecommendationSimilar, domain.LastFmRecommendationTopTracks}
+	return []string{
+		domain.LastFmRecommendationDiscover,
+		domain.LastFmRecommendationWeeklyEcho,
+		domain.LastFmRecommendationSimilar,
+		domain.LastFmRecommendationTopTracks,
+	}
 }
 
 // recommendationTitle returns the i18n key the page words. The key is stored
 // with the list, so a list added later only needs an entry here.
 func recommendationTitle(kind string) string {
-	switch kind {
+	switch recommendationBaseKind(kind) {
 	case domain.LastFmRecommendationTopTracks:
 		return "lastfm.top"
 	case domain.LastFmRecommendationSimilar:
 		return "lastfm.similar_tracks"
+	case domain.LastFmRecommendationWeeklyEcho:
+		return "lastfm.weekly_echo"
+	case domain.LastFmRecommendationDiscover:
+		return "lastfm.discover"
 	default:
 		return kind
 	}
 }
 
 func knownRecommendationKind(kind string) bool {
-	return kind == domain.LastFmRecommendationTopTracks ||
-		kind == domain.LastFmRecommendationSimilar
+	switch recommendationBaseKind(kind) {
+	case domain.LastFmRecommendationTopTracks,
+		domain.LastFmRecommendationSimilar,
+		domain.LastFmRecommendationWeeklyEcho,
+		domain.LastFmRecommendationDiscover:
+		return true
+	default:
+		return false
+	}
 }
 
 // recommendationItemsAddedEvent streams rows while the similar list is being
@@ -77,6 +106,21 @@ type RecommendationItemsAdded struct {
 // user refreshes.
 func (r *Recommender) ListRecommendationLists(
 	ctx context.Context,
+) (RecommendationListCollection, error) {
+	return r.listRecommendationLists(ctx, false)
+}
+
+// ListRecommendationListsWithRefresh also checks the discover TTL and whether a
+// new completed week exists. The page's auto-refresh toggle decides whether to
+// pass true; the explicit Refresh methods always rebuild.
+func (r *Recommender) ListRecommendationListsWithRefresh(
+	ctx context.Context, autoRefresh bool,
+) (RecommendationListCollection, error) {
+	return r.listRecommendationLists(ctx, autoRefresh)
+}
+
+func (r *Recommender) listRecommendationLists(
+	ctx context.Context, autoRefresh bool,
 ) (RecommendationListCollection, error) {
 	empty := RecommendationListCollection{Status: StatusOK, Lists: []RecommendationListSummary{}}
 	connected, username, _ := r.client.GetStatus()
@@ -103,11 +147,47 @@ func (r *Recommender) ListRecommendationLists(
 
 	missingTop := !hasRecommendationKind(summaries, domain.LastFmRecommendationTopTracks)
 	missingSimilar := !hasRecommendationKind(summaries, domain.LastFmRecommendationSimilar)
-	if missingTop || missingSimilar {
-		// Build only what is missing; an existing list must survive untouched.
-		if buildErr := r.buildStoredLists(ctx, missingTop, missingSimilar); buildErr != nil {
-			return RecommendationListCollection{Status: StatusOK, Lists: orderSummaries(summaries)}, buildErr
+	discoverSummary, hasDiscover := summaryByBase(summaries, domain.LastFmRecommendationDiscover)
+	wantDiscover := !hasDiscover ||
+		(autoRefresh && r.now().Sub(discoverSummary.UpdatedAt) >= discoverTTL)
+	weeklySummary, hasWeekly := latestWeeklyEchoSummary(summaries)
+	wantWeekly := !hasWeekly || (autoRefresh && r.weeklyEchoAdvanced(ctx, weeklySummary))
+
+	if missingTop || missingSimilar || wantDiscover {
+		tracks, fetchErr := r.client.GetTopTracks(ctx, topTrackPeriod, topTrackLimit)
+		if fetchErr != nil {
+			if missingTop || missingSimilar {
+				return RecommendationListCollection{Status: StatusOK, Lists: orderSummaries(summaries)}, fetchErr
+			}
+			// The existing cards stay usable; only the rebuild is skipped.
+			r.logger.Warn("last.fm recommendations: discovery rebuild failed", "error", fetchErr)
+		} else {
+			if missingTop {
+				if buildErr := r.storeTopList(ctx, tracks); buildErr != nil {
+					return RecommendationListCollection{Status: StatusOK, Lists: orderSummaries(summaries)}, buildErr
+				}
+			}
+			if missingSimilar {
+				if _, buildErr := r.streamSimilarList(ctx, tracks); buildErr != nil {
+					return RecommendationListCollection{Status: StatusOK, Lists: orderSummaries(summaries)}, buildErr
+				}
+			}
+			if wantDiscover {
+				if buildErr := r.buildDiscoverList(ctx, tracks); buildErr != nil {
+					r.logger.Warn("last.fm recommendations: discovery build failed", "error", buildErr)
+				}
+			}
 		}
+	}
+
+	if wantWeekly {
+		// A failed or empty chart list must not hide the other cards.
+		if _, weeklyErr := r.getWeeklyEchoList(ctx, 0); weeklyErr != nil {
+			r.logger.Debug("last.fm weekly echo: build failed", "error", weeklyErr)
+		}
+	}
+
+	if missingTop || missingSimilar || wantDiscover || wantWeekly {
 		summaries, err = store.ListRecommendationLists(ctx)
 		if err != nil {
 			return empty, err
@@ -116,6 +196,18 @@ func (r *Recommender) ListRecommendationLists(
 
 	r.resumeRecommendationMatching(ctx, "")
 	return RecommendationListCollection{Status: StatusOK, Lists: orderSummaries(summaries)}, nil
+}
+
+// summaryByBase finds the stored summary of one base kind.
+func summaryByBase(
+	summaries []domain.RecommendationListSummary, kind string,
+) (domain.RecommendationListSummary, bool) {
+	for _, summary := range summaries {
+		if recommendationBaseKind(summary.Kind) == kind {
+			return summary, true
+		}
+	}
+	return domain.RecommendationListSummary{}, false
 }
 
 // GetRecommendationList returns one persisted list. A missing kind is built once
@@ -133,6 +225,14 @@ func (r *Recommender) GetRecommendationList(
 			Title: recommendationTitle(kind),
 			Items: []TopTrackItem{},
 		}, nil
+	}
+
+	switch recommendationBaseKind(kind) {
+	case domain.LastFmRecommendationWeeklyEcho:
+		from, _ := weeklyEchoFrom(kind)
+		return r.getWeeklyEchoList(ctx, from)
+	case domain.LastFmRecommendationDiscover:
+		return r.discoverList(ctx)
 	}
 
 	store := r.recommendationStoreOrNil()
@@ -192,19 +292,29 @@ func (r *Recommender) RefreshRecommendationList(ctx context.Context, kind string
 		return nil
 	}
 
+	switch recommendationBaseKind(kind) {
+	case domain.LastFmRecommendationDiscover:
+		return r.refreshDiscover(ctx)
+	case domain.LastFmRecommendationWeeklyEcho:
+		from, _ := weeklyEchoFrom(kind)
+		return r.RefreshWeeklyEcho(ctx, from)
+	}
+
 	tracks, err := r.client.GetTopTracks(ctx, topTrackPeriod, topTrackLimit)
 	if err != nil {
 		return err
 	}
-	if kind == domain.LastFmRecommendationTopTracks {
+	if recommendationBaseKind(kind) == domain.LastFmRecommendationTopTracks {
 		return r.storeTopList(ctx, tracks)
 	}
 	_, err = r.streamSimilarList(ctx, tracks)
 	return err
 }
 
-// RefreshAllRecommendationLists rebuilds both lists. The top list is written
-// first; the similar list then streams in while its rows are matched.
+// RefreshAllRecommendationLists rebuilds every list. The top list is written
+// first; the similar list then streams in while its rows are matched. The
+// discovery and weekly rebuilds degrade to a logged failure instead of hiding
+// the lists that did rebuild.
 func (r *Recommender) RefreshAllRecommendationLists(ctx context.Context) error {
 	connected, username, _ := r.client.GetStatus()
 	if !connected || strings.TrimSpace(username) == "" {
@@ -218,8 +328,16 @@ func (r *Recommender) RefreshAllRecommendationLists(ctx context.Context) error {
 	if err := r.storeTopList(ctx, tracks); err != nil {
 		return err
 	}
-	_, err = r.streamSimilarList(ctx, tracks)
-	return err
+	if _, err := r.streamSimilarList(ctx, tracks); err != nil {
+		return err
+	}
+	if err := r.buildDiscoverList(ctx, tracks); err != nil {
+		r.logger.Warn("last.fm recommendations: discovery refresh failed", "error", err)
+	}
+	if err := r.RefreshWeeklyEcho(ctx, 0); err != nil {
+		r.logger.Warn("last.fm weekly echo: refresh failed", "error", err)
+	}
+	return nil
 }
 
 // RefreshRecommendationItem re-runs source matching for one row without asking
@@ -238,6 +356,7 @@ func (r *Recommender) RefreshRecommendationItem(
 	if matchKey == "" {
 		return fmt.Errorf("lastfm recommendations: empty match key")
 	}
+	kind = r.resolveRecommendationKind(ctx, kind)
 	connected, username, _ := r.client.GetStatus()
 	if !connected || strings.TrimSpace(username) == "" {
 		return nil
@@ -440,18 +559,41 @@ func (r *Recommender) startKindMatching(ctx context.Context, kind string, items 
 	if len(items) == 0 {
 		return
 	}
-	collected := recommendationCollection{
-		status:  StatusOK,
-		sources: r.topTrackSources(ctx),
+	connected, username, _ := r.client.GetStatus()
+	if !connected || strings.TrimSpace(username) == "" {
+		return
 	}
-	if kind == domain.LastFmRecommendationTopTracks {
-		collected.topItems = items
-		collected.wantTop = true
-	} else {
-		collected.similarItems = items
-		collected.wantSimilar = true
+	sources := r.topTrackSources(ctx)
+	states := r.seedTopTrackStates(items, sources)
+	r.persistMatchingStates(states)
+	if anyTopStatePending(states) {
+		r.markMatchingActive(kind, true)
+		r.startTopTrackMatching(username, kind, states, sources)
 	}
-	r.startRecommendationMatching(ctx, collected, false)
+}
+
+// resolveRecommendationKind names the stored week when the caller passes the
+// base "weekly_echo" kind: the rows live under "weekly_echo:<from>".
+func (r *Recommender) resolveRecommendationKind(ctx context.Context, kind string) string {
+	if !isWeeklyEchoKind(kind) {
+		return kind
+	}
+	if _, ok := weeklyEchoFrom(kind); ok {
+		return kind
+	}
+	store := r.recommendationStoreOrNil()
+	if store == nil {
+		return kind
+	}
+	summaries, err := store.ListRecommendationLists(ctx)
+	if err != nil {
+		return kind
+	}
+	latest, ok := latestWeeklyEchoSummary(summaries)
+	if !ok {
+		return kind
+	}
+	return latest.Kind
 }
 
 // saveRecommendationList replaces one list's rows.
@@ -460,11 +602,22 @@ func (r *Recommender) saveRecommendationList(ctx context.Context, kind string, i
 	if store == nil {
 		return nil
 	}
+	var weekFrom, weekTo int64
+	if from, ok := weeklyEchoFrom(kind); ok {
+		weekFrom = from
+		for _, item := range items {
+			if item.WeekTo > weekTo {
+				weekTo = item.WeekTo
+			}
+		}
+	}
 	return store.SaveRecommendationList(ctx, &domain.RecommendationList{
 		Kind:      kind,
 		Title:     recommendationTitle(kind),
 		Items:     toDomainRecommendationItems(items),
 		UpdatedAt: r.now().UTC(),
+		WeekFrom:  weekFrom,
+		WeekTo:    weekTo,
 	})
 }
 
@@ -588,13 +741,18 @@ func (r *Recommender) refreshLocalMatch(track *domain.TrackDTO, includeStored bo
 	}
 
 	// Persisted rows of every list, including lists that are not open right now.
+	// Weekly lists are stored per week, so the summaries name every kind.
 	if includeStored {
 		if store := r.recommendationStoreOrNil(); store != nil {
-			for _, kind := range recommendationKindOrder() {
-				list, err := store.GetRecommendationList(context.Background(), kind)
+			storedSummons, err := store.ListRecommendationLists(context.Background())
+			if err != nil {
+				r.logger.Warn("last.fm recommendations: list stored rows", "error", err)
+			}
+			for _, summary := range storedSummons {
+				list, err := store.GetRecommendationList(context.Background(), summary.Kind)
 				if err != nil {
 					r.logger.Warn("last.fm recommendations: refresh stored rows",
-						"kind", kind, "error", err)
+						"kind", summary.Kind, "error", err)
 					continue
 				}
 				if list == nil {
@@ -727,7 +885,14 @@ func (r *Recommender) resumeRecommendationMatching(ctx context.Context, onlyKind
 
 	_, username, _ := r.client.GetStatus()
 	sources := r.topTrackSources(ctx)
-	for _, kind := range recommendationKindOrder() {
+	kinds := make([]string, 0, len(groups))
+	for kind := range groups {
+		if knownRecommendationKind(kind) {
+			kinds = append(kinds, kind)
+		}
+	}
+	sort.Strings(kinds)
+	for _, kind := range kinds {
 		items := groups[kind]
 		if len(items) == 0 || r.isMatchingActive(kind) {
 			continue
@@ -785,13 +950,19 @@ func hasRecommendationKind(summaries []domain.RecommendationListSummary, kind st
 	return false
 }
 
-// orderSummaries puts "for you" above the top tracks and drops unknown kinds.
+// orderSummaries puts the cards in page order and drops unknown kinds. Weekly
+// lists are persisted per week, so only the newest one becomes the card.
 func orderSummaries(
 	summaries []domain.RecommendationListSummary,
 ) []RecommendationListSummary {
 	byKind := make(map[string]domain.RecommendationListSummary, len(summaries))
 	for _, summary := range summaries {
-		byKind[summary.Kind] = summary
+		base := recommendationBaseKind(summary.Kind)
+		existing, ok := byKind[base]
+		if !ok || (isWeeklyEchoKind(base) && summary.WeekFrom > existing.WeekFrom) {
+			summary.Kind = base
+			byKind[base] = summary
+		}
 	}
 	result := make([]RecommendationListSummary, 0, len(summaries))
 	for _, kind := range recommendationKindOrder() {
@@ -801,11 +972,13 @@ func orderSummaries(
 		}
 		result = append(result, RecommendationListSummary{
 			Kind:          summary.Kind,
-			Title:         summary.Title,
+			Title:         recommendationTitle(kind),
 			TrackCount:    summary.TrackCount,
 			MatchingCount: summary.MatchingCount,
 			TotalDuration: summary.TotalDuration,
 			CoverURLs:     append([]string{}, summary.CoverURLs...),
+			WeekFrom:      summary.WeekFrom,
+			WeekTo:        summary.WeekTo,
 			UpdatedAt:     summary.UpdatedAt,
 		})
 	}
@@ -813,10 +986,13 @@ func orderSummaries(
 }
 
 // summariesFromItems is the store-less path: the freshly built rows are the
-// cards.
+// cards. Only the two in-memory lists exist there.
 func summariesFromItems(topItems, similarItems []TopTrackItem) []RecommendationListSummary {
 	result := make([]RecommendationListSummary, 0, 2)
-	for _, kind := range recommendationKindOrder() {
+	for _, kind := range []string{
+		domain.LastFmRecommendationSimilar,
+		domain.LastFmRecommendationTopTracks,
+	} {
 		items := topItems
 		if kind == domain.LastFmRecommendationSimilar {
 			items = similarItems
@@ -866,6 +1042,8 @@ func recommendationListFromDomain(list domain.RecommendationList) Recommendation
 		Title:     list.Title,
 		Items:     items,
 		UpdatedAt: list.UpdatedAt,
+		WeekFrom:  list.WeekFrom,
+		WeekTo:    list.WeekTo,
 	}
 }
 
@@ -895,6 +1073,9 @@ func recommendationItemFromDomain(item domain.RecommendationItem) TopTrackItem {
 		Sources:       append([]string{}, item.Sources...),
 		Downloadable:  item.Downloadable,
 		Suspicious:    item.Suspicious,
+		PlayCount:     item.PlayCount,
+		WeekFrom:      item.WeekFrom,
+		WeekTo:        item.WeekTo,
 	}
 }
 
@@ -928,5 +1109,8 @@ func toDomainRecommendationItem(item TopTrackItem) domain.RecommendationItem {
 		State:         item.State,
 		LocalTrackID:  item.LocalTrackID,
 		Suspicious:    item.Suspicious,
+		PlayCount:     item.PlayCount,
+		WeekFrom:      item.WeekFrom,
+		WeekTo:        item.WeekTo,
 	}
 }

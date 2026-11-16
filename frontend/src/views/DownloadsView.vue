@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onActivated, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Download, Trash2 } from '@lucide/vue'
 import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller'
@@ -69,9 +69,24 @@ async function clearHistory() {
 
 // The page is the tasks' only home: hydrate on entry so runs created while the
 // user was elsewhere (or before a restart) are listed without waiting for an event.
+// The event can be missed while the window is in the background, so becoming
+// visible again re-reads the list as well.
 onMounted(() => {
   void tasksStore.hydrate()
+  window.addEventListener('focus', hydrateOnFocus)
 })
+
+onActivated(() => {
+  void tasksStore.hydrate()
+})
+
+onUnmounted(() => {
+  window.removeEventListener('focus', hydrateOnFocus)
+})
+
+function hydrateOnFocus() {
+  void tasksStore.hydrate()
+}
 </script>
 
 <template>
@@ -123,10 +138,11 @@ onMounted(() => {
       class="custom-scrollbar flex-1 px-6 py-4"
       data-test="tasks-list">
       <template #default="{ item, index, active }">
-        <DynamicScrollerItem :item="item" :active="active" :data-index="index" :size-dependencies="[item.state, item.percent]">
+        <DynamicScrollerItem :item="item" :active="active" :data-index="index" :size-dependencies="[item.state, item.phase]">
           <DownloadQueueItem
             :job="item"
             :kind="item.kind"
+            :phase="item.phase"
             :busy="busyJobIds.has(item.jobId)"
             @cancel="cancel"
             @retry="retry" />

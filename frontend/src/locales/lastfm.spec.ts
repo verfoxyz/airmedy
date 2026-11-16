@@ -22,18 +22,22 @@ import zh from './zh.json'
 const locales = { de, en, es, fr, it: itLocale, ja, ko, pt, ru, th, vi, zh }
 
 const EXPECTED_KEYS = [
+  'auto_refresh',
   'combined',
+  'discover',
   'empty_description',
   'empty_title',
   'in_library',
   'list_empty',
   'listeners',
   'load_failed',
+  'load_more',
   'loved',
   'matched_from',
   'matching',
   'more_actions',
   'no_match',
+  'no_more',
   'no_source',
   'not_connected_description',
   'not_connected_title',
@@ -41,6 +45,10 @@ const EXPECTED_KEYS = [
   'partial',
   'play',
   'play_all',
+  'play_matching',
+  'play_skipped',
+  'play_unavailable',
+  'plays_count',
   'recent',
   'refresh',
   'refresh_all',
@@ -56,6 +64,9 @@ const EXPECTED_KEYS = [
   'subtitle_account',
   'title',
   'top',
+  'week_next',
+  'week_prev',
+  'weekly_echo',
 ].sort()
 
 describe('Last.fm locale keys', () => {

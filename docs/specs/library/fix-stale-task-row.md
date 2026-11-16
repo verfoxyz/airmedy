@@ -1,6 +1,6 @@
 # Bug：任务页停在「下载中…」，行仍显示合并前的旧 track id
 
-> 状态：待开工
+> 状态：✅ 已完成（迁移 000107 增加 title/artist 快照；`TaskRun` 返回 request_id/provider/external_id；worker 在 running/done/failed 后发 `task:updated`；前端按 request_id 建 key，且 mount/activated/focus 重新 hydrate；行不再显示裸 track id）
 > 现象：`All Eyes On Me` 的任务行显示「下载中…」和旧 id `fdf69ffd…`；实际 `media_requests` 已是 `done`、文件已入库
 > 范围：任务行状态刷新与身份/标题快照；不涉及下载器
 

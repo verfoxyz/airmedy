@@ -175,39 +175,26 @@ func TestDuplicateCacheCleanup_DeletesAnEntryAlreadyInTheLibrary(t *testing.T) {
 	h.cached.mu.Unlock()
 }
 
-func TestDuplicateCacheCleanup_SkipsPendingPromotion(t *testing.T) {
+// TestDuplicateCacheCleanup_SkipsActiveRequest: a cache a request still needs
+// (its promotion is waiting for playback) must not be deleted by cleanup.
+func TestDuplicateCacheCleanup_SkipsActiveRequest(t *testing.T) {
 	h := newHarness(t)
-	pending := cacheEntry("pending", "wy", "1", domain.Quality128k, true, 10)
-	pending.PendingPromote = true
+	ctx := context.Background()
+	seedMediaRequest(t, h, "request-pending", "wy", "1", "", domain.MediaRequestStateWanted)
 	h.cached.entries = []*domain.StreamCacheEntry{
-		pending,
+		cacheEntry("pending", "wy", "1", domain.Quality128k, true, 10),
 		cacheEntry("keeper", "kg", "2", domain.Quality320k, true, 20),
 	}
 
-	scan, err := h.svc.ScanDuplicateCache(context.Background())
+	scan, err := h.svc.ScanDuplicateCache(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, 0, scan.Removable)
-	assert.Contains(t, scan.Skipped, "pending_promote: Song")
+	assert.Contains(t, scan.Skipped, "active_request: Song")
 
-	_, err = h.svc.CleanDuplicateCache(context.Background())
+	_, err = h.svc.CleanDuplicateCache(ctx)
 	require.NoError(t, err)
 	h.cached.mu.Lock()
 	assert.Equal(t, 0, h.cached.discarded)
-	h.cached.mu.Unlock()
-}
-
-func TestDuplicateCacheCleanup_DeletesPromotedLeftovers(t *testing.T) {
-	h := newHarness(t)
-	leftover := cacheEntry("promoted", "wy", "1", domain.Quality320k, true, 10)
-	leftover.Promoted = true
-	h.cached.entries = []*domain.StreamCacheEntry{leftover}
-
-	report, err := h.svc.CleanDuplicateCache(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, 1, report.Removable)
-	assert.Equal(t, 1, report.PromotedLeftovers)
-	h.cached.mu.Lock()
-	assert.Equal(t, []string{"1"}, h.cached.discardedExternalIDs)
 	h.cached.mu.Unlock()
 }
 

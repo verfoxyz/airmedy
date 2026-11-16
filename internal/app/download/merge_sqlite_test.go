@@ -91,6 +91,88 @@ func (f *mergeFixture) trackCount(t *testing.T) int {
 	return n
 }
 
+// TestMerge_CarriesTheStreamedRowsArtwork: the promoted row keeps the cover the
+// remote row was displaying when the downloaded file has no embedded art.
+func TestMerge_CarriesTheStreamedRowsArtwork(t *testing.T) {
+	f := newMergeFixture(t)
+	ctx := context.Background()
+	remotePath := domain.RemotePath("wy", "42")
+	require.NoError(t, f.tracks.Upsert(ctx, &domain.Track{
+		ID: "remote-1", Path: remotePath, Title: "晴天", SortTitle: "晴天",
+		Duration: 269, Availability: domain.AvailabilityDownloading,
+		Provider: "wy", ExternalID: "42", ArtworkKey: "cached-cover.jpg",
+	}))
+	require.NoError(t, f.tracks.Upsert(ctx, &domain.Track{
+		ID: "local-1", Path: `D:\Music\晴天.flac`, Title: "晴天", SortTitle: "晴天",
+		Duration: 269, Availability: domain.AvailabilityReady,
+	}))
+
+	res, err := f.merger.Merge(ctx, download.MergeInput{
+		RemotePath: remotePath, Provider: "wy", ExternalID: "42",
+		TargetPath: `D:\Music\晴天.flac`, TargetTrackID: "local-1",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "local-1", res.SurvivorTrackID)
+
+	survivor, err := f.tracks.GetByID(ctx, "local-1")
+	require.NoError(t, err)
+	assert.Equal(t, "cached-cover.jpg", survivor.ArtworkKey)
+}
+
+// TestMerge_DoesNotOverwriteTheImportsArtwork: embedded file art is more
+// accurate than the key the streamed row happened to show.
+func TestMerge_DoesNotOverwriteTheImportsArtwork(t *testing.T) {
+	f := newMergeFixture(t)
+	ctx := context.Background()
+	remotePath := domain.RemotePath("wy", "42")
+	require.NoError(t, f.tracks.Upsert(ctx, &domain.Track{
+		ID: "remote-1", Path: remotePath, Title: "晴天", SortTitle: "晴天",
+		Duration: 269, Availability: domain.AvailabilityDownloading,
+		Provider: "wy", ExternalID: "42", ArtworkKey: "cached-cover.jpg",
+	}))
+	require.NoError(t, f.tracks.Upsert(ctx, &domain.Track{
+		ID: "local-1", Path: `D:\Music\晴天.flac`, Title: "晴天", SortTitle: "晴天",
+		Duration: 269, Availability: domain.AvailabilityReady, ArtworkKey: "embedded.jpg",
+	}))
+
+	_, err := f.merger.Merge(ctx, download.MergeInput{
+		RemotePath: remotePath, Provider: "wy", ExternalID: "42",
+		TargetPath: `D:\Music\晴天.flac`, TargetTrackID: "local-1",
+	})
+	require.NoError(t, err)
+
+	survivor, err := f.tracks.GetByID(ctx, "local-1")
+	require.NoError(t, err)
+	assert.Equal(t, "embedded.jpg", survivor.ArtworkKey)
+}
+
+// TestMerge_LeavesArtworkEmptyWhenNeitherRowHasOne: a coverless song promotes
+// without an error and without inventing a key.
+func TestMerge_LeavesArtworkEmptyWhenNeitherRowHasOne(t *testing.T) {
+	f := newMergeFixture(t)
+	ctx := context.Background()
+	remotePath := domain.RemotePath("wy", "42")
+	require.NoError(t, f.tracks.Upsert(ctx, &domain.Track{
+		ID: "remote-1", Path: remotePath, Title: "晴天", SortTitle: "晴天",
+		Duration: 269, Availability: domain.AvailabilityDownloading,
+		Provider: "wy", ExternalID: "42",
+	}))
+	require.NoError(t, f.tracks.Upsert(ctx, &domain.Track{
+		ID: "local-1", Path: `D:\Music\晴天.flac`, Title: "晴天", SortTitle: "晴天",
+		Duration: 269, Availability: domain.AvailabilityReady,
+	}))
+
+	_, err := f.merger.Merge(ctx, download.MergeInput{
+		RemotePath: remotePath, Provider: "wy", ExternalID: "42",
+		TargetPath: `D:\Music\晴天.flac`, TargetTrackID: "local-1",
+	})
+	require.NoError(t, err)
+
+	survivor, err := f.tracks.GetByID(ctx, "local-1")
+	require.NoError(t, err)
+	assert.Empty(t, survivor.ArtworkKey)
+}
+
 // TestMerge_LearnsArtistAliasFromTheMergedPair: after a successful merge the
 // two single-artist credits are recorded as a pair, so the next search matches
 // the local file instead of creating a remote row again.

@@ -12,6 +12,7 @@ import (
 	"airmedy/internal/app/lastfm"
 	"airmedy/internal/app/library"
 	"airmedy/internal/app/lyrics"
+	"airmedy/internal/app/mediarequest"
 	"airmedy/internal/app/mobilesync"
 	"airmedy/internal/app/moodradio"
 	"airmedy/internal/app/normalization"
@@ -134,6 +135,9 @@ var Module = fx.Module("app",
 		func(lib *library.LibraryService) download.LibraryImporter { return lib },
 		func(pl *playlist.PlaylistService) download.PlaylistAdder { return pl },
 		func(st *appsettings.SettingsService) download.SettingsReader { return st },
+		// The save adapter reads the download quality and the playlist
+		// auto-download switch through this narrow port.
+		func(st *appsettings.SettingsService) mediarequest.SettingsReader { return st },
 		// The search page's row badges ("in library", "downloading", "failed")
 		// come from the download service: it owns both the remote identity
 		// lookup and the queue. catalog.Module consumes this port and never
@@ -148,9 +152,10 @@ var Module = fx.Module("app",
 		// Local-first matching: the download service owns the SQLite query that
 		// finds an on-disk row for a provider row before anything is registered.
 		func(svc *download.Service) catalog.LocalTrackMatcher { return svc },
-		// Saving a row is decided in one place: the download coordinator promotes
-		// a cached stream copy or queues a download.
-		func(svc *download.Service) catalog.SavedTracks { return svc },
+		// Saving a row is decided in one place: the media request adapter records
+		// the intent and the worker promotes a cached stream copy or queues a
+		// download.
+		func(saver *mediarequest.Saver) catalog.SavedTracks { return saver },
 		func(cache *stream.Cache) download.CachedAudio { return cache },
 		func(lib *library.LibraryService) download.LocalFileRemover { return lib },
 		func(st *appsettings.SettingsService) catalog.SettingsReader { return st },
@@ -182,6 +187,7 @@ var Module = fx.Module("app",
 	analysis.Module,
 	analytics.Module,
 	download.Module,
+	mediarequest.Module,
 	catalog.Module,
 	// Plugin lyrics are optional: plugin.Module is a sibling module and may be
 	// absent in tests. When present, the adapter gets the first lyric attempt
@@ -192,24 +198,41 @@ var Module = fx.Module("app",
 		},
 		fx.ParamTags(``, `optional:"true"`),
 	)),
-	fx.Invoke(func(lc fx.Lifecycle, db *sqlite.DB, search domain.SearchService, lib *library.LibraryService, playerSvc *player.PlayerService, eqSvc *eq.EQService, lastfmSvc *lastfm.LastFmService, recommender *lastfm.Recommender, analysisSvc *analysis.AnalysisService, settingsSvc *appsettings.SettingsService, playlistSvc *playlist.PlaylistService, pairingSvc *pairing.Service, mobileSyncSvc *mobilesync.Service, downloadSvc *download.Service, cache *stream.Cache, logger *slog.Logger) {
+	fx.Invoke(func(lc fx.Lifecycle, db *sqlite.DB, search domain.SearchService, lib *library.LibraryService, playerSvc *player.PlayerService, eqSvc *eq.EQService, lastfmSvc *lastfm.LastFmService, recommender *lastfm.Recommender, analysisSvc *analysis.AnalysisService, settingsSvc *appsettings.SettingsService, playlistSvc *playlist.PlaylistService, pairingSvc *pairing.Service, mobileSyncSvc *mobilesync.Service, downloadSvc *download.Service, mediaSaver *mediarequest.Saver, mediaWorker *mediarequest.Worker, cache *stream.Cache, logger *slog.Logger) {
 		// Deleting a streamed row must also drop its cached audio and release the
 		// decoder that holds the loopback URL. Wired here so app/library imports
 		// neither app/stream nor app/player.
 		lib.SetStreamCacheDiscarder(cache)
 		lib.SetPlaybackRemover(playerSvc)
+		// Deleting a local file must re-open the identity's finished request, or
+		// the next save/add would look like a no-op. The worker also verifies
+		// finished rows at startup in case the file was removed outside the app.
+		lib.SetMediaRequestInvalidator(mediaSaver)
+		mediaWorker.SetLocalTrackChecker(downloadSvc)
+		mediaSaver.SetLocalTrackChecker(downloadSvc)
 		// Promotion must not move a file the decoder still points at, and a
 		// promoted row must not be streamed again. Both are narrow ports so
 		// neither stream nor download imports app/player.
 		downloadSvc.SetPlayingTrack(playerSvc)
 		downloadSvc.SetCacheCleanupPlayer(playerSvc)
+		// An explicit re-download is a media request like any other save; the
+		// worker owns the actual job creation.
+		downloadSvc.SetMediaRequestSaver(mediaSaver)
 		cache.SetLocalIdentityChecker(downloadSvc)
+		// The startup sweep deletes caches whose identity already became a local
+		// file, but keeps the audio a pending request still needs.
+		cache.SetActiveRequestChecker(downloadSvc.HasActiveRequest)
 		// Promotion moves the cache file, so it waits for playback to release it;
 		// a closing session is the fastest signal, the worker's timer is the
-		// backstop. Wire direction: stream notifies download, never the reverse.
+		// backstop. Wire direction: stream notifies the request worker, never the
+		// reverse.
 		cache.OnSessionClosed(func(_, _ string) {
-			downloadSvc.WakeCacheMaintenance()
+			mediaWorker.Wake()
 		})
+		// The worker changes a request's track_id when a promotion merges the
+		// remote row into a local one; the tasks page keys rows by the stable
+		// request id and must reload instead of keeping the old snapshot.
+		mediaWorker.SetUpdateHook(downloadSvc.NotifyTaskUpdated)
 		var offTrackMerged func()
 		pairingSvc.AddDeviceConnectionListener(func(deviceID string, connected bool) {
 			if connected {
@@ -257,10 +280,10 @@ var Module = fx.Module("app",
 				lib.AddFavoriteChangeListener(func(track *domain.TrackDTO) {
 					playerSvc.SyncFavorite(track)
 					lastfmSvc.SetLoveStatus(track, track.IsFavorite)
-					// A saved remote track becomes permanent: complete the stream
-					// cache and promote it (or re-download at a higher quality).
+					// A saved remote track becomes permanent: record one media
+					// request; the worker promotes the cache or downloads.
 					if track.IsFavorite {
-						if _, err := downloadSvc.OnRemoteTrackSaved(context.Background(), domain.RemoteTrackSaved{
+						if _, err := mediaSaver.OnRemoteTrackSaved(context.Background(), domain.RemoteTrackSaved{
 							Track:    track,
 							Explicit: true,
 						}); err != nil {
@@ -319,12 +342,12 @@ var Module = fx.Module("app",
 					playerSvc.SetAutoAdvanceNotificationsEnabled(settings.AutoAdvanceNotificationsEnabled)
 				})
 
-				// Adding an online track to a playlist is one save event: the
-				// coordinator promotes a cached copy, otherwise the auto-download
+				// Adding an online track to a playlist is one save request: the
+				// worker promotes a cached copy, otherwise the auto-download
 				// setting decides. Wired here so the playlist package never imports
-				// download.
+				// download or mediarequest.
 				playlistSvc.SetAutoDownload(func(ctx context.Context, track *domain.TrackDTO, playlistID string) {
-					if _, err := downloadSvc.OnRemoteTrackSaved(ctx, domain.RemoteTrackSaved{
+					if _, err := mediaSaver.OnRemoteTrackSaved(ctx, domain.RemoteTrackSaved{
 						Track:      track,
 						PlaylistID: playlistID,
 					}); err != nil {

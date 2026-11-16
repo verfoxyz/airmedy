@@ -1,6 +1,6 @@
 # 重构：以「媒体请求」为唯一权威的保存/提升/下载状态机
 
-> 状态：待开工（重构设计）
+> 状态：✅ 已完成（000103–000105；请求 worker 是唯一推进者，任务页与 chip 只读请求，`promotion_tasks` 与三个缓存 flag 已删除，清理按活动请求跳过）
 > 目的：根治“提升逻辑混乱”——重复任务、漏触发、状态分散、触发模型反复打补丁
 > 关联现状：`fix-save-prefers-promotion.md`、`task-promotion-worker.md`、`downloads-tasks.md`、`fix-bulk-playlist-add.md`、`cache-task-history.md`
 
@@ -135,9 +135,11 @@ CREATE TABLE media_request_events (
 | 搜索页保存 | 同上（显式保存：无缓存则下载） |
 | Last.fm 推荐保存 | 同上 |
 | 重新下载（显式） | upsert `desired=download` 且 `quality=指定`，若已 done 则重置为 wanted |
+| 删除本地文件 | 该 identity 的 done → wanted（保留意图），唤醒 worker；见 `fix-delete-resets-request.md` |
 
 - 入口**不做**任何缓存/任务判断；
 - upsert 后只唤醒 worker（事件），不阻塞 UI。
+- `done` 的幂等前提是“本地行仍可播”：`Upsert` 会经 `HasLocalTrack` 校验，文件不存在则按 `wanted` 重开；worker 启动时也会对账一次。
 
 ## 7. 派生：UI 只读请求
 

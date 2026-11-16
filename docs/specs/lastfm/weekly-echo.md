@@ -1,6 +1,6 @@
 # 任务：Last.fm 页新增「每周回响」歌单
 
-> 状态：待开工
+> 状态：✅ 已完成（kind `weekly_echo:<from>` 每周一存、chart list 24h 缓存、详情页周切换与 playcount、自动刷新开关存 localStorage；Go/前端测试覆盖）
 > 目的：按周回顾自己那段时间的常听曲目，并可直接播放/保存
 > 关联：`recommendation-lists.md`（歌单卡片与持久化）、`discovery.md`
 

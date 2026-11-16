@@ -1,6 +1,6 @@
 # Bug：远端流曲目拖动进度条后无声，且不会恢复
 
-> 状态：待开工
+> 状态：✅ 已完成（remote seek = 关闭旧 session + `loadInactiveAtPosition` + 恢复播放/暂停；300ms 防抖；2s 卡住看门狗每段只重载一次；`player:playback-failed` 进入 footer 的 playError）
 > 现象：播放缓存中的在线曲目，拖动进度条（哪怕拖回 0:00）后完全无声；切走到别的曲目再切回来才恢复
 > 范围：播放器 seek 路径；不改 StreamCache 协议
 

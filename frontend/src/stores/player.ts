@@ -287,6 +287,13 @@ export const usePlayerStore = defineStore('player', () => {
         theme.value = ev.data as ThemeColors
       }),
 
+      // A seek reload or the stall watchdog can fail outside a Wails call. The
+      // footer's existing playError line is the surface for it.
+      Events.On('player:playback-failed', (ev: Events.WailsEvent) => {
+        const payload = ev.data as { error?: string } | null
+        playError.value = String(payload?.error ?? '')
+      }),
+
       Events.On('player:artwork-crossfade', (ev: Events.WailsEvent) => {
         const transition = ev.data as ArtworkCrossfadeEvent
         if (!transition || !Number.isInteger(transition.transition_id)) return

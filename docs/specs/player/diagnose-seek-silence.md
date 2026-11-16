@@ -1,6 +1,6 @@
 # 诊断：seek 后位置在走但没有声音
 
-> 状态：待开工（诊断任务，不是修复）
+> 状态：✅ 埋点已加（等待复现日志判定 A/B；在得到结论前不改修复逻辑）
 > 目的：在改代码前确定“seek 成功但无声”的确切环节
 > 关联：`fix-stream-seek.md`、`fix-seek-reload-failure.md`、`cache-file-decoder.md`
 

@@ -1,6 +1,6 @@
 # Bug：多选/批量加入歌单不会触发下载或提升
 
-> 状态：待开工
+> 状态：✅ 已完成（AddTracks 按去重后的 track id 逐个补发保存钩子；M3U 导入共用该入口）
 > 现象：把 `misery.` 加进「英语-小众」歌单后，没有下载任务、没有提升任务，`stream_cache.pending_promote` 仍为 0
 > 关联：`fix-save-prefers-promotion.md`（保存事件驱动）
 

@@ -156,9 +156,9 @@ var (
 var ErrStreamAlreadyLocal = errors.New("stream identity is already in the library")
 
 // ErrStreamDiscardDeferred means a stream-cache entry could not be deleted
-// because a playback session still owns its file. The entry is flagged for the
-// promotion worker, which retries once the session closes; callers must treat
-// this as "not deleted yet", not as a failure.
+// because a playback session still owns its file. The cache remembers the entry
+// and deletes it when that session closes; callers must treat this as "not
+// deleted yet", not as a failure.
 var ErrStreamDiscardDeferred = errors.New("stream cache discard deferred")
 
 // ErrDownloadPermanent marks a download failure a retry cannot fix (403/404/410,
@@ -431,6 +431,11 @@ type DownloadMergeRepository interface {
 	// before that point would otherwise be cascade-deleted with the remote row.
 	// An existing lyric on the destination wins.
 	MoveLyrics(ctx context.Context, fromTrackID, toTrackID string) error
+	// CarryArtworkKey gives trackID (and its album, when it has one) a cover key
+	// when that row has none. Used when a remote row is folded into the imported
+	// row: the file's embedded art always wins, then the streamed row's cached
+	// key, and only then what the caller saved from the cover cache.
+	CarryArtworkKey(ctx context.Context, trackID, artworkKey string) error
 }
 
 // --- retry policy -----------------------------------------------------------

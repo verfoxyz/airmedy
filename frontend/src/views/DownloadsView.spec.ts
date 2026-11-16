@@ -13,8 +13,8 @@ vi.mock('@wailsio/runtime', () => ({
 vi.mock('../../bindings/airmedy/internal/infra/wails/downloadservice', () => ({
   ListTasks: vi.fn(),
   ClearTaskHistory: vi.fn(),
-  CancelDownload: vi.fn(),
-  RetryDownload: vi.fn(),
+  CancelTask: vi.fn(),
+  RetryTask: vi.fn(),
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -26,8 +26,9 @@ vi.mock('vue-i18n', () => ({
 
 const task = (overrides: Record<string, unknown> = {}) => ({
   id: 'task-1',
-  kind: 'download',
+  kind: 'request',
   state: 'active',
+  phase: '',
   track_id: 'track-1',
   title: '晴天',
   artist: '周杰伦',
@@ -65,8 +66,8 @@ describe('DownloadsView', () => {
     setActivePinia(createPinia())
     vi.mocked(DownloadService.ListTasks).mockResolvedValue([])
     vi.mocked(DownloadService.ClearTaskHistory).mockResolvedValue(undefined)
-    vi.mocked(DownloadService.CancelDownload).mockResolvedValue(undefined)
-    vi.mocked(DownloadService.RetryDownload).mockResolvedValue(undefined)
+    vi.mocked(DownloadService.CancelTask).mockResolvedValue(undefined)
+    vi.mocked(DownloadService.RetryTask).mockResolvedValue(undefined)
   })
 
   it('hydrates the merged task list on mount and opens on the active tab', async () => {
@@ -80,8 +81,47 @@ describe('DownloadsView', () => {
     expect(wrapper.find('[data-test="tasks-tab-all"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="tasks-tab-active"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="tasks-list"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain('tasks.kind_download')
+    expect(wrapper.text()).toContain('tasks.kind_request')
     wrapper.unmount()
+  })
+
+  it('keys a request row by its stable request id, not the changing track id', async () => {
+    vi.mocked(DownloadService.ListTasks).mockResolvedValue([
+      task({
+        id: 'row-id',
+        request_id: 'request-stable',
+        track_id: 'merged-away-track',
+        title: 'All Eyes On Me',
+        state: 'done',
+      }),
+    ] as never)
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.find('[data-job-id="request-stable"]').exists()).toBe(true)
+    expect(wrapper.find('[data-job-id="row-id"]').exists()).toBe(false)
+    expect(wrapper.find('[data-job-id="merged-away-track"]').exists()).toBe(false)
+    // The stale track id is not shown as the row's secondary label.
+    expect(wrapper.find('[data-test="task-id"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('re-reads the list when the window becomes visible again', async () => {
+    vi.mocked(DownloadService.ListTasks).mockResolvedValue([task()] as never)
+    const wrapper = mountView()
+    await flushPromises()
+    vi.mocked(DownloadService.ListTasks).mockClear()
+
+    window.dispatchEvent(new Event('focus'))
+    await flushPromises()
+
+    expect(DownloadService.ListTasks).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+
+    window.dispatchEvent(new Event('focus'))
+    await flushPromises()
+    expect(DownloadService.ListTasks).toHaveBeenCalledTimes(1)
   })
 
   it('shows the empty state for the selected tab', async () => {
@@ -122,22 +162,60 @@ describe('DownloadsView', () => {
     wrapper.unmount()
   })
 
-  it('labels a promotion row and shows its error without offering retry', async () => {
+  it('labels a failed request and offers a retry', async () => {
     vi.mocked(DownloadService.ListTasks).mockResolvedValue([
-      task({ id: 'p', kind: 'promote', state: 'failed', error: 'disk full' }),
+      task({ id: 'r', state: 'failed', error: 'disk full' }),
     ] as never)
 
     const wrapper = mountView()
     await flushPromises()
     await wrapper.get('[data-test="tasks-tab-failed"]').trigger('click')
 
-    expect(wrapper.get('[data-test="task-kind"]').text()).toBe('tasks.kind_promote')
+    expect(wrapper.get('[data-test="task-kind"]').text()).toBe('tasks.kind_request')
     expect(wrapper.text()).toContain('disk full')
+    expect(wrapper.find('[data-test="download-retry"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('shows the request phase as its status text', async () => {
+    vi.mocked(DownloadService.ListTasks).mockResolvedValue([
+      task({ id: 'r', state: 'active', phase: 'promoting' }),
+    ] as never)
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="download-status"]').text()).toBe('tasks.phase_promoting')
+    wrapper.unmount()
+  })
+
+  it('lists stream-cache sessions as their own kind in every state', async () => {
+    vi.mocked(DownloadService.ListTasks).mockResolvedValue([
+      task({ id: 'c-active', kind: 'cache', state: 'active' }),
+      task({ id: 'c-done', kind: 'cache', state: 'done' }),
+      task({ id: 'c-failed', kind: 'cache', state: 'failed', error: 'no source' }),
+    ] as never)
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.get('[data-test="tasks-tab-all"]').text()).toContain('3')
+    expect(wrapper.get('[data-test="tasks-tab-active"]').text()).toContain('1')
+    expect(wrapper.get('[data-test="tasks-tab-done"]').text()).toContain('1')
+    expect(wrapper.get('[data-test="tasks-tab-failed"]').text()).toContain('1')
+    const kinds = wrapper.findAll('[data-test="task-kind"]')
+    expect(kinds).toHaveLength(3)
+    for (const kind of kinds) expect(kind.text()).toBe('tasks.kind_cache')
+
+    // A cache session belongs to playback: no cancel or retry button.
+    expect(wrapper.find('[data-test="download-cancel"]').exists()).toBe(false)
+    await wrapper.get('[data-test="tasks-tab-failed"]').trigger('click')
+    expect(wrapper.text()).toContain('no source')
     expect(wrapper.find('[data-test="download-retry"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
-  it('shows the title as the main label with a dimmed id next to it', async () => {
+  it('shows the title as the main label without a bare track id', async () => {
     vi.mocked(DownloadService.ListTasks).mockResolvedValue([
       task({ id: 't1', track_id: 'ebdbf6a9-a70c-4caf-94af-67a13bd0a7b7', title: 'QuomodocunquizE' }),
     ] as never)
@@ -146,26 +224,26 @@ describe('DownloadsView', () => {
     await flushPromises()
 
     expect(wrapper.get('[data-test="task-title"]').text()).toBe('QuomodocunquizE')
-    expect(wrapper.get('[data-test="task-id"]').text()).toBe('ebdbf6a9-a70c-4caf-94af-67a13bd0a7b7')
+    expect(wrapper.find('[data-test="task-id"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
-  it('does not repeat the id when it is already the main label', async () => {
+  it('labels a legacy request by its identity, never by the old track id', async () => {
     vi.mocked(DownloadService.ListTasks).mockResolvedValue([
-      task({ id: 't1', track_id: 'legacy-uuid', title: '' }),
+      task({ id: 't1', track_id: 'legacy-uuid', title: '42' }),
     ] as never)
 
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.get('[data-test="task-title"]').text()).toBe('legacy-uuid')
+    expect(wrapper.get('[data-test="task-title"]').text()).toBe('42')
     expect(wrapper.find('[data-test="task-id"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
-  it('cancels an active download from its row action', async () => {
-    vi.mocked(DownloadService.ListTasks).mockResolvedValue([task({ id: 'job-9', state: 'active' })] as never)
-    vi.mocked(DownloadService.CancelDownload).mockResolvedValue(undefined)
+  it('cancels an active request from its row action', async () => {
+    vi.mocked(DownloadService.ListTasks).mockResolvedValue([task({ id: 'request-9', state: 'active' })] as never)
+    vi.mocked(DownloadService.CancelTask).mockResolvedValue(undefined)
 
     const wrapper = mountView()
     await flushPromises()
@@ -175,7 +253,7 @@ describe('DownloadsView', () => {
     await cancel.trigger('click')
     await flushPromises()
 
-    expect(DownloadService.CancelDownload).toHaveBeenCalledWith('job-9')
+    expect(DownloadService.CancelTask).toHaveBeenCalledWith('request-9')
     wrapper.unmount()
   })
 

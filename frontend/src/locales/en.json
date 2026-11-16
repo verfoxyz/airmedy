@@ -854,6 +854,12 @@
     "tab_failed": "Errors",
     "kind_download": "Download",
     "kind_promote": "Promotion",
+    "kind_request": "Request",
+    "kind_cache": "Cache",
+    "phase_resolving": "Resolving",
+    "phase_downloading": "Downloading",
+    "phase_promoting": "Promoting",
+    "phase_verifying": "Verifying",
     "empty_all": "No task records yet",
     "empty_active": "No tasks in progress",
     "empty_done": "No completed tasks yet",
@@ -946,6 +952,17 @@
     "play_all": "Play all",
     "shuffle": "Shuffle",
     "more_actions": "More actions",
-    "list_empty": "No tracks yet."
+    "list_empty": "No tracks yet.",
+    "play_matching": "Still matching sources. Try again in a moment.",
+    "play_unavailable": "No playable tracks in this list.",
+    "play_skipped": "Skipped {count} tracks that cannot be played.",
+    "discover": "Discover",
+    "weekly_echo": "Weekly Echo",
+    "week_prev": "Previous week",
+    "week_next": "Next week",
+    "plays_count": "{count} plays",
+    "auto_refresh": "Check for new recommendations automatically",
+    "load_more": "Load more",
+    "no_more": "No more recommendations"
   }
 }

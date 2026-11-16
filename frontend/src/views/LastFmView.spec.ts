@@ -16,7 +16,10 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('vue-i18n', () => ({
-  useI18n: () => ({ t: (key: string) => key }),
+  useI18n: () => ({
+    t: (key: string, params?: Record<string, unknown>) =>
+      params && 'count' in params ? `${key}:${params.count}` : key,
+  }),
 }))
 
 vi.mock('vue-router', () => ({
@@ -56,6 +59,8 @@ function summary(kind: string, count: number, covers: string[] = [], duration = 
     matching_count: 0,
     total_duration: duration,
     cover_urls: covers,
+    week_from: 0,
+    week_to: 0,
     updated_at: '2026-01-01T00:00:00Z',
   }
 }
@@ -149,6 +154,7 @@ describe('LastFmView (persisted recommendation cards)', () => {
     mocks.handlers.clear()
     mocks.off.mockReset()
     document.body.innerHTML = ''
+    localStorage.clear()
     mocks.refreshList.mockResolvedValue(undefined)
     mocks.refreshAll.mockResolvedValue(undefined)
     mocks.preparePlayback.mockImplementation(async (row: { title: string }) => `id-${row.title}`)
@@ -197,6 +203,34 @@ describe('LastFmView (persisted recommendation cards)', () => {
 
     await wrapper.findAll('[data-test="lastfm-card"]')[1].trigger('click')
     expect(mocks.push).toHaveBeenCalledWith('/lastfm/lists/top_tracks')
+  })
+
+  it('shows the weekly echo window instead of the duration', async () => {
+    const weekly = summary('weekly_echo', 12, [], 3600)
+    weekly.week_from = 1_700_406_720
+    weekly.week_to = 1_700_467_200
+    mocks.list.mockResolvedValue({ status: 'ok', lists: [weekly] })
+    const wrapper = await mountView()
+
+    const range = wrapper.find('[data-test="lastfm-card-week"]')
+    expect(range.exists()).toBe(true)
+    expect(range.text()).toMatch(/^\d{2}\/\d{2} – \d{2}\/\d{2}$/)
+    expect(wrapper.find('[data-test="lastfm-card-duration"]').exists()).toBe(false)
+  })
+
+  it('switches the automatic new-list check from the header', async () => {
+    mocks.list.mockResolvedValue(collection())
+    const wrapper = await mountView()
+    expect(mocks.list).toHaveBeenLastCalledWith(true)
+
+    await wrapper.find('[data-test="lastfm-auto-refresh"]').trigger('click')
+    await flushPromises()
+    expect(mocks.list).toHaveBeenCalledTimes(1)
+
+    await wrapper.find('[data-test="lastfm-auto-refresh"]').trigger('click')
+    await flushPromises()
+    expect(mocks.list).toHaveBeenCalledTimes(2)
+    expect(mocks.list).toHaveBeenLastCalledWith(true)
   })
 
   it('suppresses card transitions until the grid has settled', async () => {
@@ -290,6 +324,108 @@ describe('LastFmView (persisted recommendation cards)', () => {
     expect(mocks.preparePlayback).toHaveBeenCalledTimes(2)
     expect(mocks.playTrackIds).toHaveBeenCalledWith(['id-One', 'id-Two'])
     expect(mocks.push).not.toHaveBeenCalled()
+  })
+
+  it('keeps playing the other rows when one row cannot be prepared', async () => {
+    mocks.list.mockResolvedValue(collection())
+    mocks.getList.mockResolvedValue({
+      kind: 'top_tracks',
+      title: 'lastfm.top',
+      items: [trackRow('One'), trackRow('Broken'), trackRow('Two')],
+      updated_at: '2026-01-01T00:00:00Z',
+    })
+    mocks.preparePlayback.mockImplementation(async (row: { title: string }) => {
+      if (row.title === 'Broken') throw new Error('no source')
+      return `id-${row.title}`
+    })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const wrapper = await mountView()
+
+    await wrapper.findAll('[data-test="lastfm-card-play"]')[1].trigger('click')
+    await flushPromises()
+
+    expect(mocks.playTrackIds).toHaveBeenCalledWith(['id-One', 'id-Two'])
+    expect(wrapper.find('[data-test="lastfm-play-notice"]').text()).toBe('lastfm.play_skipped:1')
+    expect(warning).toHaveBeenCalled()
+    warning.mockRestore()
+  })
+
+  it('words an all-matching card instead of doing nothing', async () => {
+    mocks.list.mockResolvedValue(collection())
+    mocks.getList.mockResolvedValue({
+      kind: 'top_tracks',
+      title: 'lastfm.top',
+      items: [trackRow('Pending', 'matching'), trackRow('Also pending', 'matching')],
+      updated_at: '2026-01-01T00:00:00Z',
+    })
+    const wrapper = await mountView()
+
+    await wrapper.findAll('[data-test="lastfm-card-play"]')[1].trigger('click')
+    await flushPromises()
+
+    expect(mocks.preparePlayback).not.toHaveBeenCalled()
+    expect(mocks.playTrackIds).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="lastfm-play-notice"]').text()).toBe('lastfm.play_matching')
+  })
+
+  it('words a card with no playable row', async () => {
+    mocks.list.mockResolvedValue(collection())
+    mocks.getList.mockResolvedValue({
+      kind: 'top_tracks',
+      title: 'lastfm.top',
+      items: [trackRow('Gone', 'no_match'), trackRow('Also gone', 'no_match')],
+      updated_at: '2026-01-01T00:00:00Z',
+    })
+    const wrapper = await mountView()
+
+    await wrapper.findAll('[data-test="lastfm-card-play"]')[1].trigger('click')
+    await flushPromises()
+
+    expect(mocks.playTrackIds).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="lastfm-play-notice"]').text()).toBe('lastfm.play_unavailable')
+  })
+
+  it('plays the matched subset and words the skipped rows', async () => {
+    mocks.list.mockResolvedValue(collection())
+    mocks.getList.mockResolvedValue({
+      kind: 'top_tracks',
+      title: 'lastfm.top',
+      items: [trackRow('One'), trackRow('Gone', 'no_match'), trackRow('Two')],
+      updated_at: '2026-01-01T00:00:00Z',
+    })
+    const wrapper = await mountView()
+
+    await wrapper.findAll('[data-test="lastfm-card-play"]')[1].trigger('click')
+    await flushPromises()
+
+    expect(mocks.playTrackIds).toHaveBeenCalledWith(['id-One', 'id-Two'])
+    expect(wrapper.find('[data-test="lastfm-play-notice"]').text()).toBe('lastfm.play_skipped:1')
+  })
+
+  it('ignores a second click while the card is still resolving', async () => {
+    mocks.list.mockResolvedValue(collection())
+    mocks.getList.mockResolvedValue({
+      kind: 'top_tracks',
+      title: 'lastfm.top',
+      items: [trackRow('One')],
+      updated_at: '2026-01-01T00:00:00Z',
+    })
+    let release: (id: string) => void = () => {}
+    mocks.preparePlayback.mockReturnValue(new Promise<string>((resolve) => {
+      release = resolve
+    }))
+    const wrapper = await mountView()
+
+    const button = wrapper.findAll('[data-test="lastfm-card-play"]')[1]
+    await button.trigger('click')
+    await button.trigger('click')
+
+    expect(mocks.getList).toHaveBeenCalledTimes(1)
+    expect(mocks.preparePlayback).toHaveBeenCalledTimes(1)
+
+    release('id-One')
+    await flushPromises()
+    expect(mocks.playTrackIds).toHaveBeenCalledTimes(1)
   })
 
   it('shuffles the playable rows of a card', async () => {

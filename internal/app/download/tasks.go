@@ -3,7 +3,6 @@ package download
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -11,102 +10,85 @@ import (
 	"airmedy/internal/domain"
 )
 
-// taskPathSeparator is the separator the finalizer puts between title and
-// artist in a downloaded file name.
-const taskPathSeparator = " - "
-
 // taskHistoryLimit is how many finished runs each table keeps. History is for
 // the tasks page, not an audit log; trimming the oldest rows keeps the tables
 // from growing without bound.
 const taskHistoryLimit = 500
 
-// ListTasks merges downloads and promotions into the tasks page's read model.
+// ListTasks builds the tasks page's read model: one row per media request,
+// plus one per stream-cache session.
 //
-// Both tables are read once. Download rows carry only a track id, so their
-// titles are resolved with one batched GetByIDs; a track deleted after its job
-// finished simply leaves the row without a title, and the UI falls back to the
-// id. The merged list is newest first, using finished_at when the run is over
-// and created/started time while it is active.
+// Requests are authoritative — a download job or a promotion never adds a row
+// of its own, so repeated saves of the same identity converge on one line. The
+// title and artist prefer the request's own snapshot, then the current track row
+// (one batched lookup). A merge may have deleted that row, so the snapshot is
+// what keeps the label readable instead of falling back to a bare track id. The
+// list is newest first, using finished_at when the run is over and created_at
+// while it is active.
 func (s *Service) ListTasks(ctx context.Context) ([]domain.TaskRun, error) {
-	jobs, err := s.jobs.List(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("tasks: list downloads: %w", err)
-	}
+	runs := make([]domain.TaskRun, 0)
 
-	jobTrackIDs := make([]string, 0, len(jobs))
-	seen := make(map[string]struct{}, len(jobs))
-	for _, job := range jobs {
-		if job == nil || job.TrackID == "" {
-			continue
+	if s.requests != nil {
+		requests, err := s.requests.List(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("tasks: list requests: %w", err)
 		}
-		if _, duplicate := seen[job.TrackID]; duplicate {
-			continue
+
+		trackIDs := make([]string, 0, len(requests))
+		seen := make(map[string]struct{}, len(requests))
+		for _, request := range requests {
+			if request == nil || request.TrackID == "" {
+				continue
+			}
+			if _, duplicate := seen[request.TrackID]; duplicate {
+				continue
+			}
+			seen[request.TrackID] = struct{}{}
+			trackIDs = append(trackIDs, request.TrackID)
 		}
-		seen[job.TrackID] = struct{}{}
-		jobTrackIDs = append(jobTrackIDs, job.TrackID)
-	}
-	titles := map[string]*domain.TrackDTO{}
-	if len(jobTrackIDs) > 0 {
-		tracks, lookupErr := s.tracks.GetByIDs(ctx, jobTrackIDs)
-		if lookupErr != nil {
-			// The list is still useful without titles; the rows keep their ids.
-			s.logger.Warn("tasks: cannot resolve download titles", "error", lookupErr)
-		} else {
-			for _, track := range tracks {
-				if track != nil {
-					titles[track.ID] = track
+		titles := map[string]*domain.TrackDTO{}
+		if len(trackIDs) > 0 {
+			tracks, lookupErr := s.tracks.GetByIDs(ctx, trackIDs)
+			if lookupErr != nil {
+				// The list is still useful without titles; the snapshots carry the label.
+				s.logger.Warn("tasks: cannot resolve request titles", "error", lookupErr)
+			} else {
+				for _, track := range tracks {
+					if track != nil {
+						titles[track.ID] = track
+					}
 				}
 			}
 		}
-	}
 
-	runs := make([]domain.TaskRun, 0, len(jobs))
-	namingOrder := domain.DefaultNamingOrder
-	if s.settings != nil {
-		if settings, settingsErr := s.settings.GetSettings(ctx); settingsErr != nil {
-			s.logger.Warn("tasks: cannot read the naming order", "error", settingsErr)
-		} else if settings != nil {
-			namingOrder = domain.ResolveNamingOrder(settings.DownloadNamingOrder)
-		}
-	}
-	for _, job := range jobs {
-		if job == nil {
-			continue
-		}
-		run := taskRunFromJob(job)
-		if track := titles[job.TrackID]; track != nil {
-			run.Title = track.Title
-			run.Artist = tagArtist(track)
-		}
-		// The merge deletes the remote row the job pointed at, so the title is
-		// gone and the finished file name is the only readable record left.
-		if strings.TrimSpace(run.Title) == "" {
-			pathTitle, pathArtist := taskTitleFromPath(job.TargetPath, namingOrder)
-			run.Title = pathTitle
-			if strings.TrimSpace(run.Artist) == "" {
-				run.Artist = pathArtist
+		for _, request := range requests {
+			if request == nil {
+				continue
 			}
+			run := taskRunFromRequest(request)
+			if track := titles[request.TrackID]; track != nil {
+				run.Title = track.Title
+				run.Artist = tagArtist(track)
+			}
+			if strings.TrimSpace(run.Title) == "" {
+				// Old rows predate the snapshot; the identity is a stable label and
+				// never shows the track id a merge already invalidated.
+				run.Title = request.ExternalID
+			}
+			runs = append(runs, run)
 		}
-		if strings.TrimSpace(run.Title) == "" {
-			run.Title = job.TrackID
-		}
-		runs = append(runs, run)
 	}
 
-	if s.promotionTask != nil {
-		tasks, listErr := s.promotionTask.List(ctx)
+	if s.cacheTasks != nil {
+		tasks, listErr := s.cacheTasks.List(ctx)
 		if listErr != nil {
-			return nil, fmt.Errorf("tasks: list promotions: %w", listErr)
+			return nil, fmt.Errorf("tasks: list stream cache: %w", listErr)
 		}
 		for _, task := range tasks {
 			if task == nil {
 				continue
 			}
-			run := taskRunFromPromotion(task)
-			if strings.TrimSpace(run.Title) == "" {
-				run.Title = task.TrackID
-			}
-			runs = append(runs, run)
+			runs = append(runs, taskRunFromCacheTask(task))
 		}
 	}
 
@@ -114,29 +96,6 @@ func (s *Service) ListTasks(ctx context.Context) ([]domain.TaskRun, error) {
 		return taskSortTime(runs[i]).After(taskSortTime(runs[j]))
 	})
 	return runs, nil
-}
-
-// taskTitleFromPath recovers a display title and artist from the finished file
-// name. The finalizer names files "<title> - <artist>" or the reverse; a name
-// without the separator is used whole. The result is display-only and is never
-// written back.
-func taskTitleFromPath(targetPath, namingOrder string) (title, artist string) {
-	base := filepath.Base(strings.TrimSpace(targetPath))
-	if base == "" || base == "." {
-		return "", ""
-	}
-	name := strings.TrimSuffix(base, filepath.Ext(base))
-	if strings.TrimSpace(name) == "" {
-		return "", ""
-	}
-	before, after, found := strings.Cut(name, taskPathSeparator)
-	if !found {
-		return strings.TrimSpace(name), ""
-	}
-	if domain.ResolveNamingOrder(namingOrder) == domain.NamingOrderArtistTitle {
-		return strings.TrimSpace(after), strings.TrimSpace(before)
-	}
-	return strings.TrimSpace(before), strings.TrimSpace(after)
 }
 
 // taskSortTime is the ordering key the tasks page contract names: the finish
@@ -148,15 +107,23 @@ func taskSortTime(run domain.TaskRun) time.Time {
 	return run.CreatedAt
 }
 
-// ClearTaskHistory deletes every finished run from both tables. Active work is
-// untouched, and the tasks page is told to reload.
+// ClearTaskHistory deletes every finished run from the request history and the
+// stream-cache log. Active work is untouched, and the tasks page is told to
+// reload.
 func (s *Service) ClearTaskHistory(ctx context.Context) error {
+	if s.requests != nil {
+		if _, err := s.requests.TrimFinished(ctx, 0); err != nil {
+			return fmt.Errorf("tasks: clear request history: %w", err)
+		}
+	}
+	// Execution history is kept for diagnostics only; the requests are the rows
+	// the page shows, so their old jobs go too.
 	if _, err := s.jobs.TrimFinished(ctx, 0); err != nil {
 		return fmt.Errorf("tasks: clear download history: %w", err)
 	}
-	if s.promotionTask != nil {
-		if _, err := s.promotionTask.TrimFinished(ctx, 0); err != nil {
-			return fmt.Errorf("tasks: clear promotion history: %w", err)
+	if s.cacheTasks != nil {
+		if _, err := s.cacheTasks.TrimFinished(ctx, 0); err != nil {
+			return fmt.Errorf("tasks: clear stream cache history: %w", err)
 		}
 	}
 	s.emitTaskUpdated()
@@ -166,65 +133,94 @@ func (s *Service) ClearTaskHistory(ctx context.Context) error {
 // trimTaskHistory enforces the cap after a run finishes. A failure only leaves
 // a few extra history rows, so it is logged rather than surfaced.
 func (s *Service) trimTaskHistory(ctx context.Context) {
+	if s.requests != nil {
+		if _, err := s.requests.TrimFinished(ctx, taskHistoryLimit); err != nil {
+			s.logger.Warn("tasks: cannot trim request history", "error", err)
+		}
+	}
 	if _, err := s.jobs.TrimFinished(ctx, taskHistoryLimit); err != nil {
 		s.logger.Warn("tasks: cannot trim download history", "error", err)
 	}
-	if s.promotionTask != nil {
-		if _, err := s.promotionTask.TrimFinished(ctx, taskHistoryLimit); err != nil {
-			s.logger.Warn("tasks: cannot trim promotion history", "error", err)
+	if s.cacheTasks != nil {
+		if _, err := s.cacheTasks.TrimFinished(ctx, taskHistoryLimit); err != nil {
+			s.logger.Warn("tasks: cannot trim stream cache history", "error", err)
 		}
 	}
 }
 
-func taskRunFromJob(job *domain.DownloadJob) domain.TaskRun {
-	return domain.TaskRun{
-		ID:         job.ID,
-		Kind:       domain.TaskKindDownload,
-		State:      taskStateFromDownload(job.State),
-		TrackID:    job.TrackID,
-		Quality:    job.Quality,
-		Error:      job.LastError,
-		CreatedAt:  job.CreatedAt,
-		StartedAt:  job.StartedAt,
-		FinishedAt: job.FinishedAt,
+func taskRunFromRequest(request *domain.MediaRequest) domain.TaskRun {
+	run := domain.TaskRun{
+		ID:         request.ID,
+		RequestID:  request.ID,
+		Kind:       domain.TaskKindRequest,
+		State:      taskStateFromRequest(request),
+		Phase:      request.Phase,
+		TrackID:    request.TrackID,
+		Title:      request.Title,
+		Artist:     request.Artist,
+		Provider:   request.Provider,
+		ExternalID: request.ExternalID,
+		Quality:    request.Quality,
+		Error:      request.LastError,
+		CreatedAt:  request.CreatedAt,
+		FinishedAt: request.FinishedAt,
 	}
+	if run.State == domain.TaskStateActive {
+		// Requests do not store a start timestamp; updated_at is the closest
+		// observable moment the work last advanced.
+		started := request.UpdatedAt
+		run.StartedAt = &started
+	}
+	return run
 }
 
-func taskRunFromPromotion(task *domain.PromotionTask) domain.TaskRun {
+func taskRunFromCacheTask(task *domain.StreamCacheTask) domain.TaskRun {
+	started := task.StartedAt
 	return domain.TaskRun{
 		ID:         task.ID,
-		Kind:       domain.TaskKindPromote,
-		State:      taskStateFromPromotion(task.State),
-		TrackID:    task.TrackID,
+		Kind:       domain.TaskKindCache,
+		State:      taskStateFromCache(task.State),
 		Title:      task.Title,
 		Artist:     task.Artist,
 		Quality:    task.Quality,
 		Error:      task.Error,
-		CreatedAt:  task.CreatedAt,
-		StartedAt:  task.StartedAt,
+		Provider:   task.Provider,
+		ExternalID: task.ExternalID,
+		CreatedAt:  task.StartedAt,
+		StartedAt:  &started,
 		FinishedAt: task.FinishedAt,
 	}
 }
 
-func taskStateFromDownload(state string) string {
-	switch state {
-	case domain.DownloadStateQueued, domain.DownloadStateActive:
+func taskStateFromRequest(request *domain.MediaRequest) string {
+	switch request.State {
+	case domain.MediaRequestStateWanted, domain.MediaRequestStateQueued,
+		domain.MediaRequestStateRunning:
 		return domain.TaskStateActive
-	case domain.DownloadStateDone:
+	case domain.MediaRequestStateDone:
 		return domain.TaskStateDone
-	case domain.DownloadStateCanceled:
+	case domain.MediaRequestStateFailed:
+		if request.NextAttemptAt != nil {
+			// A retry is scheduled: the row is waiting, not finished.
+			return domain.TaskStateActive
+		}
+		return domain.TaskStateFailed
+	case domain.MediaRequestStateCanceled:
 		return domain.TaskStateCanceled
 	default:
 		return domain.TaskStateFailed
 	}
 }
 
-func taskStateFromPromotion(state string) string {
+func taskStateFromCache(state string) string {
 	switch state {
-	case domain.PromotionStateQueued, domain.PromotionStateRunning:
+	case domain.StreamCacheTaskStateActive:
 		return domain.TaskStateActive
-	case domain.PromotionStateDone:
+	case domain.StreamCacheTaskStateDone:
 		return domain.TaskStateDone
+	case domain.StreamCacheTaskStateCanceled:
+		// An intentional stop (track switch, shutdown) is history, not an error.
+		return domain.TaskStateCanceled
 	default:
 		return domain.TaskStateFailed
 	}

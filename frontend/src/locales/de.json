@@ -854,6 +854,12 @@
     "tab_failed": "Fehler",
     "kind_download": "Download",
     "kind_promote": "Übernahme",
+    "kind_request": "Anfrage",
+    "kind_cache": "Cache",
+    "phase_resolving": "Wird aufgelöst",
+    "phase_downloading": "Wird heruntergeladen",
+    "phase_promoting": "Wird übernommen",
+    "phase_verifying": "Wird geprüft",
     "empty_all": "Noch keine Aufgaben",
     "empty_active": "Keine laufenden Aufgaben",
     "empty_done": "Noch keine abgeschlossenen Aufgaben",
@@ -946,6 +952,17 @@
     "play_all": "Alle abspielen",
     "shuffle": "Zufällige Wiedergabe",
     "more_actions": "Weitere Aktionen",
-    "list_empty": "Noch keine Titel."
+    "list_empty": "Noch keine Titel.",
+    "play_matching": "Quellen werden noch abgeglichen. Versuche es gleich erneut.",
+    "play_unavailable": "In dieser Liste gibt es keine abspielbaren Titel.",
+    "play_skipped": "{count} nicht abspielbare Titel wurden übersprungen.",
+    "discover": "Entdecken",
+    "weekly_echo": "Wochenrückblick",
+    "week_prev": "Vorherige Woche",
+    "week_next": "Nächste Woche",
+    "plays_count": "{count} Wiedergaben",
+    "auto_refresh": "Automatisch nach neuen Empfehlungen suchen",
+    "load_more": "Mehr laden",
+    "no_more": "Keine weiteren Empfehlungen"
   }
 }

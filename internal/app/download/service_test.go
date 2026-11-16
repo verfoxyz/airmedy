@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -138,18 +139,14 @@ type stubCachedAudio struct {
 	found       bool
 	infoErr     error
 	ensureErr   error
-	marked      int
 	discarded   int
 	ensureCalls int
 
-	pending    []*domain.StreamCacheEntry
-	discards   []*domain.StreamCacheEntry
-	entries    []*domain.StreamCacheEntry
-	orphans    []domain.StreamCacheOrphan
-	active     map[string]bool
-	promoted   []string
-	cleared    []string
-	discardErr error
+	entries []*domain.StreamCacheEntry
+	orphans []domain.StreamCacheOrphan
+	active  map[string]bool
+	// playingSession lets a test claim a healthy playback session owns the entry.
+	playingSession bool
 
 	deletedFiles         []string
 	deleteFileErr        error
@@ -173,30 +170,6 @@ func (c *stubCachedAudio) EnsureComplete(context.Context, *domain.TrackDTO) (<-c
 	done := make(chan error, 1)
 	close(done)
 	return done, nil
-}
-
-func (c *stubCachedAudio) MarkPendingPromote(_ context.Context, track *domain.TrackDTO) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.marked++
-	if track == nil {
-		return nil
-	}
-	provider := domain.NormalizeProvider(track.Provider)
-	for _, entry := range c.pending {
-		if entry.Provider == provider && entry.ExternalID == track.ExternalID {
-			return nil
-		}
-	}
-	c.pending = append(c.pending, &domain.StreamCacheEntry{
-		CacheKey:       track.ID,
-		Provider:       provider,
-		ExternalID:     track.ExternalID,
-		Title:          track.Title,
-		Quality:        c.quality,
-		PendingPromote: true,
-	})
-	return nil
 }
 
 func (c *stubCachedAudio) AllEntries(context.Context) ([]*domain.StreamCacheEntry, error) {
@@ -228,37 +201,7 @@ func (c *stubCachedAudio) DiscardEntry(_ context.Context, track *domain.TrackDTO
 	if track != nil {
 		c.discardedExternalIDs = append(c.discardedExternalIDs, track.ExternalID)
 	}
-	if c.discardErr != nil {
-		return c.discardErr
-	}
-	if track != nil {
-		provider := domain.NormalizeProvider(track.Provider)
-		keep := func(list []*domain.StreamCacheEntry) []*domain.StreamCacheEntry {
-			kept := list[:0]
-			for _, entry := range list {
-				if entry.Provider == provider && entry.ExternalID == track.ExternalID {
-					continue
-				}
-				kept = append(kept, entry)
-			}
-			return kept
-		}
-		c.pending = keep(c.pending)
-		c.discards = keep(c.discards)
-	}
 	return nil
-}
-
-func (c *stubCachedAudio) PendingPromotions(context.Context) ([]*domain.StreamCacheEntry, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]*domain.StreamCacheEntry(nil), c.pending...), nil
-}
-
-func (c *stubCachedAudio) PendingDiscards(context.Context) ([]*domain.StreamCacheEntry, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]*domain.StreamCacheEntry(nil), c.discards...), nil
 }
 
 func (c *stubCachedAudio) HasActiveSession(provider, externalID string) bool {
@@ -267,66 +210,10 @@ func (c *stubCachedAudio) HasActiveSession(provider, externalID string) bool {
 	return c.active[domain.NormalizeProvider(provider)+"/"+externalID]
 }
 
-func (c *stubCachedAudio) SetPromoted(_ context.Context, track *domain.TrackDTO, promoted bool) error {
+func (c *stubCachedAudio) HasPlayingSession(string, string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if track == nil {
-		return nil
-	}
-	if promoted {
-		c.promoted = append(c.promoted, track.ID)
-	}
-	for _, entry := range c.pending {
-		if entry.ExternalID == track.ExternalID {
-			entry.Promoted = promoted
-		}
-	}
-	return nil
-}
-
-func (c *stubCachedAudio) SetDiscardPending(_ context.Context, track *domain.TrackDTO, pending bool) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if track == nil {
-		return nil
-	}
-	provider := domain.NormalizeProvider(track.Provider)
-	filter := func(list []*domain.StreamCacheEntry) []*domain.StreamCacheEntry {
-		kept := list[:0]
-		for _, entry := range list {
-			if entry.Provider == provider && entry.ExternalID == track.ExternalID {
-				continue
-			}
-			kept = append(kept, entry)
-		}
-		return kept
-	}
-	if !pending {
-		c.discards = filter(c.discards)
-		return nil
-	}
-	for _, entry := range c.discards {
-		if entry.Provider == provider && entry.ExternalID == track.ExternalID {
-			return nil
-		}
-	}
-	c.discards = append(c.discards, &domain.StreamCacheEntry{
-		CacheKey:       track.ID,
-		Provider:       provider,
-		ExternalID:     track.ExternalID,
-		Title:          track.Title,
-		DiscardPending: true,
-	})
-	return nil
-}
-
-func (c *stubCachedAudio) ClearPendingPromote(_ context.Context, track *domain.TrackDTO) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if track != nil {
-		c.cleared = append(c.cleared, track.ID)
-	}
-	return nil
+	return c.playingSession
 }
 
 func (c *stubCachedAudio) setActive(provider, externalID string, active bool) {
@@ -338,10 +225,10 @@ func (c *stubCachedAudio) setActive(provider, externalID string, active bool) {
 	c.active[domain.NormalizeProvider(provider)+"/"+externalID] = active
 }
 
-func (c *stubCachedAudio) counts() (marked, discarded int) {
+func (c *stubCachedAudio) counts() (discarded int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.marked, c.discarded
+	return c.discarded
 }
 
 // stubDurationProbe stands in for the ffmpeg container probe. Its default is an
@@ -472,22 +359,49 @@ func (s stubCoverAssets) BytesForIdentity(context.Context, string, string) ([]by
 	return s.data, s.mime, nil
 }
 
+// stubArtworkCache stands in for the content-hash artwork store.
+type stubArtworkCache struct {
+	mu    sync.Mutex
+	key   string
+	saves int
+	data  []byte
+}
+
+func (c *stubArtworkCache) Save(_ context.Context, data []byte, _ string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.saves++
+	c.data = data
+	if c.key == "" {
+		c.key = "saved-cover.jpg"
+	}
+	return c.key, nil
+}
+
+func (c *stubArtworkCache) GetPath(string) string                                  { return "" }
+func (c *stubArtworkCache) GetVariantPath(string, string) string                   { return "" }
+func (c *stubArtworkCache) Exists(string) bool                                     { return true }
+func (c *stubArtworkCache) CleanupOrphaned(context.Context, map[string]bool) error { return nil }
+
 type harness struct {
-	t           *testing.T
-	settings    stubSettings
-	svc         *download.Service
-	db          *sqlite.DB
-	jobs        domain.DownloadJobRepository
-	tracks      domain.TrackRepository
-	resolver    *stubResolver
-	downloader  *stubDownloader
-	finalizer   *stubFinalizer
-	cached      *stubCachedAudio
-	coverAssets *stubCoverAssets
-	promotions  domain.PromotionTaskRepository
-	probe       *stubDurationProbe
-	sink        *recordingSink
-	dir         string
+	t            *testing.T
+	settings     stubSettings
+	svc          *download.Service
+	db           *sqlite.DB
+	jobs         domain.DownloadJobRepository
+	tracks       domain.TrackRepository
+	resolver     *stubResolver
+	downloader   *stubDownloader
+	finalizer    *stubFinalizer
+	cached       *stubCachedAudio
+	coverAssets  *stubCoverAssets
+	artwork      *stubArtworkCache
+	requests     domain.MediaRequestRepository
+	requestSaver *stubRequestSaver
+	cacheTasks   domain.StreamCacheTaskRepository
+	probe        *stubDurationProbe
+	sink         *recordingSink
+	dir          string
 	// resolverOverride/downloaderOverride let integration tests drive the same
 	// worker through the composite (plugin) resolver and the real downloader
 	// without forking the fixture.
@@ -510,19 +424,22 @@ func newHarness(t *testing.T) *harness {
 	dir := t.TempDir()
 
 	h := &harness{
-		t:           t,
-		db:          db,
-		jobs:        sqlite.NewDownloadJobRepository(db),
-		tracks:      tracks,
-		resolver:    &stubResolver{ref: domain.StreamRef{URL: "http://cdn.example/1.mp3"}},
-		downloader:  &stubDownloader{bytes: 1024},
-		finalizer:   &stubFinalizer{},
-		cached:      &stubCachedAudio{},
-		coverAssets: &stubCoverAssets{},
-		promotions:  sqlite.NewPromotionTaskRepository(db),
-		probe:       &stubDurationProbe{err: errors.New("probe unavailable in this fixture")},
-		sink:        &recordingSink{},
-		dir:         dir,
+		t:            t,
+		db:           db,
+		jobs:         sqlite.NewDownloadJobRepository(db),
+		tracks:       tracks,
+		resolver:     &stubResolver{ref: domain.StreamRef{URL: "http://cdn.example/1.mp3"}},
+		downloader:   &stubDownloader{bytes: 1024},
+		finalizer:    &stubFinalizer{},
+		cached:       &stubCachedAudio{},
+		coverAssets:  &stubCoverAssets{},
+		artwork:      &stubArtworkCache{},
+		requests:     sqlite.NewMediaRequestRepository(db),
+		requestSaver: &stubRequestSaver{},
+		cacheTasks:   sqlite.NewStreamCacheTaskRepository(db),
+		probe:        &stubDurationProbe{err: errors.New("probe unavailable in this fixture")},
+		sink:         &recordingSink{},
+		dir:          dir,
 	}
 	// Verbose on purpose while the worker is under test: a swallowed error is
 	// indistinguishable from a timeout otherwise.
@@ -554,9 +471,13 @@ func (h *harness) rebuild() {
 		h.jobs, h.tracks, resolver, mover, h.finalizer,
 		h.probe,
 		download.NewMerger(h.tracks, sqlite.NewDownloadMergeRepository(h.db, h.tracks), sqlite.NewTxManager(h.db), logger),
-		h.settings, h.cached, h.coverAssets, h.promotions, logger,
+		h.settings, h.cached, h.coverAssets, logger,
 	)
 	h.svc.SetEventSink(h.sink)
+	h.svc.SetStreamCacheTasks(h.cacheTasks)
+	h.svc.SetMediaRequests(h.requests)
+	h.svc.SetMediaRequestSaver(h.requestSaver)
+	h.svc.SetArtworkCache(h.artwork)
 }
 
 // useResolver swaps in a resolver (such as the provider router) and rebuilds the
@@ -591,6 +512,89 @@ func (h *harness) seedRemote(t *testing.T, id string) *domain.TrackDTO {
 	tr, err := h.tracks.GetByID(context.Background(), id)
 	require.NoError(t, err)
 	return tr
+}
+
+// importLocalRow creates the row a real finalizer would have imported. artKey
+// is what the file's embedded artwork produced ("" when it had none).
+func (h *harness) importLocalRow(artKey string) func(download.FinalizeInput) (download.FinalizeResult, error) {
+	return func(in download.FinalizeInput) (download.FinalizeResult, error) {
+		if err := h.tracks.Upsert(context.Background(), &domain.Track{
+			ID: "local-1", Path: in.Path, Title: "晴天", SortTitle: "晴天",
+			Duration: 200, Availability: domain.AvailabilityReady, ArtworkKey: artKey,
+		}); err != nil {
+			return download.FinalizeResult{}, err
+		}
+		return download.FinalizeResult{TrackID: "local-1", TargetPath: in.Path}, nil
+	}
+}
+
+// promote runs the cached-file promotion against a temp audio file and returns
+// the surviving row.
+func (h *harness) promote(t *testing.T, remote *domain.TrackDTO) *domain.TrackDTO {
+	t.Helper()
+	localFile := filepath.Join(h.dir, "cached.audio")
+	require.NoError(t, os.WriteFile(localFile, []byte("audio"), 0o644))
+	id, err := h.svc.PromoteCachedFile(context.Background(), remote, localFile, domain.QualityFlac)
+	require.NoError(t, err)
+	got, err := h.tracks.GetByID(context.Background(), id)
+	require.NoError(t, err)
+	return got
+}
+
+// TestPromoteCachedFileKeepsTheCachedCover is the promoted-cover regression: the
+// imported file has no embedded art, so the row keeps the cover the streamed row
+// was served from the cover cache.
+func TestPromoteCachedFileKeepsTheCachedCover(t *testing.T) {
+	h := newHarness(t)
+	remote := h.seedRemote(t, "28667025")
+	h.coverAssets.data = []byte("jpeg-bytes")
+	h.coverAssets.mime = "image/jpeg"
+	h.finalizer.onFinalize = h.importLocalRow("")
+
+	got := h.promote(t, remote)
+	assert.Equal(t, "saved-cover.jpg", got.ArtworkKey)
+	assert.Equal(t, 1, h.artwork.saves)
+}
+
+// TestPromoteCachedFileInheritsTheStreamedRowsKey: the old remote row already had
+// a key, so the merge carries it and the cover cache is not touched.
+func TestPromoteCachedFileInheritsTheStreamedRowsKey(t *testing.T) {
+	h := newHarness(t)
+	remote := h.seedRemote(t, "42")
+	remote.ArtworkKey = "streamed-cover.jpg"
+	require.NoError(t, h.tracks.Upsert(context.Background(), &remote.Track))
+	h.finalizer.onFinalize = h.importLocalRow("")
+
+	got := h.promote(t, remote)
+	assert.Equal(t, "streamed-cover.jpg", got.ArtworkKey)
+	assert.Equal(t, 0, h.artwork.saves)
+}
+
+// TestPromoteCachedFilePrefersTheEmbeddedArtwork: art inside the file outranks
+// both the streamed row's key and the cover cache.
+func TestPromoteCachedFilePrefersTheEmbeddedArtwork(t *testing.T) {
+	h := newHarness(t)
+	remote := h.seedRemote(t, "42")
+	remote.ArtworkKey = "streamed-cover.jpg"
+	require.NoError(t, h.tracks.Upsert(context.Background(), &remote.Track))
+	h.coverAssets.data = []byte("jpeg-bytes")
+	h.finalizer.onFinalize = h.importLocalRow("embedded.jpg")
+
+	got := h.promote(t, remote)
+	assert.Equal(t, "embedded.jpg", got.ArtworkKey)
+	assert.Equal(t, 0, h.artwork.saves)
+}
+
+// TestPromoteCachedFileWithoutAnyCover: no embedded art, no old key and no cached
+// bytes leaves the row empty without an error.
+func TestPromoteCachedFileWithoutAnyCover(t *testing.T) {
+	h := newHarness(t)
+	remote := h.seedRemote(t, "42")
+	h.finalizer.onFinalize = h.importLocalRow("")
+
+	got := h.promote(t, remote)
+	assert.Empty(t, got.ArtworkKey)
+	assert.Equal(t, 0, h.artwork.saves)
 }
 
 // waitFor polls until cond holds or the deadline passes. Tests drive the real
@@ -823,6 +827,12 @@ func TestService_MergeReplacingTheRemoteRowLeavesTheJobDone(t *testing.T) {
 	assert.Equal(t, 1, done)
 	assert.Zero(t, failed, "a merge after a finished download must not fail the job")
 
+	// The job is closed before the merge, so the row can still be present for a
+	// moment under load; wait for the merge instead of racing it.
+	waitFor(t, "the merge to replace the remote row", func() bool {
+		remote, err := h.tracks.GetByID(ctx, track.ID)
+		return err == nil && remote == nil
+	})
 	remote, err := h.tracks.GetByID(ctx, track.ID)
 	require.NoError(t, err)
 	assert.Nil(t, remote, "the merge replaced the remote row")
@@ -919,7 +929,25 @@ func (s *stubRemover) DeleteTrackFile(_ context.Context, trackID string) error {
 	return s.err
 }
 
-func TestService_RedownloadDeletesTheFileAndQueuesAFreshJob(t *testing.T) {
+// stubRequestSaver records the explicit re-download requests Redownload makes.
+type stubRequestSaver struct {
+	mu     sync.Mutex
+	calls  int
+	input  [4]string
+	lastID string
+	err    error
+}
+
+func (s *stubRequestSaver) UpsertDownload(_ context.Context, provider, externalID, trackID, quality string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	s.input = [4]string{provider, externalID, trackID, quality}
+	s.lastID = trackID
+	return s.err
+}
+
+func TestService_RedownloadDeletesTheFileAndRecordsADownloadRequest(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	require.NoError(t, h.tracks.Upsert(ctx, &domain.Track{
@@ -935,18 +963,19 @@ func TestService_RedownloadDeletesTheFileAndQueuesAFreshJob(t *testing.T) {
 	require.NoError(t, h.svc.Redownload(ctx, "broken-1"))
 
 	remover.mu.Lock()
-	defer remover.mu.Unlock()
 	assert.Equal(t, []string{"broken-1"}, remover.ids, "the damaged file must be removed explicitly")
+	remover.mu.Unlock()
+
+	h.requestSaver.mu.Lock()
+	assert.Equal(t, 1, h.requestSaver.calls, "the re-download is one media request")
+	assert.Equal(t, "wy", h.requestSaver.input[0])
+	assert.Equal(t, "1001", h.requestSaver.input[1], "the request runs on the re-registered identity")
+	assert.Equal(t, domain.Quality320k, h.requestSaver.input[3])
+	h.requestSaver.mu.Unlock()
 
 	jobs, err := h.svc.List(ctx)
 	require.NoError(t, err)
-	require.Len(t, jobs, 1)
-	assert.Equal(t, domain.DownloadStateQueued, jobs[0].State)
-	fresh, err := h.tracks.GetByID(ctx, jobs[0].TrackID)
-	require.NoError(t, err)
-	require.NotNil(t, fresh)
-	assert.Equal(t, "wy", fresh.Provider)
-	assert.Equal(t, "1001", fresh.ExternalID, "the fresh job runs on the re-registered identity row")
+	assert.Empty(t, jobs, "only the request worker may create jobs")
 }
 
 func TestService_RedownloadRejectsATrackWithoutAnIdentity(t *testing.T) {
@@ -1161,7 +1190,7 @@ func TestService_StartRecoversInterruptedJobs(t *testing.T) {
 		h.jobs, h.tracks, h.resolver, h.downloader, h.finalizer,
 		h.probe,
 		download.NewMerger(h.tracks, sqlite.NewDownloadMergeRepository(h.db, h.tracks), sqlite.NewTxManager(h.db), logger),
-		stubSettings{dir: h.dir}, h.cached, h.coverAssets, h.promotions, logger,
+		stubSettings{dir: h.dir}, h.cached, h.coverAssets, logger,
 	)
 	require.NoError(t, restarted.Start(ctx))
 	t.Cleanup(func() { _ = restarted.Stop(context.Background()) })

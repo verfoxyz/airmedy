@@ -1,6 +1,6 @@
 # Bug：切歌导致缓存中断，任务页却显示「报错」
 
-> 状态：待开工
+> 状态：✅ 已完成（新增 `canceled` 状态：`stopSession`/退出走 `Cancel`（error 为空），仅 `fail()` 保留 `failed`；迁移 000108 把历史 `failed/interrupted` 改为 `canceled`；任务页把缓存 `canceled` 归入「已完成」，请求的 `canceled` 仍归「出错」；清空记录包含 canceled。测试：Go + `frontend/src/stores/tasks.spec.ts`）
 > 现象：「下载/任务」里缓存任务显示 `interrupted`，被归入「出错」
 > 期望：切歌、暂停关闭等**主动中断**不算错误，不应出现在「出错」标签页
 > 关联：`cache-task-history.md`

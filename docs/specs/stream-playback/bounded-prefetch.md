@@ -1,6 +1,7 @@
 # 任务：流缓存改为有界预取（只拉播放位置前方一段，不浪费流量）
 
-> 状态：待开工
+> 状态：✅ 已完成（`prefetchAheadSeconds=45` 水位、进度唤醒、解码器 demand 抬升、`EnsureComplete` 解除限流；测试覆盖见 cache_test.go）
+> 后续：解码器读到写入边界时由 demand 规则继续下载，见 `fix-prefetch-seek-deadlock.md`
 > 目的：不再一次性下载整首；只预取到「当前播放位置 + N 秒」，播放推进后再继续；已拉取数据全部保留
 > 关联：`task-prebuffer.md`、`quality-fallback.md`、`media-request-state-machine.md`
 > 注意：提升流程已改为 `media_requests` 状态机（见 media-request-state-machine.md），本任务的“解除限流”由请求 worker 触发
@@ -18,6 +19,8 @@
 
 - 到达水位 → 暂停下载（不占带宽）；
 - 播放继续前进、水位前移 → 自动恢复下载；
+- **解码器需求优先**：播放器每 500ms 上报解码器当前文件偏移（`SetDecodeOffset`），
+  偏移距写入边界 <2 MiB 时抬水位持续下载，>4 MiB 后恢复水位（`fix-prefetch-seek-deadlock.md`）；
 - 已下载的字节**全部保留**（支持向前缓存、向后 seek）；
 - 用户保存/收藏（有提升请求）→ **立即解除限流**，把整首下载完（提升需要完整文件）。
 
@@ -59,6 +62,7 @@ if !s.promoteRequested && aheadBytes >= limitBytes {
 
 - session 增加 `completeRequested` 标记；
 - 请求 worker 决定要完整文件时（提升前补全、下载），调用 `EnsureComplete`，同时置该标记并唤醒下载；
+- 仅当该 identity 有健康的播放会话时才走“补全缓存”，否则回落到普通下载队列（失败有退避与错误上报）；
 - 标记存在时忽略水位，下载到 EOF 并完成；
 - 请求结束（session 关闭）后标记清空。
 

@@ -88,3 +88,57 @@ func TestAddTrack_WithoutHookStillAdds(t *testing.T) {
 
 	require.NoError(t, svc.AddTrack(ctx, "pl-1", "remote-1"))
 }
+
+func seedTrack(t *testing.T, tracks domain.TrackRepository, id, provider, externalID string, availability string, path string) {
+	t.Helper()
+	require.NoError(t, tracks.Upsert(context.Background(), &domain.Track{
+		ID: id, Path: path, Title: id, Availability: availability,
+		Provider: provider, ExternalID: externalID,
+	}))
+}
+
+// TestAddTracks_TriggersAutoDownloadPerRemoteTrack: multi-select and drag-drop
+// add through AddTracks; it must fire the same save hook as AddTrack.
+func TestAddTracks_TriggersAutoDownloadPerRemoteTrack(t *testing.T) {
+	svc, tracks, playlists, calls := newAutoDownloadFixture(t)
+	ctx := context.Background()
+
+	seedPlaylist(t, playlists, "pl-1")
+	seedTrack(t, tracks, "remote-1", "wy", "1", domain.AvailabilityRemote, domain.RemotePath("wy", "1"))
+	seedTrack(t, tracks, "remote-2", "wy", "2", domain.AvailabilityRemote, domain.RemotePath("wy", "2"))
+	seedTrack(t, tracks, "local-1", "", "", domain.AvailabilityReady, "/music/a.mp3")
+
+	require.NoError(t, svc.AddTracks(ctx, "pl-1", []string{"remote-1", "local-1", "remote-2"}))
+
+	require.Len(t, *calls, 2, "one hook per remote row; the local file needs none")
+	assert.Equal(t, "remote-1", (*calls)[0].trackID)
+	assert.Equal(t, "remote-2", (*calls)[1].trackID)
+	for _, call := range *calls {
+		assert.Equal(t, "pl-1", call.playlistID)
+	}
+}
+
+// TestAddTracks_FiresOnceForDuplicateIDs: the repository ignores a repeated
+// membership, so the hook must not enqueue the same save twice.
+func TestAddTracks_FiresOnceForDuplicateIDs(t *testing.T) {
+	svc, tracks, playlists, calls := newAutoDownloadFixture(t)
+	ctx := context.Background()
+
+	seedPlaylist(t, playlists, "pl-1")
+	seedTrack(t, tracks, "remote-1", "wy", "1", domain.AvailabilityRemote, domain.RemotePath("wy", "1"))
+
+	require.NoError(t, svc.AddTracks(ctx, "pl-1", []string{"remote-1", "remote-1"}))
+
+	require.Len(t, *calls, 1)
+}
+
+func TestAddTracks_WithoutHookStillAdds(t *testing.T) {
+	svc, tracks, playlists, _ := newAutoDownloadFixture(t)
+	ctx := context.Background()
+	svc.SetAutoDownload(nil)
+
+	seedPlaylist(t, playlists, "pl-1")
+	seedTrack(t, tracks, "remote-1", "wy", "1", domain.AvailabilityRemote, domain.RemotePath("wy", "1"))
+
+	require.NoError(t, svc.AddTracks(ctx, "pl-1", []string{"remote-1"}))
+}

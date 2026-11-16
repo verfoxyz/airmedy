@@ -404,7 +404,21 @@ func (s *PlaylistService) AddTracks(ctx context.Context, playlistID string, trac
 	if err := s.guardNotSmart(ctx, playlistID); err != nil {
 		return err
 	}
-	return s.repo.AddTracks(ctx, playlistID, trackIDs)
+	if err := s.repo.AddTracks(ctx, playlistID, trackIDs); err != nil {
+		return err
+	}
+	// A bulk add is the same save event as AddTrack: every newly added remote
+	// row must reach the promotion/download coordinator, otherwise the multi-
+	// select UI silently skips downloads. Duplicates in one batch fire once.
+	seen := make(map[string]struct{}, len(trackIDs))
+	for _, trackID := range trackIDs {
+		if _, duplicate := seen[trackID]; duplicate {
+			continue
+		}
+		seen[trackID] = struct{}{}
+		s.maybeAutoDownload(ctx, playlistID, trackID)
+	}
+	return nil
 }
 
 func (s *PlaylistService) RemoveTrack(ctx context.Context, playlistID, trackID string) error {

@@ -1,6 +1,6 @@
 # 任务：流缓存也在「下载/任务」里留痕
 
-> 状态：待开工
+> 状态：✅ 已完成（迁移 000102 + 仓储、StreamCache 会话写入、任务页合并与前端 cache kind；000108 起主动中断记为 `canceled`，见 `fix-cache-task-canceled.md`）
 > 目的：「下载/任务」页同时显示缓存行为（开始/完成/失败），不再只有下载与提升
 > 关联：`downloads-tasks.md`（三标签 + 清空）、`task-promotion-worker.md`
 

@@ -144,8 +144,8 @@ store does search, paging and saving): a **multi-select** source bar (`全部` p
 toggle per source the plugin reported through `describe`; no selection = all sources),
 rows showing **title**, **artist**, and one **source badge per contributing provider**
 (a cross-source duplicate is one row with several badges), a state chip
-(`in_library` / `downloading` / `failed`; a promotion reads as `downloading` and a
-`saved` row renders no chip), an inline chip per failed
+(`in_library` / `downloading` / `failed`; every in-flight phase reads as
+`downloading` and a `saved` row renders no chip), an inline chip per failed
 source, a 5-row first screen, and a "load more" that adds 10 merged rows each time
 (capped at 100). The source selection persists across restarts
 in `localStorage` (`airmedy.catalog.sources`); the candidate drawer's selection (see
@@ -155,9 +155,10 @@ selectable before the first keyword and reflect a plugin enabled/disabled in
 settings; the call does not run a search, and a failure falls back to the sources
 reported by the next search response.
 
-Per-row actions (`收藏`, `加入歌单`) both register the track and hand it to the
-download coordinator, which promotes a cached stream copy or queues a download; the
-playlist switch only gates the automatic path. `播放` is separate from saving: `CatalogService.PrepareCatalogPlayback`
+Per-row actions (`收藏`, `加入歌单`) both register the track and upsert one media
+request; the request worker promotes a cached stream copy or queues a download. The
+playlist switch only gates the automatic path. `播放` is separate from saving:
+`CatalogService.PrepareCatalogPlayback`
 registers the row without enqueuing a download and returns its track id, which
 the player then streams through the cache (an imported file plays from disk). A
 downloadable row is playable before it is saved, and an `in_library` row keeps
@@ -179,7 +180,7 @@ as the remote URL used for saving and debugging, never as an `<img>` source.
 
 After `download:done` the page re-reads the row by identity through
 `GetCatalogRowStates`, because the merge deletes the remote row that the event's
-track id pointed at. `task:updated` (promotion history) and a matching
+track id pointed at. `task:updated` (a request or cache row changed) and a matching
 `library:track-updated` schedule the same read for **all visible rows in one batch**,
 throttled by 350 ms, so a finished promotion turns "task created" into "in library"
 without a new search. Events for identities the page is not showing are ignored, and
@@ -194,34 +195,64 @@ Page-level failures travel as machine kinds in `error_kind` (`no_sources`,
 `views/LastFmView.vue` is the sidebar entry directly below Search. It renders one
 card per persisted recommendation list on the same `VirtualizedGrid` as the
 album grid (180px minimum column, 45px gap, square covers) and opens the detail
-at `/lastfm/lists/:kind` (`top_tracks` or `similar`), in that order: **For you**
-(`lastfm.similar_tracks`) above **Top tracks** (`lastfm.top`). Each card borrows
-the album card's cover (`rounded-lg`, `ring-foreground/[0.06]`, hover scale), a
-1–4 cover mosaic, the title, and track count + total duration (no
-artist/composer line). Hovering reveals **play all** (the album card's centred
-`bg-foreground` button) and a smaller outline **shuffle**; the cover's top-right
-corner carries **more** (*refresh this list*, *refresh all*) and the per-card
-refresh button. Play/shuffle read the stored rows, resolve the playable ones
-through the catalogue, and start the shared player; shuffle randomizes the
-resolved IDs.
+at `/lastfm/lists/:kind` in card order: **Discover** (`lastfm.discover`),
+**Weekly Echo** (`lastfm.weekly_echo`), **For you** (`lastfm.similar_tracks`),
+**Top tracks** (`lastfm.top`). Each card borrows the album card's cover
+(`rounded-lg`, `ring-foreground/[0.06]`, hover scale), a 1–4 cover mosaic, the
+title, and track count + total duration (no artist/composer line); the weekly
+card replaces the duration with its `MM/DD – MM/DD` window. Hovering reveals
+**play all** (the album card's centred `bg-foreground` button) and a smaller
+outline **shuffle**; the cover's top-right corner carries **more** (*refresh
+this list*, *refresh all*) and the per-card refresh button. Play/shuffle read
+the stored rows, resolve the playable ones through the catalogue, and start the
+shared player; shuffle randomizes the resolved IDs. A row that fails to resolve
+is skipped and the page words it through the play notice (`play_matching`,
+`play_unavailable`, `play_skipped {count}`); the header's `Timer` toggle is the
+page's auto-refresh preference (stored in `localStorage`), not a settings key.
 
-The lists are **persisted**. `LastFmService.ListRecommendationLists()` reads the
-database; only a list that was never built (or a missing kind) triggers one build.
-`GetRecommendationList(kind)` returns the stored rows. Reopening the page or the
-app therefore costs no Last.fm request until the user refreshes.
+The lists are **persisted**. `LastFmService.ListRecommendationLists(autoRefresh)`
+reads the database; only a list that was never built (or a missing kind) triggers
+one build. `autoRefresh` comes from the page toggle: when true, a discover list
+older than 12 hours is rebuilt and the cached (24h) weekly chart list is checked
+for a newer completed week. `GetRecommendationList(kind)` returns the stored rows.
+Reopening the page or the app therefore costs no Last.fm request until the user
+refreshes, except for those explicit checks.
+
+Weekly lists are stored one per week under `weekly_echo:<from>`; the card uses the
+newest one.
 
 Refresh is explicit:
 
-- the header button calls `RefreshAllRecommendationLists()` (both lists);
+- the header button calls `RefreshAllRecommendationLists()` (every list);
 - a card's own button calls `RefreshRecommendationList(kind)` and touches only
-  that kind — the other list and its `updated_at` stay unchanged;
+  that kind — the other lists and their `updated_at` stay unchanged; for
+  `weekly_echo` it re-fetches the newest completed week;
+- the weekly detail refreshes the week it is showing through
+  `RefreshWeeklyEchoWeek(from)`;
 - a failed Last.fm request keeps the stored rows;
 - a refresh bypasses the 30-minute similar-answer cache.
 
-Building keeps the previous rules: top tracks are one `user.getTopTracks`
-(`overall`, limit 50) request. The **For you** list is built seed by seed: the
-first ten usable top tracks seed `track.getSimilar` (limit 10 each), and an empty
-answer falls back to `artist.getSimilar` (limit 3) then each similar artist's
+The **Discover** list is rebuilt from seeds that rotate by ISO week: the top ten
+tracks plus ten `user.getTopArtists` entries (`overall` and `6month` alternate).
+Expansion walks `track.getSimilar`, similar artists' top tracks, seed-artist tags
+and finally the site chart inside one 30-request budget shared with the recent-
+scrobble exclusion set (three pages). Local matches, the seed rows, the last
+month's scrobbles and a third row by the same artist are dropped; the list caps at
+100 rows, 20 per page. The unexpanded remainder is the candidate pool stored in
+the list's `payload`; `LoadMoreRecommendationItems(kind)` appends the next 20 and
+re-expands once when the pool runs out. `has_more` is true while the pool is not
+empty.
+
+The **Weekly Echo** list reads `user.getWeeklyChartList` once a day, takes the
+newest window whose `to` has already passed, and fetches `user.getWeeklyTrackChart`
+with those exact bounds (an arbitrary window answers empty). Rows keep Last.fm's
+`playcount` and the window; `GetWeeklyEchoWeek(from)` builds or reads one week and
+reports `prev_from` / `next_from` among completed weeks only.
+
+Building keeps the previous rules for the two older lists: top tracks are one
+`user.getTopTracks` (`overall`, limit 50) request. The **For you** list is built
+seed by seed: the first ten usable top tracks seed `track.getSimilar` (limit 10
+each), and an empty answer falls back to `artist.getSimilar` (limit 3) then each similar artist's
 `artist.getTopTracks` (limit 5). Each seed's new rows are written to the store and
 emitted as `lastfm:recommendation-items-added` (`{kind, items}`), appended in seed
 order then Last.fm order. A song several seeds recommend is kept once; the list
@@ -250,9 +281,10 @@ searched once. A row becomes `no_source` only after every source failed. Source
 outcomes are cached for 30 minutes per (list kind + artist + title, source).
 
 Rows are updated through `lastfm:recommendations-matched` with `{kind, items,
-done}`, batched every 300–500 ms. `kind` is empty for a combined initial run and
-names the list for a single-list refresh, so a detail page ignores another list's
-updates. The page replaces rows by `match_key` (artist + `\0` + title); a row is
+done}`, batched every 300–500 ms. `kind` is empty for a combined initial run,
+names the list for a single-list refresh, and carries `weekly_echo:<from>` for a
+weekly run; the detail page accepts both its route kind and that suffix. The page
+replaces rows by `match_key` (artist + `\0` + title); a row is
 `matching` until a source hits, then shows its provider and the shared play/save
 actions. `done` is authoritative for the current list: no row stays `matching`,
 and unresolved rows read "no match". The cards page reloads the summaries on
@@ -264,13 +296,22 @@ cover mosaic (`48×48`), title, and `track count · total duration` metadata. Th
 action row reuses `DetailsButton`: **play** (contained), **shuffle** (outline),
 and a **more** outline button whose menu refreshes this list or all lists. A
 right-aligned `Search` + `Input` filters the loaded rows locally by title and
-artist. The rows reuse `TopTrackRow` (match status, play, save, suspicious-duration
+artist. The weekly detail adds `ChevronLeft` / `ChevronRight` week navigation
+(`GetWeeklyEchoWeek(from)`, `prev_from` / `next_from` disabled at the ends) and
+each row shows its `lastfm.plays_count`; the discover detail ends in a
+**load more** button (`LoadMoreRecommendationItems`, disabled at `has_more=false`).
+The rows reuse `TopTrackRow` (match status, play, save, suspicious-duration
 chip) at `TrackTable` density (56px rows, `px-2`, no per-row rounding). Cover,
 duration and playable-row parsing come from the shared `lib/lastfmTracks.ts`.
-Because the route name is shared, the view watches the parameter and reloads
-when the user moves between cards. A row's context menu offers **refresh this
-track's source** (`RefreshRecommendationItem(kind, match_key)`): it clears that
-row's cached source results and failed providers, resets it to `matching`,
+Once the hero title scrolls out of the page's scroller, a 56px glass toolbar
+slides in at the top of the content area (back, truncated title, play, more, and
+a search icon that expands to a 220px `Input`); visibility comes from an
+`IntersectionObserver` on a sentinel under the title, rooted at the page's scroll
+container — no scroll listener. The sticky search shares `searchQuery` with the
+hero search. Because the route name is shared, the view watches the parameter and
+reloads when the user moves between cards. A row's context menu offers **refresh
+this track's source** (`RefreshRecommendationItem(kind, match_key)`): it clears
+that row's cached source results and failed providers, resets it to `matching`,
 persists it and re-queues it through the same workers. Other rows keep their
 caches and no Last.fm content request is made. A row already `matching` disables
 the action.
@@ -299,14 +340,14 @@ shortcut.
 ## Downloads & Tasks Page
 
 `views/DownloadsView.vue` reads the `tasks` store (`stores/tasks.ts`), which loads
-`DownloadService.ListTasks()` — downloads and promotions merged newest first. Four
-tabs show counts and only their own rows: **all** (the default, every run once),
-**in progress** (`active`), **completed** (`done`) and **errors**
-(`failed`/`canceled`). Every row carries a download/promotion
-kind badge; only download rows offer cancel or retry, and a finished promotion shows
-its quality or error instead of a progress bar. The main label is the resolved title
-(a merged download derives it from the finished file name) with the track id in dim
-monospace beside it; when only the id exists it is shown once.
+`DownloadService.ListTasks()` — one row per media request plus stream-cache sessions,
+newest first. Four tabs show counts and only their own rows: **all** (the default,
+every run once), **in progress** (`active`), **completed** (`done`) and **errors**
+(`failed`/`canceled`). Every row carries a request/cache kind badge; a request row
+shows its phase (`resolving`/`downloading`/`promoting`/`verifying`) as the status
+text, and offers cancel while it runs or retry after it failed (`CancelTask`/
+`RetryTask`). A cache row has no actions. The main label is the resolved title, with
+the track id in dim monospace beside it; when only the id exists it is shown once.
 
 The header's **clear history** action opens `ConfirmDialog`; confirming calls
 `ClearTaskHistory()` and reloads. The store also listens to `task:updated`, so a

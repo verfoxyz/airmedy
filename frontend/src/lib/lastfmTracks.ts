@@ -41,6 +41,20 @@ export function formatLastFmDuration(
 }
 
 /**
+ * formatLastFmWeekRange words a weekly chart window. Both bounds are Unix
+ * seconds from Last.fm; the end is the next week's start, which is the label
+ * the page shows (11/09 – 11/16).
+ */
+export function formatLastFmWeekRange(from: number | null | undefined, to: number | null | undefined): string {
+  if (!from || !to) return ''
+  const label = (seconds: number) => {
+    const date = new Date(seconds * 1000)
+    return `${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}`
+  }
+  return `${label(from)} – ${label(to)}`
+}
+
+/**
  * lastFmRowToCatalogRow adapts a persisted Last.fm row to the shared catalogue
  * action shape, so play/save reuse the search pipeline unchanged.
  */
@@ -72,4 +86,46 @@ export function isPlayableLastFmRow(item: TopTrackItemDTO): boolean {
     item.no_source !== true &&
     (!!item.provider || !!item.local_track_id)
   )
+}
+
+export interface LastFmPlaybackPlan {
+  /** Resolved library track ids, in row order. */
+  ids: string[]
+  /** Rows that could not be played, including the ones still matching. */
+  skipped: number
+  /** At least one row is still waiting for its source to answer. */
+  matching: boolean
+}
+
+/**
+ * planLastFmPlayback resolves a list's rows one at a time.
+ *
+ * A row that cannot be resolved only counts as skipped: one dead source must
+ * not abort the whole batch, which used to leave "Play all" doing nothing.
+ * `matching` lets the caller word an empty result as "still matching" instead
+ * of "nothing playable".
+ */
+export async function planLastFmPlayback(
+  rows: TopTrackItemDTO[],
+  prepare: (row: CatalogRowDTO) => Promise<string>,
+): Promise<LastFmPlaybackPlan> {
+  const ids: string[] = []
+  let skipped = 0
+  let matching = false
+  for (const row of rows) {
+    if (!isPlayableLastFmRow(row)) {
+      if (row.matching === true) matching = true
+      skipped++
+      continue
+    }
+    try {
+      const id = await prepare(lastFmRowToCatalogRow(row))
+      if (id) ids.push(id)
+      else skipped++
+    } catch (error) {
+      skipped++
+      console.warn('lastfm: skip a row that could not be prepared', row.match_key, error)
+    }
+  }
+  return { ids, skipped, matching }
 }

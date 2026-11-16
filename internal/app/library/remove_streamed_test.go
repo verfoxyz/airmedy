@@ -15,10 +15,9 @@ import (
 )
 
 type fakeStreamCacheDiscarder struct {
-	ids      []string
-	deferred []string
-	err      error
-	note     func()
+	ids  []string
+	err  error
+	note func()
 }
 
 func (f *fakeStreamCacheDiscarder) DiscardEntry(_ context.Context, track *domain.TrackDTO) error {
@@ -27,13 +26,6 @@ func (f *fakeStreamCacheDiscarder) DiscardEntry(_ context.Context, track *domain
 		f.note()
 	}
 	return f.err
-}
-
-func (f *fakeStreamCacheDiscarder) SetDiscardPending(_ context.Context, track *domain.TrackDTO, pending bool) error {
-	if pending && track != nil {
-		f.deferred = append(f.deferred, track.ID)
-	}
-	return nil
 }
 
 type fakePlaybackRemover struct {
@@ -109,6 +101,57 @@ func trackExists(t *testing.T, db *sqlite.DB, id string) bool {
 		t.Fatalf("count track %s: %v", id, err)
 	}
 	return count > 0
+}
+
+type fakeMediaRequestInvalidator struct {
+	provider   string
+	externalID string
+	calls      int
+}
+
+func (f *fakeMediaRequestInvalidator) InvalidateLocalFile(_ context.Context, provider, externalID string) error {
+	f.calls++
+	f.provider, f.externalID = provider, externalID
+	return nil
+}
+
+// TestDeleteTrackFile_ReopensTheMediaRequestAndDropsTheCache: deleting a
+// promoted file must re-open the identity's finished request, so the next save
+// promotes again instead of being a no-op.
+func TestDeleteTrackFile_ReopensTheMediaRequestAndDropsTheCache(t *testing.T) {
+	svc, db, _, _ := newRemoveStreamedFixture(t)
+	ctx := context.Background()
+
+	path := filepath.Join(t.TempDir(), "song.flac")
+	if err := os.WriteFile(path, []byte("audio"), 0o644); err != nil {
+		t.Fatalf("write track file: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO tracks (id, path, title, sort_title, availability, provider, external_id, mtime)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"local-1", path, "歌", "歌", domain.AvailabilityReady, "wy", "42", time.Now(),
+	); err != nil {
+		t.Fatalf("insert local row: %v", err)
+	}
+
+	invalidator := &fakeMediaRequestInvalidator{}
+	discarder := &fakeStreamCacheDiscarder{}
+	svc.SetMediaRequestInvalidator(invalidator)
+	svc.SetStreamCacheDiscarder(discarder)
+
+	if err := svc.DeleteTrackFile(ctx, "local-1"); err != nil {
+		t.Fatalf("DeleteTrackFile: %v", err)
+	}
+	if invalidator.calls != 1 || invalidator.provider != "wy" || invalidator.externalID != "42" {
+		t.Fatalf("invalidator calls=%d identity=%s/%s, want one wy/42 re-open",
+			invalidator.calls, invalidator.provider, invalidator.externalID)
+	}
+	if len(discarder.ids) != 1 || discarder.ids[0] != "local-1" {
+		t.Fatalf("discarded = %v, want the deleted identity's cache", discarder.ids)
+	}
+	if trackExists(t, db, "local-1") {
+		t.Fatal("the local row must be gone")
+	}
 }
 
 func TestRemoveTrackFromLibrary_DropsTheRowItsCacheAndIndex(t *testing.T) {
@@ -191,8 +234,7 @@ func TestRemoveTrackFromLibrary_DeferredCacheStillDeletesTheRow(t *testing.T) {
 	ctx := context.Background()
 	seedRemoteRow(t, db, "remote-5")
 
-	// Playback still owns the file: the cache delete is deferred and flagged, the
-	// row is not.
+	// Playback still owns the file: the cache delete is deferred, the row is not.
 	discarder := &fakeStreamCacheDiscarder{err: domain.ErrStreamDiscardDeferred}
 	svc.SetStreamCacheDiscarder(discarder)
 
@@ -202,8 +244,8 @@ func TestRemoveTrackFromLibrary_DeferredCacheStillDeletesTheRow(t *testing.T) {
 	if trackExists(t, db, "remote-5") {
 		t.Fatal("a deferred cache discard must not keep the row")
 	}
-	if len(discarder.deferred) != 1 || discarder.deferred[0] != "remote-5" {
-		t.Fatalf("deferred flags = %v, want the deleted entry flagged for cleanup", discarder.deferred)
+	if len(discarder.ids) != 1 || discarder.ids[0] != "remote-5" {
+		t.Fatalf("discard calls = %v, want the deleted entry attempted", discarder.ids)
 	}
 }
 

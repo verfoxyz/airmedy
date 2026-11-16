@@ -854,6 +854,12 @@
     "tab_failed": "오류",
     "kind_download": "다운로드",
     "kind_promote": "승격",
+    "kind_request": "요청",
+    "kind_cache": "캐시",
+    "phase_resolving": "확인 중",
+    "phase_downloading": "다운로드 중",
+    "phase_promoting": "승격 중",
+    "phase_verifying": "검증 중",
     "empty_all": "아직 작업 기록이 없습니다",
     "empty_active": "진행 중인 작업이 없습니다",
     "empty_done": "완료된 작업이 없습니다",
@@ -946,6 +952,17 @@
     "play_all": "모두 재생",
     "shuffle": "셔플",
     "more_actions": "추가 작업",
-    "list_empty": "아직 곡이 없습니다."
+    "list_empty": "아직 곡이 없습니다.",
+    "play_matching": "소스를 계속 매칭하는 중입니다. 잠시 후 다시 시도하세요.",
+    "play_unavailable": "이 목록에 재생할 수 있는 곡이 없습니다.",
+    "play_skipped": "재생할 수 없는 곡 {count}개를 건너뛰었습니다.",
+    "discover": "발견",
+    "weekly_echo": "주간 에코",
+    "week_prev": "이전 주",
+    "week_next": "다음 주",
+    "plays_count": "{count}회 재생",
+    "auto_refresh": "새 추천을 자동으로 확인",
+    "load_more": "더 불러오기",
+    "no_more": "더 이상 추천이 없습니다"
   }
 }

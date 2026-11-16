@@ -147,14 +147,9 @@ func (s *Service) buildDuplicateCachePlan(ctx context.Context) (duplicateCachePl
 			plan.report.Skipped = append(plan.report.Skipped, "no_identity: "+entry.Title)
 			continue
 		}
-		if entry.PendingPromote {
-			// A pending promotion still needs this audio.
-			plan.report.Skipped = append(plan.report.Skipped, "pending_promote: "+entry.Title)
-			continue
-		}
-		if entry.Promoted || entry.DiscardPending {
-			// The audio was moved, or an earlier pass already flagged the cache.
-			addEntry(entry, "promoted")
+		if s.hasActiveRequest(ctx, provider, externalID) {
+			// A request still needs this audio (promotion or a queued download).
+			plan.report.Skipped = append(plan.report.Skipped, "active_request: "+entry.Title)
 			continue
 		}
 		if local, localErr := s.HasLocalIdentity(ctx, provider, externalID); localErr != nil {
@@ -367,6 +362,48 @@ func entryBytes(entry *domain.StreamCacheEntry) int64 {
 		return entry.TotalBytes
 	}
 	return 0
+}
+
+// trackFromEntry builds the minimal row DiscardEntry reads: it addresses the
+// entry by remote identity.
+func trackFromEntry(entry *domain.StreamCacheEntry) *domain.TrackDTO {
+	if entry == nil {
+		return nil
+	}
+	return &domain.TrackDTO{Track: domain.Track{
+		ID:           entry.CacheKey,
+		Path:         domain.RemotePath(entry.Provider, entry.ExternalID),
+		Title:        entry.Title,
+		Provider:     entry.Provider,
+		ExternalID:   entry.ExternalID,
+		Availability: domain.AvailabilityRemote,
+	}}
+}
+
+// HasActiveRequest reports whether the identity still has work in flight. The
+// cache startup sweep uses it to keep audio a request is about to promote or
+// replace, and the cleanup uses it to skip the same entries.
+func (s *Service) HasActiveRequest(ctx context.Context, provider, externalID string) bool {
+	if s.requests == nil {
+		return false
+	}
+	request, err := s.requests.GetByIdentity(ctx, provider, externalID)
+	if err != nil || request == nil {
+		return false
+	}
+	switch request.State {
+	case domain.MediaRequestStateWanted, domain.MediaRequestStateQueued,
+		domain.MediaRequestStateRunning:
+		return true
+	case domain.MediaRequestStateFailed:
+		return request.NextAttemptAt != nil
+	}
+	return false
+}
+
+// hasActiveRequest is the internal spelling used by the cleanup plan.
+func (s *Service) hasActiveRequest(ctx context.Context, provider, externalID string) bool {
+	return s.HasActiveRequest(ctx, provider, externalID)
 }
 
 // planTouchesPlaying reports whether the loaded remote identity owns one of the

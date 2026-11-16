@@ -79,6 +79,24 @@ static ma_result ma_ffmpeg_data_source_init(const char* path, ma_uint32 target_r
     return MA_SUCCESS;
 }
 
+/* Cache mode: decode path through the blocking local-file AVIO instead of
+ * letting FFmpeg open the download file or an HTTP URL directly. */
+static ma_result ma_ffmpeg_data_source_init_cache(
+    const char* path, int64_t expected_size, ma_uint32 target_rate,
+    ma_ffmpeg_data_source* pFFmpegDS
+) {
+    ma_data_source_config config = ma_data_source_config_init();
+    config.vtable = &g_ma_ffmpeg_data_source_vtable;
+
+    ma_result result = ma_data_source_init(&config, &pFFmpegDS->base);
+    if (result != MA_SUCCESS) return result;
+
+    pFFmpegDS->ffmpeg = ffmpeg_open_cache(path, expected_size, target_rate);
+    if (!pFFmpegDS->ffmpeg) return MA_INVALID_FILE;
+
+    return MA_SUCCESS;
+}
+
 static void ma_ffmpeg_data_source_uninit(ma_ffmpeg_data_source* pFFmpegDS) {
     if (pFFmpegDS->ffmpeg) ffmpeg_close(pFFmpegDS->ffmpeg);
     ma_data_source_uninit(&pFFmpegDS->base);

@@ -141,44 +141,6 @@ func (f *fakeStreamCacheRepo) UpdateQuality(_ context.Context, key, quality stri
 	return f.update(key, func(entry *domain.StreamCacheEntry) { entry.Quality = quality })
 }
 
-func (f *fakeStreamCacheRepo) SetPendingPromote(_ context.Context, key string, pending bool) error {
-	return f.update(key, func(entry *domain.StreamCacheEntry) { entry.PendingPromote = pending })
-}
-
-func (f *fakeStreamCacheRepo) SetPromoted(_ context.Context, key string, promoted bool) error {
-	return f.update(key, func(entry *domain.StreamCacheEntry) { entry.Promoted = promoted })
-}
-
-func (f *fakeStreamCacheRepo) SetDiscardPending(_ context.Context, key string, pending bool) error {
-	return f.update(key, func(entry *domain.StreamCacheEntry) { entry.DiscardPending = pending })
-}
-
-func (f *fakeStreamCacheRepo) ListPendingDiscard(_ context.Context) ([]*domain.StreamCacheEntry, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	entries := make([]*domain.StreamCacheEntry, 0, len(f.entries))
-	for _, entry := range f.entries {
-		if entry.DiscardPending {
-			entries = append(entries, cloneEntry(entry))
-		}
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].LastUsed < entries[j].LastUsed })
-	return entries, nil
-}
-
-func (f *fakeStreamCacheRepo) ListPendingPromote(_ context.Context) ([]*domain.StreamCacheEntry, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	entries := make([]*domain.StreamCacheEntry, 0, len(f.entries))
-	for _, entry := range f.entries {
-		if entry.PendingPromote {
-			entries = append(entries, cloneEntry(entry))
-		}
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].LastUsed < entries[j].LastUsed })
-	return entries, nil
-}
-
 func (f *fakeStreamCacheRepo) Delete(_ context.Context, key string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -239,6 +201,132 @@ func newTestCache(t *testing.T, resolver domain.StreamResolver) *Cache {
 	return newTestCacheWithRepo(t, resolver, newFakeStreamCacheRepo())
 }
 
+// fakeStreamCacheTaskRepo records the sessions the cache reports to the tasks
+// page. It is deliberately a value copy: the cache keeps mutating its own row
+// pointer after Start.
+type fakeStreamCacheTaskRepo struct {
+	mu   sync.Mutex
+	rows map[string]*domain.StreamCacheTask
+}
+
+func newFakeStreamCacheTaskRepo() *fakeStreamCacheTaskRepo {
+	return &fakeStreamCacheTaskRepo{rows: make(map[string]*domain.StreamCacheTask)}
+}
+
+func (f *fakeStreamCacheTaskRepo) Start(_ context.Context, task *domain.StreamCacheTask) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	copied := *task
+	f.rows[task.ID] = &copied
+	return nil
+}
+
+func (f *fakeStreamCacheTaskRepo) Finish(
+	_ context.Context, id string, totalBytes, doneBytes int64, at time.Time,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if row, ok := f.rows[id]; ok {
+		row.State = domain.StreamCacheTaskStateDone
+		row.BytesTotal = totalBytes
+		row.BytesDone = doneBytes
+		row.Error = ""
+		finished := at
+		row.FinishedAt = &finished
+	}
+	return nil
+}
+
+func (f *fakeStreamCacheTaskRepo) Fail(
+	_ context.Context, id, message string, totalBytes, doneBytes int64, at time.Time,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if row, ok := f.rows[id]; ok {
+		row.State = domain.StreamCacheTaskStateFailed
+		row.Error = message
+		row.BytesTotal = totalBytes
+		row.BytesDone = doneBytes
+		finished := at
+		row.FinishedAt = &finished
+	}
+	return nil
+}
+
+func (f *fakeStreamCacheTaskRepo) Cancel(
+	_ context.Context, id string, totalBytes, doneBytes int64, at time.Time,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if row, ok := f.rows[id]; ok {
+		row.State = domain.StreamCacheTaskStateCanceled
+		row.Error = ""
+		row.BytesTotal = totalBytes
+		row.BytesDone = doneBytes
+		finished := at
+		row.FinishedAt = &finished
+	}
+	return nil
+}
+
+func (f *fakeStreamCacheTaskRepo) MarkActiveInterrupted(
+	_ context.Context, _ string, at time.Time,
+) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var changed int64
+	for _, row := range f.rows {
+		if row.State != domain.StreamCacheTaskStateActive {
+			continue
+		}
+		row.State = domain.StreamCacheTaskStateCanceled
+		row.Error = ""
+		finished := at
+		row.FinishedAt = &finished
+		changed++
+	}
+	return changed, nil
+}
+
+func (f *fakeStreamCacheTaskRepo) List(context.Context) ([]*domain.StreamCacheTask, error) {
+	return f.all(), nil
+}
+
+func (f *fakeStreamCacheTaskRepo) TrimFinished(context.Context, int) (int64, error) {
+	return 0, nil
+}
+
+func (f *fakeStreamCacheTaskRepo) all() []*domain.StreamCacheTask {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rows := make([]*domain.StreamCacheTask, 0, len(f.rows))
+	for _, row := range f.rows {
+		copied := *row
+		rows = append(rows, &copied)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].StartedAt.Before(rows[j].StartedAt)
+	})
+	return rows
+}
+
+func (f *fakeStreamCacheTaskRepo) waitForState(t *testing.T, state string) domain.StreamCacheTask {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		rows := f.all()
+		for i := len(rows) - 1; i >= 0; i-- {
+			if rows[i].State == state {
+				return *rows[i]
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no stream cache task reached state %q (rows: %+v)", state, f.all())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func newTestCacheWithRepo(t *testing.T, resolver domain.StreamResolver, repo domain.StreamCacheRepository) *Cache {
 	t.Helper()
 	return newTestCacheWithParts(t, resolver, repo, nil)
@@ -296,6 +384,571 @@ func TestOpen_RefusesAnIdentityThatIsAlreadyLocal(t *testing.T) {
 	defer repo.mu.Unlock()
 	if len(repo.entries) != 0 {
 		t.Fatalf("an entry was created for a local identity: %+v", repo.entries)
+	}
+}
+
+// TestStartupCleanupKeepsAudioAPendingRequestStillNeeds: a cache whose identity
+// is already local is obsolete, unless a media request is still waiting to
+// promote or replace it.
+func TestStartupCleanupKeepsAudioAPendingRequestStillNeeds(t *testing.T) {
+	repo := newFakeStreamCacheRepo()
+	cache := newTestCacheWithRepo(t, &fakeResolver{}, repo)
+	cache.SetLocalIdentityChecker(stubLocalIdentity{local: true})
+	active := false
+	cache.SetActiveRequestChecker(func(context.Context, string, string) bool { return active })
+	ctx := context.Background()
+
+	if err := os.WriteFile(filepath.Join(cache.dir, "wy-42.audio"), []byte("cached"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Upsert(ctx, &domain.StreamCacheEntry{
+		CacheKey: "wy/42", Provider: "wy", ExternalID: "42", AudioPath: "wy-42.audio",
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	active = true
+	cache.cleanupLegacyFiles(ctx)
+	if entry, _ := repo.GetByIdentity(ctx, "wy", "42"); entry == nil {
+		t.Fatal("the startup sweep deleted a cache a request still needs")
+	}
+
+	active = false
+	cache.cleanupLegacyFiles(ctx)
+	if entry, _ := repo.GetByIdentity(ctx, "wy", "42"); entry != nil {
+		t.Fatalf("obsolete cache survived the startup sweep: %+v", entry)
+	}
+	if _, err := os.Stat(filepath.Join(cache.dir, "wy-42.audio")); !os.IsNotExist(err) {
+		t.Fatalf("obsolete audio survived the startup sweep: %v", err)
+	}
+}
+
+// prefetchTrack is the same remote row with a known duration, so the water mark
+// can be derived from the real size instead of a bitrate estimate.
+func prefetchTrack(duration int) *domain.TrackDTO {
+	return &domain.TrackDTO{Track: domain.Track{
+		ID: "t1", Title: "Song", Provider: "wy", ExternalID: "42", Duration: duration,
+	}}
+}
+
+// waitForStableBytes polls until the session's byte count stops changing, which
+// is how a paused-at-the-water-mark download looks from outside.
+func waitForStableBytes(t *testing.T, cache *Cache, session *Session) int64 {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	last := int64(-1)
+	stable := 0
+	for {
+		got := sessionBytes(t, cache, session)
+		if got == last && got > 0 {
+			stable++
+		} else {
+			stable = 0
+			last = got
+		}
+		if stable >= 5 {
+			return got
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stream never settled (last %d bytes)", got)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestBoundedPrefetchPausesAtTheWaterMark: with playback still at zero, the
+// download stops roughly 45 s ahead instead of fetching the whole song.
+func TestBoundedPrefetchPausesAtTheWaterMark(t *testing.T) {
+	const durationSeconds = 300
+	data := bytes.Repeat([]byte{0x33}, 4<<20)
+	upstream := &chunkedUpstream{body: data, chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	cache := newTestCache(t, &fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}})
+	session, err := cache.Open(context.Background(), prefetchTrack(durationSeconds))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+
+	got := waitForStableBytes(t, cache, session)
+	waterMark := int64(prefetchAheadSeconds) * int64(len(data)) / durationSeconds
+	if got < waterMark {
+		t.Fatalf("paused at %d bytes, want at least the %d-byte water mark", got, waterMark)
+	}
+	if got > waterMark+128<<10 {
+		t.Fatalf("downloaded %d bytes, far past the %d-byte water mark", got, waterMark)
+	}
+	if got >= int64(len(data)) {
+		t.Fatalf("downloaded the whole %d-byte body while playback was at zero", len(data))
+	}
+}
+
+// TestBoundedPrefetchResumesWhenPlaybackAdvances: the water mark moves with the
+// playback position, and bytes already fetched are kept.
+func TestBoundedPrefetchResumesWhenPlaybackAdvances(t *testing.T) {
+	const durationSeconds = 300
+	data := bytes.Repeat([]byte{0x34}, 4<<20)
+	upstream := &chunkedUpstream{body: data, chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	cache := newTestCache(t, &fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}})
+	session, err := cache.Open(context.Background(), prefetchTrack(durationSeconds))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+
+	before := waitForStableBytes(t, cache, session)
+	cache.ReportProgress(session, 30)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for sessionBytes(t, cache, session) <= before {
+		if time.Now().After(deadline) {
+			t.Fatalf("download stayed at %d bytes after playback advanced", before)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	got := waitForStableBytes(t, cache, session)
+	if got < before {
+		t.Fatalf("received bytes shrank from %d to %d", before, got)
+	}
+	waterMark := int64(prefetchAheadSeconds+30) * int64(len(data)) / durationSeconds
+	if got < waterMark {
+		t.Fatalf("resumed to %d bytes, want at least %d", got, waterMark)
+	}
+}
+
+// TestBoundedPrefetchBackwardSeekDoesNotDownload: seeking behind the downloaded
+// position makes the lead larger, so the download stays paused.
+func TestBoundedPrefetchBackwardSeekDoesNotDownload(t *testing.T) {
+	const durationSeconds = 300
+	data := bytes.Repeat([]byte{0x35}, 4<<20)
+	upstream := &chunkedUpstream{body: data, chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	cache := newTestCache(t, &fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}})
+	session, err := cache.Open(context.Background(), prefetchTrack(durationSeconds))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+
+	initial := waitForStableBytes(t, cache, session)
+	cache.ReportProgress(session, 30)
+	deadline := time.Now().Add(5 * time.Second)
+	for sessionBytes(t, cache, session) <= initial {
+		if time.Now().After(deadline) {
+			t.Fatalf("download did not resume past %d bytes for the forward position", initial)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	advanced := waitForStableBytes(t, cache, session)
+
+	cache.ReportProgress(session, 10)
+	time.Sleep(300 * time.Millisecond)
+	if got := sessionBytes(t, cache, session); got != advanced {
+		t.Fatalf("a backward seek resumed the download: %d -> %d bytes", advanced, got)
+	}
+}
+
+// TestBoundedPrefetchForwardSeekResumes: jumping past the water mark wakes the
+// paused download immediately.
+func TestBoundedPrefetchForwardSeekResumes(t *testing.T) {
+	const durationSeconds = 300
+	data := bytes.Repeat([]byte{0x36}, 4<<20)
+	upstream := &chunkedUpstream{body: data, chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	cache := newTestCache(t, &fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}})
+	session, err := cache.Open(context.Background(), prefetchTrack(durationSeconds))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+
+	before := waitForStableBytes(t, cache, session)
+	cache.ReportProgress(session, 200)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for sessionBytes(t, cache, session) <= before {
+		if time.Now().After(deadline) {
+			t.Fatalf("download stayed at %d bytes after a forward seek", before)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestDecodeDemandLiftsThePrefetchWaterMark: a decoder parked at the write edge
+// (a seek's binary search, or the first probe) must keep the download running
+// even though playback has not advanced past the water mark.
+func TestDecodeDemandLiftsThePrefetchWaterMark(t *testing.T) {
+	const durationSeconds = 300
+	data := bytes.Repeat([]byte{0x38}, 8<<20)
+	upstream := &chunkedUpstream{body: data, chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	cache := newTestCache(t, &fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}})
+	session, err := cache.Open(context.Background(), prefetchTrack(durationSeconds))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+
+	paused := waitForStableBytes(t, cache, session)
+	cache.SetDecodeOffset(session, paused)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for sessionBytes(t, cache, session) < paused+demandWindowBytes {
+		if time.Now().After(deadline) {
+			t.Fatalf("download stayed at %d bytes, want at least %d (decoder demand)",
+				sessionBytes(t, cache, session), paused+demandWindowBytes)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestDecodeDemandReArmsTheWaterMark: once the download is far ahead of the
+// decoder again, the normal prefetch limit applies and no more bytes arrive.
+func TestDecodeDemandReArmsTheWaterMark(t *testing.T) {
+	const durationSeconds = 300
+	data := bytes.Repeat([]byte{0x39}, 8<<20)
+	upstream := &chunkedUpstream{body: data, chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	cache := newTestCache(t, &fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}})
+	session, err := cache.Open(context.Background(), prefetchTrack(durationSeconds))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+
+	paused := waitForStableBytes(t, cache, session)
+	cache.SetDecodeOffset(session, paused)
+	deadline := time.Now().Add(5 * time.Second)
+	for sessionBytes(t, cache, session) < paused+demandWindowBytes {
+		if time.Now().After(deadline) {
+			t.Fatalf("download did not resume on decoder demand")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	ahead := waitForStableBytes(t, cache, session)
+
+	// The decoder jumped back to the head: the download is far ahead now, so the
+	// playback water mark takes over again.
+	cache.SetDecodeOffset(session, 0)
+	time.Sleep(400 * time.Millisecond)
+	if got := sessionBytes(t, cache, session); got != ahead {
+		t.Fatalf("download kept growing after demand ended: %d -> %d bytes", ahead, got)
+	}
+}
+
+func TestSetDecodeOffsetIgnoresMissingSessions(t *testing.T) {
+	cache := newTestCache(t, &fakeResolver{})
+	cache.SetDecodeOffset(nil, 1<<20)
+	cache.SetDecodeOffset(&Session{ID: "missing"}, 1<<20)
+}
+
+// TestEnsureSeekableDownloadsUpToTheTarget: a stream seek must not start until
+// the requested position plus the margin is on disk.
+func TestEnsureSeekableDownloadsUpToTheTarget(t *testing.T) {
+	const durationSeconds = 300
+	data := bytes.Repeat([]byte{0x3a}, 8<<20)
+	upstream := &chunkedUpstream{body: data, chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	cache := newTestCache(t, &fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}})
+	session, err := cache.Open(context.Background(), prefetchTrack(durationSeconds))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+
+	paused := waitForStableBytes(t, cache, session)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := cache.EnsureSeekable(ctx, session, 200); err != nil {
+		t.Fatalf("EnsureSeekable: %v", err)
+	}
+	want := int64(200)*int64(len(data))/durationSeconds + seekBufferBytes
+	if got := sessionBytes(t, cache, session); got < want {
+		t.Fatalf("EnsureSeekable returned at %d bytes, want at least %d (from %d)", got, want, paused)
+	}
+}
+
+// TestEnsureSeekableReturnsImmediatelyWhenTheTargetIsCached: already-downloaded
+// bytes need no wait and no extra download.
+func TestEnsureSeekableReturnsImmediatelyWhenTheTargetIsCached(t *testing.T) {
+	cache := newTestCache(t, &fakeResolver{})
+	s := &cacheSession{id: "cached", received: 4 << 20, total: 8 << 20, progressChanged: make(chan struct{}, 1)}
+	cache.sessions[s.id] = s
+
+	if err := cache.EnsureSeekable(context.Background(), &Session{ID: "cached"}, 10); err != nil {
+		t.Fatalf("EnsureSeekable: %v", err)
+	}
+	if s.seekTarget != 0 {
+		t.Fatalf("seekTarget = %d, want no lift when the bytes are already there", s.seekTarget)
+	}
+}
+
+func TestEnsureSeekableReportsADownloadFailure(t *testing.T) {
+	cache := newTestCache(t, &fakeResolver{})
+	s := &cacheSession{
+		id: "failed", total: 1 << 20, received: 1,
+		failed: errors.New("boom"), progressChanged: make(chan struct{}, 1),
+	}
+	cache.sessions[s.id] = s
+
+	if err := cache.EnsureSeekable(context.Background(), &Session{ID: "failed"}, 10); err == nil {
+		t.Fatal("EnsureSeekable returned nil for a failed download")
+	}
+}
+
+func TestEnsureSeekableHonorsContextCancellation(t *testing.T) {
+	cache := newTestCache(t, &fakeResolver{})
+	s := &cacheSession{id: "slow", total: -1, progressChanged: make(chan struct{}, 1)}
+	cache.sessions[s.id] = s
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := cache.EnsureSeekable(ctx, &Session{ID: "slow"}, 10)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("EnsureSeekable = %v, want the deadline error", err)
+	}
+}
+
+// TestBoundedPrefetchUsesTheBitrateWhenDurationIsUnknown: without a duration the
+// water mark falls back to the resolved tier's byte rate.
+func TestBoundedPrefetchUsesTheBitrateWhenDurationIsUnknown(t *testing.T) {
+	data := bytes.Repeat([]byte{0x37}, 4<<20)
+	upstream := &chunkedUpstream{body: data, chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	cache := newTestCache(t, &fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}})
+	session, err := cache.Open(context.Background(), remoteTrack())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+
+	got := waitForStableBytes(t, cache, session)
+	// The default stream quality is 320k, so the fallback is ~40 KiB/s.
+	waterMark := int64(prefetchAheadSeconds) * 40 * 1024
+	if got < waterMark {
+		t.Fatalf("paused at %d bytes, want at least the %d-byte bitrate water mark", got, waterMark)
+	}
+	if got >= int64(len(data)) {
+		t.Fatalf("downloaded the whole body without a duration (%d bytes)", got)
+	}
+}
+
+// TestEnsureCompleteLiftsTheWaterMark: a promotion or download needs the whole
+// file, so a complete request runs to EOF and marks the entry complete.
+func TestEnsureCompleteLiftsTheWaterMark(t *testing.T) {
+	data := bytes.Repeat([]byte{0x38}, 4<<20)
+	upstream := &chunkedUpstream{body: data, chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	repo := newFakeStreamCacheRepo()
+	cache := newTestCacheWithRepo(t,
+		&fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}}, repo)
+	track := prefetchTrack(300)
+	session, err := cache.Open(context.Background(), track)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+	waitForStableBytes(t, cache, session)
+
+	done, err := cache.EnsureComplete(context.Background(), track)
+	if err != nil {
+		t.Fatalf("EnsureComplete: %v", err)
+	}
+	if done == nil {
+		t.Fatal("EnsureComplete returned no completion channel")
+	}
+	// The session is still playing, so the channel closes only after Close; the
+	// bytes and the row are the observable completion here.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		entry := repo.get(t, session.ID)
+		if entry.Complete && entry.ReceivedBytes == int64(len(data)) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("entry = complete:%v bytes:%d, want the whole %d-byte file",
+				entry.Complete, entry.ReceivedBytes, len(data))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestHalfPlayedCompletesTheCache: crossing half the track lifts the water mark
+// and downloads the rest; before that the bounded prefetch still holds.
+func TestHalfPlayedCompletesTheCache(t *testing.T) {
+	const durationSeconds = 300
+	data := bytes.Repeat([]byte{0x39}, 4<<20)
+	upstream := &chunkedUpstream{body: data, chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	repo := newFakeStreamCacheRepo()
+	cache := newTestCacheWithRepo(t,
+		&fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}}, repo)
+	session, err := cache.Open(context.Background(), prefetchTrack(durationSeconds))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+	waitForStableBytes(t, cache, session)
+
+	cache.ReportProgress(session, float64(durationSeconds)*0.49)
+	time.Sleep(150 * time.Millisecond)
+	if entry := repo.get(t, session.ID); entry.Complete || entry.ReceivedBytes >= int64(len(data)) {
+		t.Fatalf("49%% completed the cache (complete=%v bytes=%d)", entry.Complete, entry.ReceivedBytes)
+	}
+
+	cache.ReportProgress(session, float64(durationSeconds)*0.5)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		entry := repo.get(t, session.ID)
+		if entry.Complete && entry.ReceivedBytes == int64(len(data)) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("entry = complete:%v bytes:%d, want the whole %d-byte file",
+				entry.Complete, entry.ReceivedBytes, len(data))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Further reports must not change a finished entry.
+	cache.ReportProgress(session, float64(durationSeconds)*0.9)
+	if entry := repo.get(t, session.ID); !entry.Complete || entry.ReceivedBytes != int64(len(data)) {
+		t.Fatalf("entry changed after completion: %+v", entry)
+	}
+}
+
+// TestHalfPlayedNeedsADuration: without a known duration there is no half-way
+// point, so the bounded prefetch stays in charge.
+func TestHalfPlayedNeedsADuration(t *testing.T) {
+	data := bytes.Repeat([]byte{0x3a}, 4<<20)
+	upstream := &chunkedUpstream{body: data, chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	repo := newFakeStreamCacheRepo()
+	cache := newTestCacheWithRepo(t,
+		&fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}}, repo)
+	session, err := cache.Open(context.Background(), prefetchTrack(0))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+	waitForStableBytes(t, cache, session)
+
+	cache.ReportProgress(session, 10)
+	time.Sleep(150 * time.Millisecond)
+
+	cache.mu.Lock()
+	state := cache.sessions[session.ID]
+	cache.mu.Unlock()
+	if state == nil {
+		t.Fatalf("session %s missing", session.ID)
+	}
+	state.mu.Lock()
+	halfPlayed := state.halfPlayed
+	completeRequested := state.completeRequested
+	state.mu.Unlock()
+	if halfPlayed || completeRequested {
+		t.Fatalf("half played without a duration (half=%v requested=%v)",
+			halfPlayed, completeRequested)
+	}
+	if entry := repo.get(t, session.ID); entry.Complete {
+		t.Fatalf("unknown duration completed the cache")
+	}
+}
+
+// TestHalfPlayedOnAReopenedSession: seeking to 60% reloads the track; the new
+// session completes as soon as the position is reported.
+func TestHalfPlayedOnAReopenedSession(t *testing.T) {
+	const durationSeconds = 300
+	data := bytes.Repeat([]byte{0x3b}, 4<<20)
+	upstream := &chunkedUpstream{body: data, chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	repo := newFakeStreamCacheRepo()
+	cache := newTestCacheWithRepo(t,
+		&fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}}, repo)
+	first, err := cache.Open(context.Background(), prefetchTrack(durationSeconds))
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	waitForStableBytes(t, cache, first)
+	cache.Close(first)
+
+	session, err := cache.Open(context.Background(), prefetchTrack(durationSeconds))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer cache.Close(session)
+	cache.ReportProgress(session, float64(durationSeconds)*0.6)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		entry := repo.get(t, session.ID)
+		if entry.Complete && entry.ReceivedBytes == int64(len(data)) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("entry = complete:%v bytes:%d, want the whole file after reopening at 60%%",
+				entry.Complete, entry.ReceivedBytes)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestBoundedPrefetchCloseKeepsTheDownloadedBytes: stopping playback leaves the
+// partial cache and its metadata for the next resume.
+func TestBoundedPrefetchCloseKeepsTheDownloadedBytes(t *testing.T) {
+	data := bytes.Repeat([]byte{0x39}, 4<<20)
+	upstream := &chunkedUpstream{body: data, chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	repo := newFakeStreamCacheRepo()
+	cache := newTestCacheWithRepo(t,
+		&fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}}, repo)
+	session, err := cache.Open(context.Background(), prefetchTrack(300))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	got := waitForStableBytes(t, cache, session)
+	cache.Close(session)
+
+	entry := repo.get(t, session.ID)
+	if entry.Complete {
+		t.Fatal("a closed bounded download must not be marked complete")
+	}
+	if entry.ReceivedBytes == 0 || entry.ReceivedBytes > int64(len(data)) {
+		t.Fatalf("stored bytes = %d, want the partial %d-byte download", entry.ReceivedBytes, got)
+	}
+	info, err := os.Stat(filepath.Join(cache.dir, entry.AudioPath))
+	if err != nil {
+		t.Fatalf("partial audio missing after close: %v", err)
+	}
+	if info.Size() < got {
+		t.Fatalf("audio file = %d bytes, want at least the %d received", info.Size(), got)
 	}
 }
 
@@ -677,6 +1330,11 @@ func TestCacheBlocksUntilBytesArrive(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer cache.Close(session)
+	// This test reads the whole body; ask for completion so the prefetch water
+	// mark does not pause the download mid-read.
+	if _, ensureErr := cache.EnsureComplete(context.Background(), remoteTrack()); ensureErr != nil {
+		t.Fatalf("EnsureComplete: %v", ensureErr)
+	}
 
 	type result struct {
 		body []byte
@@ -904,6 +1562,269 @@ func sessionBytes(t *testing.T, cache *Cache, session *Session) int64 {
 	return s.received
 }
 
+// delayedHeaderUpstream keeps the response headers back so a partially cached
+// session can be opened before the source has answered.
+type delayedHeaderUpstream struct {
+	body  []byte
+	delay time.Duration
+}
+
+func (u *delayedHeaderUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	select {
+	case <-time.After(u.delay):
+	case <-r.Context().Done():
+		return
+	}
+	w.Header().Set("Content-Type", "audio/mpeg")
+	w.Header().Set("Content-Length", strconv.Itoa(len(u.body)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(u.body)
+}
+
+// TestCachedRequestRangeBoundary pins the "already on disk" decision, including
+// the `end == received` edge: end is inclusive, so its exclusive bound is end+1.
+func TestCachedRequestRangeBoundary(t *testing.T) {
+	const cached = int64(1000)
+	cases := []struct {
+		name     string
+		spec     byteRange
+		hasRange bool
+		total    int64
+		start    int64
+		end      int64
+		ok       bool
+	}{
+		{"range ending at the cached edge", byteRange{start: 0, end: 999}, true, 4000, 0, 999, true},
+		{"range one byte past the cached edge", byteRange{start: 0, end: 1000}, true, 4000, 0, 1000, false},
+		{"explicit range without a known total", byteRange{start: 100, end: 199}, true, 0, 100, 199, true},
+		{"explicit range past the cached bytes", byteRange{start: 900, end: 1099}, true, 0, 900, 1099, false},
+		{"open range needs the total", byteRange{start: 0, end: -1}, true, 0, 0, 0, false},
+		{"open range covered by a complete file", byteRange{start: 0, end: -1}, true, 1000, 0, 999, true},
+		{"suffix range needs the total", byteRange{suffixLen: 100}, true, 0, 0, 0, false},
+		{"suffix range inside the cached bytes", byteRange{suffixLen: 100}, true, 1000, 900, 999, true},
+		{"plain request for a complete file", byteRange{}, false, 1000, 0, 999, true},
+		{"plain request for a partial file", byteRange{}, false, 2000, 0, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			start, end, ok := cachedRequestRange(tc.spec, tc.hasRange, tc.total, cached)
+			if ok != tc.ok || (ok && (start != tc.start || end != tc.end)) {
+				t.Fatalf("cachedRequestRange = %d-%d/%v, want %d-%d/%v",
+					start, end, ok, tc.start, tc.end, tc.ok)
+			}
+		})
+	}
+}
+
+// TestCachedRangeIsServedWithoutTheUpstream: a request inside the buffered part
+// must answer from disk even while the source has not sent its headers yet.
+func TestCachedRangeIsServedWithoutTheUpstream(t *testing.T) {
+	data := bytes.Repeat([]byte{0x3d}, 4<<20)
+	srv := httptest.NewServer(&delayedHeaderUpstream{body: data, delay: 800 * time.Millisecond})
+	defer srv.Close()
+
+	repo := newFakeStreamCacheRepo()
+	cache := newTestCacheWithRepo(t,
+		&fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}}, repo)
+	id := cacheKeyFor("wy", "42")
+	prefilled := data[:2<<20]
+	if err := os.WriteFile(filepath.Join(cache.dir, id+".audio"), prefilled, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Upsert(context.Background(), &domain.StreamCacheEntry{
+		CacheKey: id, Provider: "wy", ExternalID: "42", AudioPath: id + ".audio",
+		Title: "Song", TitleKey: domain.NormalizationKey("Song"), Artist: "Singer",
+		ArtistKey: domain.NormalizationKey("Singer"), DurationMs: 300000,
+		TotalBytes: int64(len(data)), ReceivedBytes: int64(len(prefilled)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	session, err := cache.Open(context.Background(), prefetchTrack(300))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+
+	req, err := http.NewRequest(http.MethodGet, cache.LocalURL()+"/stream/"+id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Range", "bytes=0-1023")
+	started := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("range request: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 400*time.Millisecond {
+		t.Fatalf("cached range took %s, want it to bypass the delayed upstream", elapsed)
+	}
+	if resp.StatusCode != http.StatusPartialContent {
+		t.Fatalf("status = %d, want 206", resp.StatusCode)
+	}
+	if !bytes.Equal(body, data[:1024]) {
+		t.Fatalf("body = %d bytes, want the first 1024 cached bytes", len(body))
+	}
+}
+
+// TestWaitReadyWaitsForAnUnansweredSession: a session opened from bytes already
+// on disk returns from Open before the upstream response exists. The decoder
+// must wait for it instead of loading a URL the proxy cannot answer yet.
+func TestWaitReadyWaitsForAnUnansweredSession(t *testing.T) {
+	data := bytes.Repeat([]byte{0x3c}, 4<<20)
+	srv := httptest.NewServer(&delayedHeaderUpstream{body: data, delay: 200 * time.Millisecond})
+	defer srv.Close()
+
+	repo := newFakeStreamCacheRepo()
+	cache := newTestCacheWithRepo(t,
+		&fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}}, repo)
+	id := cacheKeyFor("wy", "42")
+	prefilled := data[:2<<20]
+	if err := os.WriteFile(filepath.Join(cache.dir, id+".audio"), prefilled, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Upsert(context.Background(), &domain.StreamCacheEntry{
+		CacheKey: id, Provider: "wy", ExternalID: "42", AudioPath: id + ".audio",
+		Title: "Song", TitleKey: domain.NormalizationKey("Song"), Artist: "Singer",
+		ArtistKey: domain.NormalizationKey("Singer"), DurationMs: 300000,
+		TotalBytes: int64(len(data)), ReceivedBytes: int64(len(prefilled)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Now()
+	session, err := cache.Open(context.Background(), prefetchTrack(300))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+	if elapsed := time.Since(started); elapsed > 150*time.Millisecond {
+		t.Fatalf("Open took %s; the prefilled bytes should satisfy the prebuffer", elapsed)
+	}
+
+	if err := cache.WaitReady(context.Background(), session); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < 150*time.Millisecond {
+		t.Fatalf("WaitReady returned after %s, want it to wait for the upstream headers", elapsed)
+	}
+}
+
+func TestWaitReadyRejectsAMissingSession(t *testing.T) {
+	cache := newTestCache(t, &fakeResolver{})
+	err := cache.WaitReady(context.Background(), &Session{ID: "missing"})
+	if !errors.Is(err, domain.ErrStreamUnavailable) {
+		t.Fatalf("WaitReady error = %v, want ErrStreamUnavailable", err)
+	}
+}
+
+// TestWaitHeadReturnsWhenTheHeadIsBuffered: the decoder gets a session whose
+// local path and final size are known once enough bytes are on disk.
+func TestWaitHeadReturnsWhenTheHeadIsBuffered(t *testing.T) {
+	data := bytes.Repeat([]byte{0x3e}, 4<<20)
+	upstream := &chunkedUpstream{body: data, chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	cache := newTestCache(t, &fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}})
+	session, err := cache.Open(context.Background(), prefetchTrack(300))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer cache.Close(session)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := cache.WaitHead(ctx, session); err != nil {
+		t.Fatalf("WaitHead: %v", err)
+	}
+	if session.Path == "" || !strings.HasSuffix(session.Path, ".audio") {
+		t.Fatalf("session path = %q, want the cache file", session.Path)
+	}
+	if session.TotalBytes != int64(len(data)) {
+		t.Fatalf("session total = %d, want %d", session.TotalBytes, len(data))
+	}
+}
+
+// TestWaitHeadReportsAFailedSession: a failed download must not look like a
+// slow head; the caller surfaces the error instead of hanging.
+func TestWaitHeadReportsAFailedSession(t *testing.T) {
+	cache := newTestCache(t, &fakeResolver{})
+	s := &cacheSession{
+		id:              "failed-session",
+		progressChanged: make(chan struct{}, 1),
+		done:            make(chan struct{}),
+		total:           4 << 20,
+		failed:          errors.New("upstream failed"),
+	}
+	cache.mu.Lock()
+	cache.sessions[s.id] = s
+	cache.mu.Unlock()
+	defer func() {
+		cache.mu.Lock()
+		delete(cache.sessions, s.id)
+		cache.mu.Unlock()
+	}()
+
+	err := cache.WaitHead(context.Background(), &Session{ID: s.id})
+	if err == nil || !strings.Contains(err.Error(), "upstream failed") {
+		t.Fatalf("WaitHead error = %v, want the download failure", err)
+	}
+}
+
+// TestWaitHeadReturnsWhenTheContextIsCanceled: exit cancels the wait instead of
+// blocking for the full head timeout.
+func TestWaitHeadReturnsWhenTheContextIsCanceled(t *testing.T) {
+	cache := newTestCache(t, &fakeResolver{})
+	s := &cacheSession{
+		id:              "slow-head",
+		progressChanged: make(chan struct{}, 1),
+		done:            make(chan struct{}),
+		total:           4 << 20,
+	}
+	cache.mu.Lock()
+	cache.sessions[s.id] = s
+	cache.mu.Unlock()
+	defer func() {
+		cache.mu.Lock()
+		delete(cache.sessions, s.id)
+		cache.mu.Unlock()
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+	started := time.Now()
+	err := cache.WaitHead(ctx, &Session{ID: s.id})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitHead error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("WaitHead returned after %s, want a prompt cancel", elapsed)
+	}
+}
+
+// TestStopSessionIsBounded: a download goroutine that ignores cancellation
+// cannot hold shutdown for its 30s timeout.
+func TestStopSessionIsBounded(t *testing.T) {
+	cache := newTestCache(t, &fakeResolver{})
+	s := &cacheSession{
+		id:              "stuck",
+		progressChanged: make(chan struct{}, 1),
+		done:            make(chan struct{}), // never closes
+		cancel:          func() {},
+		total:           1024,
+	}
+	started := time.Now()
+	cache.stopSession(s)
+	if elapsed := time.Since(started); elapsed > sessionStopWait+500*time.Millisecond {
+		t.Fatalf("stopSession waited %s, want about %s", elapsed, sessionStopWait)
+	}
+}
+
 func TestOpenWaitsForPrebuffer(t *testing.T) {
 	data := bytes.Repeat([]byte{0x42}, 4<<20) // 4 MiB
 	upstream := &chunkedUpstream{body: data, chunk: 32 << 10, delay: 20 * time.Millisecond}
@@ -1051,6 +1972,10 @@ func TestReopenResumesFromCachedBytes(t *testing.T) {
 		t.Fatalf("second Open: %v", err)
 	}
 	defer cache.Close(second)
+	// The test reads the whole file; completion lifts the prefetch water mark.
+	if _, ensureErr := cache.EnsureComplete(context.Background(), remoteTrack()); ensureErr != nil {
+		t.Fatalf("EnsureComplete: %v", ensureErr)
+	}
 
 	if value := upstream.waitForRange(2 * time.Second); value == "" || value == "bytes=0-" {
 		t.Fatalf("second request did not resume with a Range header (got %q)", value)
@@ -1345,20 +2270,11 @@ func TestDiscardEntryDefersUntilPlaybackCloses(t *testing.T) {
 		closed <- provider + "/" + externalID
 	})
 
-	if err := cache.MarkPendingPromote(ctx, track); err != nil {
-		t.Fatalf("MarkPendingPromote: %v", err)
-	}
 	if err := cache.DiscardEntry(ctx, track); !errors.Is(err, domain.ErrStreamDiscardDeferred) {
 		t.Fatalf("DiscardEntry = %v, want ErrStreamDiscardDeferred", err)
 	}
-	// The caller owns the retry: the entry keeps its data and gets the flag.
-	if err := cache.SetDiscardPending(ctx, track, true); err != nil {
-		t.Fatalf("SetDiscardPending: %v", err)
-	}
+	// The cache owns the retry: the audio and the row stay until the session ends.
 	entry := repo.get(t, session.ID)
-	if !entry.DiscardPending || entry.Promoted {
-		t.Fatalf("deferred entry = %+v, want discard_pending without promoted", entry)
-	}
 	if _, statErr := os.Stat(filepath.Join(cache.dir, entry.AudioPath)); statErr != nil {
 		t.Fatalf("the audio must stay while a session owns it: %v", statErr)
 	}
@@ -1373,22 +2289,33 @@ func TestDiscardEntryDefersUntilPlaybackCloses(t *testing.T) {
 		t.Fatal("Closing the session did not notify the promotion observer")
 	}
 
-	if err := cache.DiscardEntry(ctx, track); err != nil {
-		t.Fatalf("DiscardEntry after close: %v", err)
+	// The deferred delete ran as part of the close, without another caller.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		remaining, err := repo.GetByIdentity(ctx, "wy", "42")
+		if err == nil && remaining == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("entry = %+v, err = %v, want the deferred delete", remaining, err)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	if remaining, err := repo.GetByIdentity(ctx, "wy", "42"); err != nil || remaining != nil {
-		t.Fatalf("entry = %+v, err = %v, want the row deleted", remaining, err)
+	if _, statErr := os.Stat(filepath.Join(cache.dir, entry.AudioPath)); !os.IsNotExist(statErr) {
+		t.Fatalf("audio still on disk after the deferred delete: %v", statErr)
 	}
 }
 
-func TestDiscardEntryAcceptsAPromotedEntryWhoseFileIsGone(t *testing.T) {
+func TestDiscardEntryAcceptsAnEntryWhoseFileIsGone(t *testing.T) {
 	repo := newFakeStreamCacheRepo()
-	cache := &Cache{dir: t.TempDir(), repo: repo, sessions: map[string]*cacheSession{}, logger: slog.Default()}
+	cache := &Cache{
+		dir: t.TempDir(), repo: repo, sessions: map[string]*cacheSession{},
+		deferredDiscards: map[string]*domain.StreamCacheEntry{}, logger: slog.Default(),
+	}
 	ctx := context.Background()
 
 	if err := repo.Upsert(ctx, &domain.StreamCacheEntry{
 		CacheKey: "wy/42", Provider: "wy", ExternalID: "42", AudioPath: "wy-42.audio",
-		PendingPromote: true, Promoted: true,
 	}); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
@@ -1401,66 +2328,7 @@ func TestDiscardEntryAcceptsAPromotedEntryWhoseFileIsGone(t *testing.T) {
 	}
 }
 
-func TestOpenHealsDeletionIntentWhenTheCacheIsReused(t *testing.T) {
-	repo := newFakeStreamCacheRepo()
-	cache := newTestCacheWithRepo(t, &fakeResolver{}, repo)
-	audioPath := "wy-42.audio"
-	if err := os.WriteFile(filepath.Join(cache.dir, audioPath), []byte("cached"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := repo.Upsert(context.Background(), &domain.StreamCacheEntry{
-		CacheKey: "wy/42", Provider: "wy", ExternalID: "42", AudioPath: audioPath,
-		TotalBytes: 6, ReceivedBytes: 6, Complete: true,
-		PendingPromote: true, Promoted: true, DiscardPending: true,
-	}); err != nil {
-		t.Fatalf("Upsert: %v", err)
-	}
-
-	session, err := cache.Open(context.Background(), remoteTrack())
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer cache.Close(session)
-
-	entry := repo.get(t, "wy/42")
-	if entry.DiscardPending {
-		t.Fatal("replaying a cached entry must clear discard_pending, or the audio would be deleted under the decoder")
-	}
-	if !entry.Promoted {
-		t.Fatal("the audio was moved into the library, so promoted must stay set")
-	}
-}
-
-func TestOpenClearsPromotionWhenTheMovedFileIsGone(t *testing.T) {
-	upstream := &chunkedUpstream{body: bytes.Repeat([]byte{9}, 2<<20), chunk: 64 << 10}
-	srv := httptest.NewServer(upstream)
-	defer srv.Close()
-
-	repo := newFakeStreamCacheRepo()
-	cache := newTestCacheWithRepo(t,
-		&fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}}, repo)
-	// The file was moved away by a promotion, leaving the flags behind.
-	if err := repo.Upsert(context.Background(), &domain.StreamCacheEntry{
-		CacheKey: "wy/42", Provider: "wy", ExternalID: "42", AudioPath: "wy-42.audio",
-		TotalBytes: 6, ReceivedBytes: 6, Complete: true,
-		PendingPromote: true, Promoted: true, DiscardPending: true,
-	}); err != nil {
-		t.Fatalf("Upsert: %v", err)
-	}
-
-	session, err := cache.Open(context.Background(), remoteTrack())
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer cache.Close(session)
-
-	entry := repo.get(t, "wy/42")
-	if entry.Promoted || entry.DiscardPending {
-		t.Fatalf("entry = %+v, want a fresh cache without deletion intent", entry)
-	}
-}
-
-func TestPendingPromotionsAndActiveSessions(t *testing.T) {
+func TestHasActiveSessionReportsOnlyTheOpenIdentity(t *testing.T) {
 	upstream := &chunkedUpstream{body: bytes.Repeat([]byte{8}, 2<<20), chunk: 64 << 10}
 	srv := httptest.NewServer(upstream)
 	defer srv.Close()
@@ -1470,13 +2338,7 @@ func TestPendingPromotionsAndActiveSessions(t *testing.T) {
 		&fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}}, repo)
 	ctx := context.Background()
 
-	if err := repo.Upsert(ctx, &domain.StreamCacheEntry{
-		CacheKey: "other/7", Provider: "kg", ExternalID: "7", AudioPath: "kg-7.audio",
-	}); err != nil {
-		t.Fatalf("Upsert: %v", err)
-	}
-	track := remoteTrack()
-	session, err := cache.Open(ctx, track)
+	session, err := cache.Open(ctx, remoteTrack())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1485,28 +2347,6 @@ func TestPendingPromotionsAndActiveSessions(t *testing.T) {
 	}
 	if cache.HasActiveSession("kg", "7") {
 		t.Fatal("HasActiveSession matched an unrelated identity")
-	}
-
-	if err := cache.MarkPendingPromote(ctx, track); err != nil {
-		t.Fatalf("MarkPendingPromote: %v", err)
-	}
-	entries, err := cache.PendingPromotions(ctx)
-	if err != nil {
-		t.Fatalf("PendingPromotions: %v", err)
-	}
-	if len(entries) != 1 || entries[0].ExternalID != "42" {
-		t.Fatalf("pending = %+v, want only the flagged entry", entries)
-	}
-
-	if err := cache.SetDiscardPending(ctx, track, true); err != nil {
-		t.Fatalf("SetDiscardPending: %v", err)
-	}
-	discards, err := cache.PendingDiscards(ctx)
-	if err != nil {
-		t.Fatalf("PendingDiscards: %v", err)
-	}
-	if len(discards) != 1 || discards[0].ExternalID != "42" {
-		t.Fatalf("discards = %+v, want only the flagged entry", discards)
 	}
 
 	cache.Close(session)
@@ -1555,5 +2395,134 @@ func TestPrebufferTarget(t *testing.T) {
 		if got := prebufferTarget(tt.total, tt.duration); got != tt.want {
 			t.Errorf("prebufferTarget(%d,%d) = %d, want %d", tt.total, tt.duration, got, tt.want)
 		}
+	}
+}
+
+// TestCacheRecordsOneTaskPerActualDownload: the first play downloads and leaves
+// one finished task; a replay served from disk must not add another.
+func TestCacheRecordsOneTaskPerActualDownload(t *testing.T) {
+	data := bytes.Repeat([]byte("airmedy-stream-"), 512)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "song.mp3", time.Time{}, bytes.NewReader(data))
+	}))
+	defer upstream.Close()
+
+	cache := newTestCache(t, &fakeResolver{ref: domain.StreamRef{URL: upstream.URL + "/song.mp3"}})
+	tasks := newFakeStreamCacheTaskRepo()
+	cache.SetTaskHistory(tasks)
+
+	track := remoteTrack()
+	session, err := cache.Open(context.Background(), track)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	cache.Close(session)
+
+	done := tasks.waitForState(t, domain.StreamCacheTaskStateDone)
+	if done.Title != "Song" {
+		t.Fatalf("task title = %q, want the cache entry title", done.Title)
+	}
+	if done.BytesTotal != int64(len(data)) || done.BytesDone != int64(len(data)) {
+		t.Fatalf("task bytes = %d/%d, want %d/%d",
+			done.BytesDone, done.BytesTotal, len(data), len(data))
+	}
+
+	session, err = cache.Open(context.Background(), track)
+	if err != nil {
+		t.Fatalf("second Open (cache hit): %v", err)
+	}
+	defer cache.Close(session)
+	if rows := tasks.all(); len(rows) != 1 {
+		t.Fatalf("a cache hit added a task row: %+v", rows)
+	}
+}
+
+// TestCacheRecordsAFailedTask: a resolver failure must close the started row
+// with its reason instead of leaving it active forever.
+func TestCacheRecordsAFailedTask(t *testing.T) {
+	cache := newTestCache(t, &fakeResolver{err: domain.ErrStreamUnavailable})
+	tasks := newFakeStreamCacheTaskRepo()
+	cache.SetTaskHistory(tasks)
+
+	if _, err := cache.Open(context.Background(), remoteTrack()); err == nil {
+		t.Fatal("Open should fail when the resolver has no source")
+	}
+
+	failed := tasks.waitForState(t, domain.StreamCacheTaskStateFailed)
+	if failed.Error == "" {
+		t.Fatal("failed task has no error message")
+	}
+	if failed.Title != "Song" {
+		t.Fatalf("task title = %q, want the cache entry title", failed.Title)
+	}
+}
+
+// TestCacheRecordsACanceledTaskOnClose: a track switch (or Stop) stops the
+// session on purpose; the row is history, not an error.
+func TestCacheRecordsACanceledTaskOnClose(t *testing.T) {
+	data := bytes.Repeat([]byte{0x23}, 4<<20)
+	upstream := &chunkedUpstream{body: data, chunk: 64 << 10}
+	srv := httptest.NewServer(upstream)
+	defer srv.Close()
+
+	cache := newTestCache(t, &fakeResolver{ref: domain.StreamRef{URL: srv.URL + "/song.mp3"}})
+	tasks := newFakeStreamCacheTaskRepo()
+	cache.SetTaskHistory(tasks)
+
+	session, err := cache.Open(context.Background(), prefetchTrack(300))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	cache.Close(session)
+
+	canceled := tasks.waitForState(t, domain.StreamCacheTaskStateCanceled)
+	if canceled.Error != "" {
+		t.Fatalf("canceled task carries an error: %q", canceled.Error)
+	}
+	if canceled.FinishedAt == nil {
+		t.Fatal("canceled task has no finish time")
+	}
+}
+
+// TestCacheRecordsEverySession: each download session is its own history row,
+// so evicting the cache and playing again leaves two.
+func TestCacheRecordsEverySession(t *testing.T) {
+	data := bytes.Repeat([]byte{0x22}, 4096)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "song.mp3", time.Time{}, bytes.NewReader(data))
+	}))
+	defer upstream.Close()
+
+	cache := newTestCache(t, &fakeResolver{ref: domain.StreamRef{URL: upstream.URL + "/song.mp3"}})
+	tasks := newFakeStreamCacheTaskRepo()
+	cache.SetTaskHistory(tasks)
+
+	track := remoteTrack()
+	session, err := cache.Open(context.Background(), track)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	cache.Close(session)
+	tasks.waitForState(t, domain.StreamCacheTaskStateDone)
+
+	if err := cache.DiscardEntry(context.Background(), track); err != nil {
+		t.Fatalf("DiscardEntry: %v", err)
+	}
+	session, err = cache.Open(context.Background(), track)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	defer cache.Close(session)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		rows := tasks.all()
+		if len(rows) == 2 && rows[1].State == domain.StreamCacheTaskStateDone {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("second session did not create a finished task (rows: %+v)", rows)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

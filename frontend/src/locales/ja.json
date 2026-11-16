@@ -854,6 +854,12 @@
     "tab_failed": "エラー",
     "kind_download": "ダウンロード",
     "kind_promote": "昇格",
+    "kind_request": "リクエスト",
+    "kind_cache": "キャッシュ",
+    "phase_resolving": "解決中",
+    "phase_downloading": "ダウンロード中",
+    "phase_promoting": "昇格中",
+    "phase_verifying": "検証中",
     "empty_all": "タスクはまだありません",
     "empty_active": "進行中のタスクはありません",
     "empty_done": "完了したタスクはまだありません",
@@ -946,6 +952,17 @@
     "play_all": "すべて再生",
     "shuffle": "シャッフル",
     "more_actions": "その他の操作",
-    "list_empty": "曲はまだありません。"
+    "list_empty": "曲はまだありません。",
+    "play_matching": "ソースを照合しています。しばらくしてからもう一度お試しください。",
+    "play_unavailable": "このリストに再生できる曲がありません。",
+    "play_skipped": "再生できない曲を {count} 曲スキップしました。",
+    "discover": "発見",
+    "weekly_echo": "週間エコー",
+    "week_prev": "前の週",
+    "week_next": "次の週",
+    "plays_count": "{count} 回再生",
+    "auto_refresh": "新しいおすすめを自動で確認",
+    "load_more": "さらに読み込む",
+    "no_more": "これ以上のおすすめはありません"
   }
 }

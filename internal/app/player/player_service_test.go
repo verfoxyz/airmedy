@@ -24,6 +24,7 @@ type fakePlayer struct {
 	lastPreampGain float64
 	loadCalls      int
 	loadedPath     string
+	pauseErr       error
 }
 
 func TestShouldApplyPalette(t *testing.T) {
@@ -44,8 +45,11 @@ func (p *fakePlayer) Play() error {
 
 func (p *fakePlayer) Pause() error {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.pauseErr != nil {
+		return p.pauseErr
+	}
 	p.status.PlaybackState = domain.PlaybackStatePaused
-	p.mu.Unlock()
 	return nil
 }
 
@@ -1644,6 +1648,145 @@ func TestLoadAndPlayDoesNotWaitForListeningWrite(t *testing.T) {
 	_ = s.Stop()
 }
 
+// TestLoadContextCancelsAnInFlightHeadWait: shutdown cancels the service
+// context first, so a load parked in WaitHead returns at once instead of
+// riding out its 15s timeout.
+func TestLoadContextCancelsAnInFlightHeadWait(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1}}
+	s, _ := newTestService(t, fp)
+	cache := newFakeStreamCache()
+	cache.headBlock = true
+	s.streamCache = cache
+	s.serviceCtx, s.serviceCancel = context.WithCancel(context.Background())
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID: "remote-1", Path: domain.RemotePath("wy", "42"), Title: "歌",
+		Provider: "wy", ExternalID: "42", Availability: domain.AvailabilityRemote, Duration: 120,
+	}}
+	done := make(chan error, 1)
+	go func() { done <- s.PlayTracks([]*domain.TrackDTO{remote}, 0) }()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		cache.mu.Lock()
+		calls := cache.headCalls
+		cache.mu.Unlock()
+		if calls > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	started := time.Now()
+	s.serviceCancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("PlayTracks must return when the load context is canceled")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("PlayTracks did not return after the load context was canceled")
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("cancellation took %s, want an immediate return", elapsed)
+	}
+}
+
+// newSeekStreamService builds a service with an active remote stream session.
+func newSeekStreamService(t *testing.T) (*PlayerService, *fakePlayer, *fakeStreamCache, *domain.TrackDTO) {
+	t.Helper()
+	fp := &fakePlayer{status: domain.PlayerStatus{
+		Volume: 1, PlaybackState: domain.PlaybackStatePlaying,
+	}}
+	s, _ := newTestService(t, fp)
+	cache := newFakeStreamCache()
+	s.streamCache = cache
+	s.streamMu.Lock()
+	s.streamSession = cache.session
+	s.streamMu.Unlock()
+	track := &domain.TrackDTO{Track: domain.Track{
+		ID: "remote-1", Path: domain.RemotePath("wy", "42"), Title: "song",
+		Provider: "wy", ExternalID: "42", Availability: domain.AvailabilityRemote,
+		Duration: 120,
+	}}
+	return s, fp, cache, track
+}
+
+// TestSeekStreamBuffersThenReopensTheDecoder pins seek-metadata-duration.md: a
+// remote seek asks the cache for the target bytes, then reloads the decoder. It
+// never seeks in place.
+func TestSeekStreamBuffersThenReopensTheDecoder(t *testing.T) {
+	s, fp, cache, track := newSeekStreamService(t)
+	if err := s.seekStream(track, 42); err != nil {
+		t.Fatalf("seekStream: %v", err)
+	}
+	cache.mu.Lock()
+	seeks := append([]float64(nil), cache.seeks...)
+	cache.mu.Unlock()
+	if len(seeks) != 1 || seeks[0] != 42 {
+		t.Fatalf("EnsureSeekable calls = %v, want one buffering wait for 42s", seeks)
+	}
+	if fp.loadCalls != 1 {
+		t.Fatalf("Load called %d times, want the decoder rebuilt once", fp.loadCalls)
+	}
+	status := fp.GetStatus()
+	if status.Position != 42 || status.PlaybackState != domain.PlaybackStatePlaying {
+		t.Fatalf("status after seek = %+v, want playing at 42s", status)
+	}
+}
+
+// TestSeekStreamNeedsAMetadataDuration: without a duration the position cannot
+// be mapped, so the seek fails instead of landing at zero and later advancing.
+func TestSeekStreamNeedsAMetadataDuration(t *testing.T) {
+	s, fp, cache, track := newSeekStreamService(t)
+	track.Duration = 0
+	if err := s.seekStream(track, 10); err == nil {
+		t.Fatal("seekStream without a duration succeeded")
+	}
+	cache.mu.Lock()
+	seeks := len(cache.seeks)
+	cache.mu.Unlock()
+	if seeks != 0 || fp.loadCalls != 0 {
+		t.Fatalf("EnsureSeekable=%d loads=%d, want no work without a duration", seeks, fp.loadCalls)
+	}
+}
+
+// TestSeekStreamSurfacesBufferingFailure: a failed download while buffering must
+// report instead of reopening the decoder.
+func TestSeekStreamSurfacesBufferingFailure(t *testing.T) {
+	s, fp, cache, track := newSeekStreamService(t)
+	cache.ensureErr = errors.New("download failed")
+	if err := s.seekStream(track, 10); err == nil {
+		t.Fatal("seekStream succeeded after a buffering failure")
+	}
+	if fp.loadCalls != 0 {
+		t.Fatalf("Load called %d times, want none after a buffering failure", fp.loadCalls)
+	}
+}
+
+// TestClassifySeekOutcomeFollowsTheDiagnosisTable pins the four rows of
+// docs/specs/player/diagnose-seek-silence.md §4 so the logged verdict means the
+// same thing on every run.
+func TestClassifySeekOutcomeFollowsTheDiagnosisTable(t *testing.T) {
+	cases := []struct {
+		name string
+		diag domain.PlayerDiagnostics
+		want string
+	}{
+		{"no frames while the AVIO waits", domain.PlayerDiagnostics{Frames: 0, AVIOWaitMS: 900}, "decode_blocked"},
+		{"no frames and no wait", domain.PlayerDiagnostics{Frames: 0, AVIOWaitMS: 10}, "decoder_state"},
+		{"frames decoded but the cursor is stuck", domain.PlayerDiagnostics{Frames: 44100, CursorSeconds: 7.05}, "engine_not_consuming"},
+		{"frames decoded and the cursor runs", domain.PlayerDiagnostics{Frames: 44100, CursorSeconds: 8.1}, "output_silent"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifySeekOutcome(tc.diag, 7); got != tc.want {
+				t.Fatalf("classifySeekOutcome = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestShutdownSavesPlayerStateBeforeWaitingForListeningWrites(t *testing.T) {
 	listeningRepo := &blockingListeningRepository{entered: make(chan struct{}), release: make(chan struct{})}
 	stateRepo := &contextAwarePlayerStateRepo{}
@@ -1821,19 +1964,30 @@ func TestPlayTracks_PlaysALocalRow(t *testing.T) {
 
 // fakeStreamCache records what the player asked the stream cache to do.
 type fakeStreamCache struct {
-	mu       sync.Mutex
-	opened   []*domain.TrackDTO
-	closed   []*stream.Session
-	progress []float64
-	flushes  int
-	session  *stream.Session
-	openErr  error
+	mu           sync.Mutex
+	opened       []*domain.TrackDTO
+	closed       []*stream.Session
+	progress     []float64
+	flushes      int
+	headCalls    int
+	headErr      error
+	headBlock    bool
+	buffered     int64
+	bufferedStep int64
+	sessionErr   error
+	session      *stream.Session
+	openErr      error
+	decodeOffset []int64
+	seeks        []float64
+	ensureErr    error
 }
 
 func newFakeStreamCache() *fakeStreamCache {
 	return &fakeStreamCache{session: &stream.Session{
-		ID:  "stream-1",
-		URL: "http://127.0.0.1:4567/stream/stream-1",
+		ID:         "stream-1",
+		URL:        "http://127.0.0.1:4567/stream/stream-1",
+		Path:       "C:/cache/stream-1.audio",
+		TotalBytes: 4 << 20,
 	}}
 }
 
@@ -1863,6 +2017,50 @@ func (f *fakeStreamCache) FlushProgress(_ *stream.Session) {
 	f.mu.Lock()
 	f.flushes++
 	f.mu.Unlock()
+}
+
+func (f *fakeStreamCache) WaitHead(ctx context.Context, _ *stream.Session) error {
+	f.mu.Lock()
+	f.headCalls++
+	block, err := f.headBlock, f.headErr
+	f.mu.Unlock()
+	if block {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return err
+}
+
+func (f *fakeStreamCache) BufferedBytes(_ *stream.Session) int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	value := f.buffered
+	f.buffered += f.bufferedStep
+	return value
+}
+
+func (f *fakeStreamCache) SessionError(_ *stream.Session) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sessionErr
+}
+
+func (f *fakeStreamCache) WaitComplete(ctx context.Context, _ *stream.Session) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (f *fakeStreamCache) SetDecodeOffset(_ *stream.Session, offset int64) {
+	f.mu.Lock()
+	f.decodeOffset = append(f.decodeOffset, offset)
+	f.mu.Unlock()
+}
+
+func (f *fakeStreamCache) EnsureSeekable(_ context.Context, _ *stream.Session, seconds float64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seeks = append(f.seeks, seconds)
+	return f.ensureErr
 }
 
 // TestPlaybackFailureListenerReportsRemoteStreamErrors: the Last.fm page needs
@@ -1900,6 +2098,299 @@ func TestPlaybackFailureListenerReportsRemoteStreamErrors(t *testing.T) {
 	}
 	if reported != nil {
 		t.Fatalf("a local row must not report a source failure: %+v", reported)
+	}
+}
+
+// TestRemotePlayLoadsTheCacheFileAndSeeksByReopening: the decoder is handed the
+// growing cache file; a remote seek buffers the target bytes and rebuilds the
+// decoder instead of seeking in place.
+func TestRemotePlayLoadsTheCacheFileAndSeeksByReopening(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1}}
+	s, _ := newTestService(t, fp)
+	cache := newFakeStreamCache()
+	s.streamCache = cache
+	s.seekDebounce = 0
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID: "remote-1", Path: domain.RemotePath("wy", "42"), Title: "歌",
+		Provider: "wy", ExternalID: "42", Availability: domain.AvailabilityRemote, Duration: 120,
+	}}
+	if err := s.PlayTracks([]*domain.TrackDTO{remote}, 0); err != nil {
+		t.Fatalf("PlayTracks: %v", err)
+	}
+	if fp.loadCalls != 1 || fp.loadedPath != cache.session.Path {
+		t.Fatalf("Load calls=%d path=%q, want the cache file %q",
+			fp.loadCalls, fp.loadedPath, cache.session.Path)
+	}
+
+	if err := s.Seek(42); err != nil {
+		t.Fatalf("Seek: %v", err)
+	}
+	status := fp.GetStatus()
+	if status.Position != 42 || status.PlaybackState != domain.PlaybackStatePlaying {
+		t.Fatalf("status after seek = %+v, want playing at 42s", status)
+	}
+	if fp.loadCalls != 2 {
+		t.Fatalf("Load called %d times, want the initial load plus one seek rebuild", fp.loadCalls)
+	}
+	cache.mu.Lock()
+	opened, closed, headCalls := len(cache.opened), len(cache.closed), cache.headCalls
+	seeks := append([]float64(nil), cache.seeks...)
+	cache.mu.Unlock()
+	if len(seeks) != 1 || seeks[0] != 42 {
+		t.Fatalf("EnsureSeekable calls = %v, want one wait for 42s", seeks)
+	}
+	if opened != 2 || closed != 1 {
+		t.Fatalf("cache opened/closed = %d/%d, want the initial session plus one rebuild",
+			opened, closed)
+	}
+	if headCalls != 2 {
+		t.Fatalf("WaitHead calls = %d, want the initial load and the rebuild", headCalls)
+	}
+	if current := s.GetCurrentTrack(); current == nil || current.ID != remote.ID {
+		t.Fatalf("current track = %+v, want the same remote row", current)
+	}
+}
+
+// TestSeekRemoteDebouncesToTheLastPosition: dragging reports many positions; only
+// the last one reaches the decoder.
+func TestSeekRemoteDebouncesToTheLastPosition(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1}}
+	s, _ := newTestService(t, fp)
+	cache := newFakeStreamCache()
+	s.streamCache = cache
+	s.seekDebounce = 40 * time.Millisecond
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID: "remote-1", Path: domain.RemotePath("wy", "42"), Title: "歌",
+		Provider: "wy", ExternalID: "42", Availability: domain.AvailabilityRemote, Duration: 120,
+	}}
+	if err := s.PlayTracks([]*domain.TrackDTO{remote}, 0); err != nil {
+		t.Fatalf("PlayTracks: %v", err)
+	}
+	for _, position := range []float64{10, 20, 30} {
+		if err := s.Seek(position); err != nil {
+			t.Fatalf("Seek(%v): %v", position, err)
+		}
+	}
+	time.Sleep(150 * time.Millisecond)
+
+	if fp.loadCalls != 2 {
+		t.Fatalf("Load called %d times, want one rebuild for the seek burst", fp.loadCalls)
+	}
+	if status := fp.GetStatus(); status.Position != 30 {
+		t.Fatalf("position = %v, want the last seek target", status.Position)
+	}
+	cache.mu.Lock()
+	seeks := append([]float64(nil), cache.seeks...)
+	cache.mu.Unlock()
+	if len(seeks) != 1 || seeks[0] != 30 {
+		t.Fatalf("EnsureSeekable calls = %v, want the debounced 30s target only", seeks)
+	}
+}
+
+// TestRemotePlayFailsWhenTheHeadNeverArrives: a cache that cannot buffer its
+// head must fail the load and surface the error instead of playing silently.
+func TestRemotePlayFailsWhenTheHeadNeverArrives(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1}}
+	s, _ := newTestService(t, fp)
+	cache := newFakeStreamCache()
+	cache.headErr = errors.New("head not buffered")
+	s.streamCache = cache
+
+	var reported error
+	s.AddPlaybackFailureListener(func(_ *domain.TrackDTO, err error) { reported = err })
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID: "remote-1", Path: domain.RemotePath("wy", "42"), Title: "歌",
+		Provider: "wy", ExternalID: "42", Availability: domain.AvailabilityRemote, Duration: 120,
+	}}
+	if err := s.PlayTracks([]*domain.TrackDTO{remote}, 0); err == nil {
+		t.Fatal("PlayTracks must surface the head-buffer failure")
+	}
+	if reported == nil || !strings.Contains(reported.Error(), "head not buffered") {
+		t.Fatalf("reported = %v, want the head-buffer failure", reported)
+	}
+	if status := fp.GetStatus(); status.PlaybackState == domain.PlaybackStatePlaying {
+		t.Fatalf("state = %s, want no fake playback", status.PlaybackState)
+	}
+}
+
+// TestWatchdogDoesNotReloadWhileTheDownloadGrows: a static position with a
+// growing cache is buffering; reloading is what caused the 2s reload loop.
+func TestWatchdogDoesNotReloadWhileTheDownloadGrows(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1}}
+	s, _ := newTestService(t, fp)
+	cache := newFakeStreamCache()
+	cache.bufferedStep = 1 << 20
+	s.streamCache = cache
+	s.stallWindow = 20 * time.Millisecond
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID: "remote-1", Path: domain.RemotePath("wy", "42"), Title: "歌",
+		Provider: "wy", ExternalID: "42", Availability: domain.AvailabilityRemote, Duration: 120,
+	}}
+	if err := s.PlayTracks([]*domain.TrackDTO{remote}, 0); err != nil {
+		t.Fatalf("PlayTracks: %v", err)
+	}
+	time.Sleep(250 * time.Millisecond)
+
+	if fp.loadCalls != 1 {
+		t.Fatalf("Load called %d times, want no reload while bytes keep arriving", fp.loadCalls)
+	}
+}
+
+// TestWatchdogFailsOnADownloadError: a failed download surfaces immediately
+// instead of waiting for the AVIO's 30s read timeout.
+func TestWatchdogFailsOnADownloadError(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1}}
+	s, _ := newTestService(t, fp)
+	cache := newFakeStreamCache()
+	s.streamCache = cache
+	s.stallWindow = 20 * time.Millisecond
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID: "remote-1", Path: domain.RemotePath("wy", "42"), Title: "歌",
+		Provider: "wy", ExternalID: "42", Availability: domain.AvailabilityRemote, Duration: 120,
+	}}
+	if err := s.PlayTracks([]*domain.TrackDTO{remote}, 0); err != nil {
+		t.Fatalf("PlayTracks: %v", err)
+	}
+	var reported error
+	s.AddPlaybackFailureListener(func(_ *domain.TrackDTO, err error) { reported = err })
+	cache.mu.Lock()
+	cache.sessionErr = errors.New("download failed")
+	cache.mu.Unlock()
+	time.Sleep(150 * time.Millisecond)
+
+	if status := fp.GetStatus(); status.PlaybackState != domain.PlaybackStatePaused {
+		t.Fatalf("state = %s, want paused after the download failure", status.PlaybackState)
+	}
+	if reported == nil || !strings.Contains(reported.Error(), "download failed") {
+		t.Fatalf("reported = %v, want the download failure", reported)
+	}
+	if fp.loadCalls != 1 {
+		t.Fatalf("Load called %d times, want no reload on a dead download", fp.loadCalls)
+	}
+}
+
+// TestStreamStallWatchdogBacksOff: when the player cannot pause (so the state
+// stays "playing"), the watchdog retries with the 2s/10s/60s schedule and stops
+// after three failures instead of looping every tick.
+func TestStreamStallWatchdogBacksOff(t *testing.T) {
+	oldBackoff := streamStallBackoff
+	streamStallBackoff = []time.Duration{10 * time.Millisecond, 20 * time.Millisecond, 30 * time.Millisecond}
+	t.Cleanup(func() { streamStallBackoff = oldBackoff })
+
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1}, pauseErr: errors.New("pause failed")}
+	s, _ := newTestService(t, fp)
+	cache := newFakeStreamCache()
+	s.streamCache = cache
+	s.stallWindow = 20 * time.Millisecond
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID: "remote-1", Path: domain.RemotePath("wy", "42"), Title: "歌",
+		Provider: "wy", ExternalID: "42", Availability: domain.AvailabilityRemote, Duration: 120,
+	}}
+	if err := s.PlayTracks([]*domain.TrackDTO{remote}, 0); err != nil {
+		t.Fatalf("PlayTracks: %v", err)
+	}
+	cache.mu.Lock()
+	cache.headErr = errors.New("head not ready")
+	cache.mu.Unlock()
+	time.Sleep(300 * time.Millisecond)
+
+	cache.mu.Lock()
+	opened := len(cache.opened)
+	cache.mu.Unlock()
+	if opened != 4 { // initial playback + three watchdog attempts
+		t.Fatalf("sessions opened = %d, want the initial one plus three retries", opened)
+	}
+	time.Sleep(150 * time.Millisecond)
+	cache.mu.Lock()
+	opened = len(cache.opened)
+	cache.mu.Unlock()
+	if opened != 4 {
+		t.Fatalf("sessions opened = %d after the budget, want no further retries", opened)
+	}
+}
+
+// TestManualPlayResetsStallBackoff: a user retry must clear the watchdog's
+// attempts so recovery starts from the first delay again.
+func TestManualPlayResetsStallBackoff(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1}}
+	s, _ := newTestService(t, fp)
+	cache := newFakeStreamCache()
+	s.streamCache = cache
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID: "remote-1", Path: domain.RemotePath("wy", "42"), Title: "歌",
+		Provider: "wy", ExternalID: "42", Availability: domain.AvailabilityRemote, Duration: 120,
+	}}
+	if err := s.PlayTracks([]*domain.TrackDTO{remote}, 0); err != nil {
+		t.Fatalf("PlayTracks: %v", err)
+	}
+	s.mu.Lock()
+	s.stallAttempts = 3
+	s.stallRetryAt = time.Now().Add(time.Hour)
+	s.mu.Unlock()
+
+	if err := s.Play(); err != nil {
+		t.Fatalf("Play: %v", err)
+	}
+
+	s.mu.Lock()
+	attempts := s.stallAttempts
+	s.mu.Unlock()
+	if attempts != 0 {
+		t.Fatalf("stall attempts = %d after a manual play, want zero", attempts)
+	}
+}
+
+// TestSeekLocalStaysInPlace: a local file keeps the cheap decoder seek.
+func TestSeekLocalStaysInPlace(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1}}
+	s, _ := newTestService(t, fp)
+	local := &domain.TrackDTO{Track: domain.Track{
+		ID: "local-1", Path: `C:\Music\song.flac`, Title: "Song", Duration: 120,
+	}}
+	if err := s.PlayTracks([]*domain.TrackDTO{local}, 0); err != nil {
+		t.Fatalf("PlayTracks: %v", err)
+	}
+	if err := s.Seek(42); err != nil {
+		t.Fatalf("Seek: %v", err)
+	}
+	if fp.loadCalls != 1 {
+		t.Fatalf("Load called %d times, want no reload for a local row", fp.loadCalls)
+	}
+	if status := fp.GetStatus(); status.Position != 42 {
+		t.Fatalf("position = %v, want the in-place seek", status.Position)
+	}
+}
+
+// TestStreamStallWatchdogReloadsOnce: a playing remote row whose position never
+// advances is reloaded once, and a failed reload does not loop.
+func TestStreamStallWatchdogReloadsOnce(t *testing.T) {
+	fp := &fakePlayer{status: domain.PlayerStatus{Volume: 1}}
+	s, _ := newTestService(t, fp)
+	cache := newFakeStreamCache()
+	s.streamCache = cache
+	s.stallWindow = 40 * time.Millisecond
+
+	remote := &domain.TrackDTO{Track: domain.Track{
+		ID: "remote-1", Path: domain.RemotePath("wy", "42"), Title: "歌",
+		Provider: "wy", ExternalID: "42", Availability: domain.AvailabilityRemote, Duration: 120,
+	}}
+	if err := s.PlayTracks([]*domain.TrackDTO{remote}, 0); err != nil {
+		t.Fatalf("PlayTracks: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if fp.loadCalls != 2 {
+		t.Fatalf("Load called %d times, want one watchdog reload", fp.loadCalls)
+	}
+	time.Sleep(250 * time.Millisecond)
+	if fp.loadCalls != 2 {
+		t.Fatalf("Load called %d times, want the watchdog to stop after one reload", fp.loadCalls)
 	}
 }
 
@@ -2137,8 +2628,8 @@ func TestPlayTracks_StreamsARemoteRowThroughTheCache(t *testing.T) {
 	if fp.loadCalls != 1 {
 		t.Fatalf("Load called %d times, want 1", fp.loadCalls)
 	}
-	if fp.loadedPath != cache.session.URL {
-		t.Fatalf("decoder opened %q, want the proxy URL %q", fp.loadedPath, cache.session.URL)
+	if fp.loadedPath != cache.session.Path {
+		t.Fatalf("decoder opened %q, want the cache file %q", fp.loadedPath, cache.session.Path)
 	}
 	if len(cache.opened) != 1 || cache.opened[0].ID != remote.ID {
 		t.Fatalf("cache opened %+v, want the remote row", cache.opened)
@@ -2497,7 +2988,7 @@ func TestPlay_LoadsADeferredRemoteRow(t *testing.T) {
 	if err := s.Play(); err != nil {
 		t.Fatalf("Play: %v", err)
 	}
-	if fp.loadCalls != 1 || fp.loadedPath != cache.session.URL {
-		t.Fatalf("Load calls=%d path=%q, want one load of %q", fp.loadCalls, fp.loadedPath, cache.session.URL)
+	if fp.loadCalls != 1 || fp.loadedPath != cache.session.Path {
+		t.Fatalf("Load calls=%d path=%q, want one load of %q", fp.loadCalls, fp.loadedPath, cache.session.Path)
 	}
 }

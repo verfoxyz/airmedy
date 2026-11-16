@@ -1,6 +1,8 @@
 #ifndef MINIAUDIO_WRAPPER_H
 #define MINIAUDIO_WRAPPER_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -14,6 +16,35 @@ void      ma_player_destroy(MaPlayer* p);
 
 /* File operations */
 int ma_player_load(MaPlayer* p, const char* path);
+/* Cache mode: decode a growing local cache file through a blocking AVIO.
+ * expected_size is the final byte count, or 0 when the source did not say. */
+int ma_player_load_cache(MaPlayer* p, const char* path, int64_t expected_size);
+/* Marks an unknown-length cache download complete so the decoder can EOF. */
+void ma_player_mark_stream_complete(MaPlayer* p);
+
+/* Seek-silence diagnostics: decoder reads/frames, cache AVIO waits and the
+ * output-layer volumes/cursor. Read-only, safe to call while playing. */
+typedef struct {
+    uint64_t reads;
+    uint64_t frames;
+    uint64_t empty_reads;
+    uint64_t avio_waits;
+    uint64_t avio_wait_ms;
+    int64_t  file_pos;
+    int64_t  file_size;
+    int64_t  expected_size;
+    double   cursor_seconds;
+    float    sound_volume;
+    float    engine_volume;
+    int      loaded;
+    /* What the last seek saw. */
+    double   seek_requested;
+    int64_t  seek_received;
+    int64_t  seek_total;
+    int      seek_ok;
+} MaPlayerDiag;
+
+void ma_player_get_diag(MaPlayer* p, MaPlayerDiag* out);
 int ma_player_unload(MaPlayer* p);
 
 /* Transport */

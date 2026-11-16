@@ -465,6 +465,13 @@ one second after its start. This fallback is a visual heuristic, not inferred
 audio timing. Non-monotonic or malformed inline timing falls back to ordinary
 line highlighting. Equal timestamps are allowed and complete instantaneously.
 
+KuGou KRC lines tag each word as `<offsetMs,durationMs>` instead of an end time
+(for example `[00:04.102]<520,-520>Hook`). The offset is relative to the line
+timestamp; a positive duration ends the word directly, while a negative or zero
+duration uses the next tag's start (the last word falls back to the next line,
+capped at one second). Both tag shapes are stripped from displayed text, and a
+line without KRC tags keeps the Enhanced LRC behavior above.
+
 `KaraokeText` is shared by fullscreen `SyncedLyricsView`, `LyricsDrawer`, and
 `MiniPlayerLyrics`. Only the active line in follow mode receives playback
 position. It sweeps foreground color left-to-right through each timed segment,

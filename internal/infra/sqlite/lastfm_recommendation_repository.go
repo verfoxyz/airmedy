@@ -23,6 +23,8 @@ type storedRecommendationList struct {
 	Kind      string    `db:"kind"`
 	Title     string    `db:"title"`
 	UpdatedAt time.Time `db:"updated_at"`
+	WeekFrom  int64     `db:"week_from"`
+	WeekTo    int64     `db:"week_to"`
 }
 
 type storedRecommendationItem struct {
@@ -33,7 +35,8 @@ type storedRecommendationItem struct {
 
 const recommendationItemColumns = `kind, position, match_key, title, artist, artists, album,
 	duration, cover_url, cover_url_large, downloadable, blocked_reason, sources,
-	matching, matched, no_source, provider, external_id, state, local_track_id, suspicious`
+	matching, matched, no_source, provider, external_id, state, local_track_id, suspicious,
+	play_count, week_from, week_to`
 
 // ListRecommendationLists returns the stored cards. Counts and covers are
 // derived from the rows, so a stale summary cannot drift from the detail page.
@@ -42,7 +45,7 @@ func (r *lastfmRecommendationRepository) ListRecommendationLists(
 ) ([]domain.RecommendationListSummary, error) {
 	lists := make([]storedRecommendationList, 0, 2)
 	if err := r.db.SelectContext(ctx, &lists,
-		`SELECT kind, title, updated_at FROM lastfm_recommendation_lists
+		`SELECT kind, title, updated_at, week_from, week_to FROM lastfm_recommendation_lists
 		 ORDER BY updated_at DESC, kind ASC`); err != nil {
 		return nil, fmt.Errorf("lastfm recommendation lists: list: %w", err)
 	}
@@ -62,6 +65,8 @@ func (r *lastfmRecommendationRepository) ListRecommendationLists(
 			Kind:      list.Kind,
 			Title:     list.Title,
 			CoverURLs: []string{},
+			WeekFrom:  list.WeekFrom,
+			WeekTo:    list.WeekTo,
 			UpdatedAt: list.UpdatedAt,
 		}
 		summaries = append(summaries, summary)
@@ -100,7 +105,8 @@ func (r *lastfmRecommendationRepository) GetRecommendationList(
 ) (*domain.RecommendationList, error) {
 	var stored storedRecommendationList
 	err := r.db.GetContext(ctx, &stored,
-		`SELECT kind, title, updated_at FROM lastfm_recommendation_lists WHERE kind = ?`, kind)
+		`SELECT kind, title, updated_at, week_from, week_to
+		 FROM lastfm_recommendation_lists WHERE kind = ?`, kind)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -120,6 +126,8 @@ func (r *lastfmRecommendationRepository) GetRecommendationList(
 		Title:     stored.Title,
 		Items:     make([]domain.RecommendationItem, 0, len(rows)),
 		UpdatedAt: stored.UpdatedAt,
+		WeekFrom:  stored.WeekFrom,
+		WeekTo:    stored.WeekTo,
 	}
 	for _, row := range rows {
 		item := row.RecommendationItem
@@ -138,10 +146,6 @@ func (r *lastfmRecommendationRepository) SaveRecommendationList(
 	if list == nil || list.Kind == "" {
 		return fmt.Errorf("lastfm recommendation list: empty kind")
 	}
-	payload, err := json.Marshal(list.Items)
-	if err != nil {
-		return fmt.Errorf("lastfm recommendation list %s: encode payload: %w", list.Kind, err)
-	}
 	updatedAt := list.UpdatedAt
 	if updatedAt.IsZero() {
 		updatedAt = time.Now().UTC()
@@ -149,14 +153,17 @@ func (r *lastfmRecommendationRepository) SaveRecommendationList(
 
 	return r.db.RunTx(ctx, func(ctx context.Context) error {
 		exec := r.db.Ext(ctx)
+		// payload belongs to the candidate pool (see SaveRecommendationCandidates);
+		// rewriting the rows must not clear it, so the conflict path leaves it alone.
 		if _, err := exec.ExecContext(ctx,
-			`INSERT INTO lastfm_recommendation_lists (kind, title, payload, updated_at)
-			 VALUES (?, ?, ?, ?)
+			`INSERT INTO lastfm_recommendation_lists (kind, title, updated_at, week_from, week_to)
+			 VALUES (?, ?, ?, ?, ?)
 			 ON CONFLICT(kind) DO UPDATE SET
 			   title = excluded.title,
-			   payload = excluded.payload,
-			   updated_at = excluded.updated_at`,
-			list.Kind, list.Title, string(payload), updatedAt.UTC()); err != nil {
+			   updated_at = excluded.updated_at,
+			   week_from = excluded.week_from,
+			   week_to = excluded.week_to`,
+			list.Kind, list.Title, updatedAt.UTC(), list.WeekFrom, list.WeekTo); err != nil {
 			return fmt.Errorf("lastfm recommendation list %s: save header: %w", list.Kind, err)
 		}
 		if _, err := exec.ExecContext(ctx,
@@ -176,13 +183,14 @@ func (r *lastfmRecommendationRepository) SaveRecommendationList(
 				`INSERT INTO lastfm_recommendation_items
 				 (kind, position, match_key, title, artist, artists, album, duration, cover_url,
 				  cover_url_large, downloadable, blocked_reason, sources, matching,
-				  matched, no_source, provider, external_id, state, local_track_id, suspicious)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				  matched, no_source, provider, external_id, state, local_track_id, suspicious,
+				  play_count, week_from, week_to)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				list.Kind, position, item.MatchKey, item.Title, item.Artist, string(artists),
 				item.Album, item.Duration, item.CoverURL, item.CoverURLLarge, item.Downloadable,
 				item.BlockedReason, string(sources), item.Matching, item.Matched,
 				item.NoSource, item.Provider, item.ExternalID, item.State, item.LocalTrackID,
-				item.Suspicious,
+				item.Suspicious, item.PlayCount, item.WeekFrom, item.WeekTo,
 			); err != nil {
 				return fmt.Errorf("lastfm recommendation list %s: insert %s: %w",
 					list.Kind, item.MatchKey, err)
@@ -218,12 +226,14 @@ func (r *lastfmRecommendationRepository) UpdateRecommendationItems(
 				 SET title = ?, artist = ?, artists = ?, album = ?, duration = ?, cover_url = ?,
 				     cover_url_large = ?, downloadable = ?, blocked_reason = ?, sources = ?,
 				     matching = ?, matched = ?, no_source = ?, provider = ?,
-				     external_id = ?, state = ?, local_track_id = ?, suspicious = ?
+				     external_id = ?, state = ?, local_track_id = ?, suspicious = ?,
+				     play_count = ?, week_from = ?, week_to = ?
 				 WHERE kind = ? AND match_key = ?`,
 				item.Title, item.Artist, string(artists), item.Album, item.Duration, item.CoverURL,
 				item.CoverURLLarge, item.Downloadable, item.BlockedReason, string(sources),
 				item.Matching, item.Matched, item.NoSource, item.Provider,
 				item.ExternalID, item.State, item.LocalTrackID, item.Suspicious,
+				item.PlayCount, item.WeekFrom, item.WeekTo,
 				item.Kind, item.MatchKey,
 			); err != nil {
 				return fmt.Errorf("lastfm recommendation item %s/%s: update: %w",
@@ -251,6 +261,53 @@ func (r *lastfmRecommendationRepository) PendingRecommendationItems(
 		item.Artists = decodeStrings(row.ArtistsJSON)
 		item.Sources = decodeStrings(row.SourcesJSON)
 		items = append(items, item)
+	}
+	return items, nil
+}
+
+// SaveRecommendationCandidates stores the unexpanded candidate pool in the
+// list's payload column. Saving the list's rows deliberately leaves payload
+// alone, so appending a page does not drop the rest of the pool.
+func (r *lastfmRecommendationRepository) SaveRecommendationCandidates(
+	ctx context.Context, kind string, items []domain.RecommendationItem,
+) error {
+	if kind == "" {
+		return fmt.Errorf("lastfm recommendation candidates: empty kind")
+	}
+	payload, err := json.Marshal(items)
+	if err != nil {
+		return fmt.Errorf("lastfm recommendation candidates %s: encode: %w", kind, err)
+	}
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE lastfm_recommendation_lists SET payload = ? WHERE kind = ?`,
+		string(payload), kind); err != nil {
+		return fmt.Errorf("lastfm recommendation candidates %s: save: %w", kind, err)
+	}
+	return nil
+}
+
+// GetRecommendationCandidates returns the stored candidate pool, newest first.
+func (r *lastfmRecommendationRepository) GetRecommendationCandidates(
+	ctx context.Context, kind string,
+) ([]domain.RecommendationItem, error) {
+	var payload string
+	err := r.db.GetContext(ctx, &payload,
+		`SELECT payload FROM lastfm_recommendation_lists WHERE kind = ?`, kind)
+	if err == sql.ErrNoRows {
+		return []domain.RecommendationItem{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lastfm recommendation candidates %s: %w", kind, err)
+	}
+	if payload == "" {
+		return []domain.RecommendationItem{}, nil
+	}
+	var items []domain.RecommendationItem
+	if err := json.Unmarshal([]byte(payload), &items); err != nil {
+		return []domain.RecommendationItem{}, nil
+	}
+	if items == nil {
+		return []domain.RecommendationItem{}, nil
 	}
 	return items, nil
 }

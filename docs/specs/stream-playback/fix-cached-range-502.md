@@ -1,6 +1,6 @@
 # Bug：已缓存范围也返回 502，拖动即无法播放
 
-> 状态：待开工
+> 状态：✅ 已完成（`handleStream` 先判定 Range 是否完全落盘，命中则直接写文件返回 206/200，不调用 `waitReady`；未命中才等上游并保留 502；`CoversPosition` 让已缓存目标的 seek 直接原地 seek、不重建 session；日志提升为 Info/失败 Warn 并带 received/total）
 > 现象：远端曲目只要拖动进度条（哪怕 5s→7s 都在缓存内）就无声；未缓存的歌同样
 > 日志：`ma_player_load failed: -10`；代理侧静默（`Stream proxy response` 是 Debug 级）
 > 关联：`fix-stream-seek.md`、`fix-seek-reload-failure.md`

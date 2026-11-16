@@ -12,6 +12,13 @@ const (
 	LastFmRecommendationTopTracks = "top_tracks"
 	// LastFmRecommendationSimilar is the "for you" list derived from those tracks.
 	LastFmRecommendationSimilar = "similar"
+	// LastFmRecommendationWeeklyEcho is the rolling weekly chart. Each week is
+	// stored under its own kind ("weekly_echo:<from>"), so history is browsable
+	// without overwriting the previous week.
+	LastFmRecommendationWeeklyEcho = "weekly_echo"
+	// LastFmRecommendationDiscover lists tracks the user does not own and has not
+	// played recently, expanded from their listening history.
+	LastFmRecommendationDiscover = "discover"
 )
 
 // RecommendationItem is one persisted row of a recommendation list.
@@ -45,6 +52,13 @@ type RecommendationItem struct {
 	LocalTrackID string   `json:"local_track_id" db:"local_track_id"`
 	// Suspicious keeps a flagged local match across restarts.
 	Suspicious bool `json:"suspicious" db:"suspicious"`
+	// PlayCount is Last.fm's playcount for the row inside a weekly chart. It is
+	// zero for lists that do not report one.
+	PlayCount int `json:"play_count" db:"play_count"`
+	// WeekFrom / WeekTo identify the chart window of a weekly row. Both are Unix
+	// seconds; zero for the other lists.
+	WeekFrom int64 `json:"week_from" db:"week_from"`
+	WeekTo   int64 `json:"week_to" db:"week_to"`
 }
 
 // RecommendationList is one persisted list: its rows in Last.fm order plus the
@@ -54,6 +68,9 @@ type RecommendationList struct {
 	Title     string               `json:"title"`
 	Items     []RecommendationItem `json:"items"`
 	UpdatedAt time.Time            `json:"updated_at"`
+	// WeekFrom / WeekTo describe a weekly chart list; zero for the others.
+	WeekFrom int64 `json:"week_from"`
+	WeekTo   int64 `json:"week_to"`
 }
 
 // RecommendationListSummary is the card data of one list. TrackCount and
@@ -67,7 +84,10 @@ type RecommendationListSummary struct {
 	// TotalDuration is the sum of the rows' duration in seconds.
 	TotalDuration int `json:"total_duration"`
 	// CoverURLs holds up to four covers, in list order, for the card mosaic.
-	CoverURLs []string  `json:"cover_urls"`
+	CoverURLs []string `json:"cover_urls"`
+	// WeekFrom / WeekTo are the chart window of a weekly_echo card.
+	WeekFrom  int64     `json:"week_from"`
+	WeekTo    int64     `json:"week_to"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -88,4 +108,9 @@ type LastFmRecommendationRepository interface {
 	UpdateRecommendationItems(ctx context.Context, items []RecommendationItem) error
 	// PendingRecommendationItems returns every row still waiting for a match.
 	PendingRecommendationItems(ctx context.Context) ([]RecommendationItem, error)
+	// SaveRecommendationCandidates stores the unexpanded candidate pool of one
+	// list (the discover list appends its next page from it).
+	SaveRecommendationCandidates(ctx context.Context, kind string, items []RecommendationItem) error
+	// GetRecommendationCandidates returns the stored candidate pool of one list.
+	GetRecommendationCandidates(ctx context.Context, kind string) ([]RecommendationItem, error)
 }

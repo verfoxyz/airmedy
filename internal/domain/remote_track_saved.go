@@ -4,9 +4,8 @@ package domain
 // library through a user action (search save, favorite, playlist add).
 //
 // Emitters do not decide anything: they register the row, add membership and
-// publish this event. The download coordinator is the single decision point —
-// it checks the stream cache, then either records a promotion task or queues a
-// normal download.
+// publish this event. mediarequest.Saver is the single decision point — it
+// upserts one media request and the worker promotes a cached copy or downloads.
 type RemoteTrackSaved struct {
 	Track *TrackDTO
 	// PlaylistID is where the row was added, or "" for a favorite/search save.

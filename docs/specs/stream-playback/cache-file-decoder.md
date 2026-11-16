@@ -1,6 +1,6 @@
 # 重构：远端流播放改由 FFmpeg 直读本地缓存文件（去掉 HTTP 解码路径）
 
-> 状态：⚠️ 部分完成（HTTP 解码路径已移除，FFmpeg 直读缓存文件；但「文件增长时的 read/EOF 语义」仍有缺陷：播放会在已下载数据范围内卡住并被看门狗反复重载，见 §3.1.1、§3.6）
+> 状态：✅ 已完成（HTTP 解码路径已移除；AVIO read 必须填满缓冲，短读只发生在真实 EOF；未知总长由下载完成信号 `MarkStreamComplete` 产生 EOF；`size()`/`SEEK_END` 在下载完成前只暴露已写入字节，seek 到未下载区会等待而不是被判 EOF；看门狗把「缓存仍在增长」视为缓冲中，不再重载，仅下载失败/停滞才报错或重试）
 > 目的：彻底消除 `ma_player_load failed: -10` —— 根因是 FFmpeg 通过 HTTP 打开远端流时的大范围探测/超时
 > 关联：`fix-stream-seek.md`、`fix-seek-reload-failure.md`、`fix-cached-range-502.md`、`half-played-complete-cache.md`
 > 退出/取消语义见 `docs/specs/player/fix-exit-hang.md`：阻塞 read 必须响应 abort，`Stop` 有短超时
@@ -55,25 +55,23 @@ typedef struct {
   2. 达到 `expected_size` 且已读完 → 返回 EOF（`AVERROR_EOF`）；
   3. 超过 `wait_ms` 仍无进展 → 返回 `AVERROR(EIO)`（由上层显示失败）；
   4. `aborted` 时立即返回 `AVERROR_EXIT`；
-- `seek(offset, whence)`：直接 `fseek` 本地文件（`SEEK_END` 时用 `expected_size`，未知则用当前大小）；
-- `size()`：`expected_size > 0 ? expected_size : 当前文件大小`；
+- `seek(offset, whence)`：移动游标（`SEEK_END` 基于下面 `size()` 的返回值）；目标在当前写入边界之后、`expected_size` 之内时等待下载追上，超出 `expected_size` 报错（见 `fix-cache-seek-eof.md`）；
+- `size()`：下载未完成时返回**当前已写入大小**，完成后返回 `expected_size`；不能把未来才会存在的字节暴露为可读区域；
 - 与现有 `ffmpeg_probe_mu` 锁、`interrupt_callback` 保持一致。
 
 #### 3.1.1 read / size 的精确语义（关键，易错）
 
 缓存文件是**持续增长**的，read 必须区分“暂时没数据”和“真的结束”：
 
-1. **只有** `expected_size > 0 && offset >= expected_size` 时返回 `AVERROR_EOF`；
+1. **只有** `offset >= 当前已写入大小` **且**（下载已完成或已写入 `expected_size`）时返回 `AVERROR_EOF`；文件仍在增长时只等待，不返回 EOF；
 2. 当前文件大小 < `offset + 请求长度` 时：
    - 轮询 `stat`（5–10ms）；
    - 每轮检查 `aborted`；
    - **绝不返回 0 / 短读 0**（否则 FFmpeg 认为流结束，解码器停止前进）；
    - 等待超过上限（默认 30s）才返回 `AVERROR(EIO)`；
 3. `expected_size == 0`（未知总长）时，只有在“下载已失败/结束”的情况下才返回 EOF，否则一直等到 `aborted` 或超时；
-4. `size()` 必须**实时**读取文件大小（或 `expected_size`），不能缓存打开时的值；
+4. `size()` 必须**实时**反映真实可读范围：未完成时是当前文件大小，完成后是 `expected_size`，不能缓存打开时的值；
 5. 每次 read 成功后刷新内部 `written`，供 stall 检测与日志使用。
-
-**已知故障（当前版本）**：read 在文件增长时返回了 0/短读，FFmpeg 认为 EOF，解码停止 → 位置不动 → 看门狗每 2 秒重载一次，声音断续。
 
 ### 3.2 解码器
 

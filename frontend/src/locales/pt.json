@@ -854,6 +854,12 @@
     "tab_failed": "Erros",
     "kind_download": "Download",
     "kind_promote": "Promoção",
+    "kind_request": "Solicitação",
+    "kind_cache": "Cache",
+    "phase_resolving": "Resolvendo",
+    "phase_downloading": "Baixando",
+    "phase_promoting": "Promovendo",
+    "phase_verifying": "Verificando",
     "empty_all": "Nenhuma tarefa registrada ainda",
     "empty_active": "Nenhuma tarefa em andamento",
     "empty_done": "Nenhuma tarefa concluída ainda",
@@ -946,6 +952,17 @@
     "play_all": "Reproduzir tudo",
     "shuffle": "Aleatório",
     "more_actions": "Mais ações",
-    "list_empty": "Ainda não há faixas."
+    "list_empty": "Ainda não há faixas.",
+    "play_matching": "As fontes ainda estão sendo correspondidas. Tente novamente em instantes.",
+    "play_unavailable": "Nenhuma faixa reproduzível nesta lista.",
+    "play_skipped": "{count} faixas que não podem ser reproduzidas foram ignoradas.",
+    "discover": "Descobrir",
+    "weekly_echo": "Eco semanal",
+    "week_prev": "Semana anterior",
+    "week_next": "Próxima semana",
+    "plays_count": "{count} reproduções",
+    "auto_refresh": "Procurar novas recomendações automaticamente",
+    "load_more": "Carregar mais",
+    "no_more": "Não há mais recomendações"
   }
 }

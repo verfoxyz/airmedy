@@ -854,6 +854,12 @@
     "tab_failed": "Errores",
     "kind_download": "Descarga",
     "kind_promote": "Promoción",
+    "kind_request": "Solicitud",
+    "kind_cache": "Caché",
+    "phase_resolving": "Resolviendo",
+    "phase_downloading": "Descargando",
+    "phase_promoting": "Promocionando",
+    "phase_verifying": "Verificando",
     "empty_all": "Aún no hay tareas",
     "empty_active": "No hay tareas en curso",
     "empty_done": "Aún no hay tareas completadas",
@@ -946,6 +952,17 @@
     "play_all": "Reproducir todo",
     "shuffle": "Aleatorio",
     "more_actions": "Más acciones",
-    "list_empty": "Aún no hay pistas."
+    "list_empty": "Aún no hay pistas.",
+    "play_matching": "Aún se están buscando fuentes. Inténtalo de nuevo en un momento.",
+    "play_unavailable": "No hay pistas reproducibles en esta lista.",
+    "play_skipped": "Se omitieron {count} pistas que no se pueden reproducir.",
+    "discover": "Descubrir",
+    "weekly_echo": "Eco semanal",
+    "week_prev": "Semana anterior",
+    "week_next": "Semana siguiente",
+    "plays_count": "{count} reproducciones",
+    "auto_refresh": "Buscar nuevas recomendaciones automáticamente",
+    "load_more": "Cargar más",
+    "no_more": "No hay más recomendaciones"
   }
 }

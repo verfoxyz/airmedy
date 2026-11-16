@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"airmedy/internal/domain"
@@ -21,10 +20,6 @@ import (
 // enqueue wakes it immediately, so this only bounds how late a retry that comes
 // due while the queue is otherwise empty is picked up.
 const defaultPollInterval = 30 * time.Second
-
-// maintenanceSweepInterval bounds how long cache maintenance waits for the next
-// attempt when nothing wakes the worker (a session closing wakes it immediately).
-const maintenanceSweepInterval = 30 * time.Second
 
 // Duration sanity thresholds for applyDecodedDuration. A decoded value shorter
 // than minimumDecodedDurationSeconds is only plausible when the row already
@@ -44,23 +39,13 @@ type CachedAudio interface {
 	// EnsureComplete completes the entry and closes the channel when no playback
 	// session holds the file any more.
 	EnsureComplete(ctx context.Context, track *domain.TrackDTO) (<-chan error, error)
-	MarkPendingPromote(ctx context.Context, track *domain.TrackDTO) error
 	DiscardEntry(ctx context.Context, track *domain.TrackDTO) error
-	// PendingPromotions lists the entries waiting for a promotion attempt.
-	PendingPromotions(ctx context.Context) ([]*domain.StreamCacheEntry, error)
-	// PendingDiscards lists the entries whose cache must be deleted.
-	PendingDiscards(ctx context.Context) ([]*domain.StreamCacheEntry, error)
 	// HasActiveSession reports whether playback still owns the entry's file.
 	HasActiveSession(provider, externalID string) bool
-	// SetPromoted records that the audio was moved into the library, so the
-	// entry is only cleaned up and never completed again.
-	SetPromoted(ctx context.Context, track *domain.TrackDTO, promoted bool) error
-	// SetDiscardPending flags a cache for deletion once it goes idle.
-	SetDiscardPending(ctx context.Context, track *domain.TrackDTO, pending bool) error
-	// ClearPendingPromote ends a request whose audio is being downloaded at a
-	// higher quality instead.
-	ClearPendingPromote(ctx context.Context, track *domain.TrackDTO) error
-	// AllEntries lists every cached entry, so the sweep can drop caches whose
+	// HasPlayingSession reports whether a healthy playback session (not a
+	// background completion) owns the entry.
+	HasPlayingSession(provider, externalID string) bool
+	// AllEntries lists every cached entry, so the cleanup can drop caches whose
 	// identity already became a library file.
 	AllEntries(ctx context.Context) ([]*domain.StreamCacheEntry, error)
 	// OrphanFiles lists .audio files that no row references.
@@ -113,7 +98,7 @@ type EventSink interface {
 	DownloadProgress(job *domain.DownloadJob)
 	DownloadDone(job *domain.DownloadJob)
 	DownloadFailed(job *domain.DownloadJob)
-	// TaskUpdated reports a promotion task change; the tasks page reloads.
+	// TaskUpdated reports a request or cache-row change; the tasks page reloads.
 	TaskUpdated()
 	// TrackMerged reports that a remote row was folded into a local one. The
 	// player remaps its current track and queue off it.
@@ -136,17 +121,21 @@ type Service struct {
 	cached        CachedAudio
 	coverAssets   domain.CoverIdentityAssets
 	aliases       domain.ArtistAliasRepository
-	promotionTask domain.PromotionTaskRepository
-	lyrics        LyricsWriter
-	remover       LocalFileRemover
-	logger        *slog.Logger
-
-	// Cache maintenance runs on its own loop: it must react to a playback session
-	// closing even while the download worker is busy, and the two never share a
-	// job. maintenanceSweeping makes a sweep single-flight.
-	maintenanceWake     chan struct{}
-	maintenanceDone     chan struct{}
-	maintenanceSweeping atomic.Bool
+	// artworkCache stores cover bytes and returns the content-hash key. Optional:
+	// without it promotion keeps a row with no cover instead of failing.
+	artworkCache domain.ArtworkCache
+	// requests is the authoritative task source: the tasks page lists one row per
+	// request, and the search rows derive their chip from the same records.
+	requests domain.MediaRequestRepository
+	// cacheTasks is the stream cache's session history. Optional: a graph
+	// without the cache still lists requests.
+	cacheTasks domain.StreamCacheTaskRepository
+	lyrics     LyricsWriter
+	remover    LocalFileRemover
+	// requestSaver turns an explicit re-download into a media request; wired by
+	// the composition root so this package never imports app/mediarequest.
+	requestSaver MediaRequestSaver
+	logger       *slog.Logger
 
 	// pollInterval and now are test seams: a test drives the clock instead of
 	// sleeping through the 5s/30s/5min backoff.
@@ -190,29 +179,26 @@ func NewService(
 	settings SettingsReader,
 	cached CachedAudio,
 	coverAssets domain.CoverIdentityAssets,
-	promotionTask domain.PromotionTaskRepository,
 	logger *slog.Logger,
 ) *Service {
 	return &Service{
-		jobs:            jobs,
-		tracks:          tracks,
-		resolver:        resolver,
-		downloader:      downloader,
-		finalizer:       finalizer,
-		durationProbe:   durationProbe,
-		merger:          merger,
-		settings:        settings,
-		cached:          cached,
-		coverAssets:     coverAssets,
-		promotionTask:   promotionTask,
-		logger:          logger,
-		pollInterval:    defaultPollInterval,
-		now:             time.Now,
-		wake:            make(chan struct{}, 1),
-		maintenanceWake: make(chan struct{}, 1),
-		stop:            make(chan struct{}),
-		done:            make(chan struct{}),
-		coverURLs:       make(map[string]string),
+		jobs:          jobs,
+		tracks:        tracks,
+		resolver:      resolver,
+		downloader:    downloader,
+		finalizer:     finalizer,
+		durationProbe: durationProbe,
+		merger:        merger,
+		settings:      settings,
+		cached:        cached,
+		coverAssets:   coverAssets,
+		logger:        logger,
+		pollInterval:  defaultPollInterval,
+		now:           time.Now,
+		wake:          make(chan struct{}, 1),
+		stop:          make(chan struct{}),
+		done:          make(chan struct{}),
+		coverURLs:     make(map[string]string),
 	}
 }
 
@@ -220,6 +206,26 @@ func NewService(
 // duplicate grouping. Optional; without it the pure set rules still apply.
 func (s *Service) SetArtistAliases(aliases domain.ArtistAliasRepository) {
 	s.aliases = aliases
+}
+
+// SetStreamCacheTasks installs the stream cache's task history so the tasks
+// page lists caching beside requests. Optional.
+func (s *Service) SetStreamCacheTasks(tasks domain.StreamCacheTaskRepository) {
+	s.cacheTasks = tasks
+}
+
+// SetMediaRequests installs the authoritative request store. The tasks page and
+// the catalog row chips read state from it; jobs and promotions are execution
+// detail only.
+func (s *Service) SetMediaRequests(requests domain.MediaRequestRepository) {
+	s.requests = requests
+}
+
+// SetArtworkCache installs the content-hash artwork store. Promotion uses it to
+// keep the cover a streamed row was showing when the downloaded file has no
+// embedded art. Optional: without it the row keeps an empty key.
+func (s *Service) SetArtworkCache(cache domain.ArtworkCache) {
+	s.artworkCache = cache
 }
 
 // SetClock replaces the clock the worker and the retry backoff read. It exists
@@ -257,6 +263,17 @@ type LocalFileRemover interface {
 	DeleteTrackFile(ctx context.Context, trackID string) error
 }
 
+// MediaRequestSaver records an explicit re-download as a media request. The
+// request worker is the only writer of download jobs.
+type MediaRequestSaver interface {
+	UpsertDownload(ctx context.Context, provider, externalID, trackID, quality string) error
+}
+
+// SetMediaRequestSaver installs the request writer used by Redownload.
+func (s *Service) SetMediaRequestSaver(saver MediaRequestSaver) {
+	s.requestSaver = saver
+}
+
 // SetLocalFileRemover installs the optional remover used by Redownload.
 func (s *Service) SetLocalFileRemover(remover LocalFileRemover) {
 	s.remover = remover
@@ -276,7 +293,7 @@ func (s *Service) SetEventSink(sink EventSink) {
 	s.sink = sink
 }
 
-// SetPlayingTrack installs the player port the promotion worker consults before
+// SetPlayingTrack installs the player port the request executor consults before
 // moving a file. Wiring happens in the composition root, so this package never
 // imports app/player.
 func (s *Service) SetPlayingTrack(playing PlayingTrack) {
@@ -508,12 +525,12 @@ func (s *Service) Retry(ctx context.Context, jobID string) error {
 
 // Redownload replaces a finished file by fetching it again. It exists because a
 // file damaged by an older build cannot be repaired in place: the user deletes
-// it explicitly and the identity drives a fresh job.
+// it explicitly and the identity drives a fresh request.
 //
-// A remote row (a failed job) is simply enqueued. A ready row is deleted first
+// A remote row (a failed job) is simply requested. A ready row is deleted first
 // (file, row, playlist memberships, index), then the identity is registered
 // again with a zero duration so a stale estimate cannot fail the download
-// validation.
+// validation. The request worker performs the actual download.
 func (s *Service) Redownload(ctx context.Context, trackID string) error {
 	track, err := s.tracks.GetByID(ctx, trackID)
 	if err != nil {
@@ -523,7 +540,7 @@ func (s *Service) Redownload(ctx context.Context, trackID string) error {
 		return fmt.Errorf("redownload: track %s not found", trackID)
 	}
 	if track.IsRemote() {
-		return s.Enqueue(ctx, trackID, "", s.DefaultQuality(ctx))
+		return s.requestRedownload(ctx, track)
 	}
 	if s.remover == nil {
 		return fmt.Errorf("redownload: no file remover is available")
@@ -549,7 +566,18 @@ func (s *Service) Redownload(ctx context.Context, trackID string) error {
 	if err != nil {
 		return fmt.Errorf("redownload: register %s: %w", track.Provider, err)
 	}
-	return s.Enqueue(ctx, fresh.ID, "", s.DefaultQuality(ctx))
+	return s.requestRedownload(ctx, fresh)
+}
+
+// requestRedownload records desired=download for the identity. The worker
+// reopens a done request and queues the job, so no table is written here.
+func (s *Service) requestRedownload(ctx context.Context, track *domain.TrackDTO) error {
+	if s.requestSaver == nil {
+		return fmt.Errorf("redownload: media requests are not available")
+	}
+	return s.requestSaver.UpsertDownload(
+		ctx, track.Provider, track.ExternalID, track.ID, s.DefaultQuality(ctx),
+	)
 }
 
 // List returns the queue for the UI.
@@ -579,12 +607,10 @@ func (s *Service) Start(ctx context.Context) error {
 	s.running = true
 	s.stop = make(chan struct{})
 	s.done = make(chan struct{})
-	s.maintenanceDone = make(chan struct{})
-	stop, done, maintenanceDone := s.stop, s.done, s.maintenanceDone
+	stop, done := s.stop, s.done
 	s.mu.Unlock()
 
 	go s.loop(stop, done)
-	go s.maintenanceLoop(stop, maintenanceDone)
 	s.signal()
 	return nil
 }
@@ -599,20 +625,15 @@ func (s *Service) Stop(ctx context.Context) error {
 		return nil
 	}
 	s.running = false
-	stop, done, maintenanceDone := s.stop, s.done, s.maintenanceDone
+	stop, done := s.stop, s.done
 	s.mu.Unlock()
 
 	close(stop)
 	select {
 	case <-done:
-	case <-ctx.Done():
-		return fmt.Errorf("stop download service: %w", ctx.Err())
-	}
-	select {
-	case <-maintenanceDone:
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("stop cache maintenance worker: %w", ctx.Err())
+		return fmt.Errorf("stop download service: %w", ctx.Err())
 	}
 }
 
@@ -918,18 +939,12 @@ func (s *Service) execute(ctx context.Context, job *domain.DownloadJob) error {
 		s.logger.Warn("download: failed to store the decoded duration", "track_id", finalized.TrackID, "error", err)
 	}
 
-	// The library now owns the audio. Drop the temporary stream copy, or flag it
-	// for the maintenance worker when playback still owns the file.
+	// The library now owns the audio. Drop the temporary stream copy; a session
+	// still playing it defers the delete inside the cache itself.
 	if s.cached != nil {
-		if err := s.cached.DiscardEntry(ctx, track); err != nil {
-			if errors.Is(err, domain.ErrStreamDiscardDeferred) {
-				if markErr := s.cached.SetDiscardPending(ctx, track, true); markErr != nil {
-					s.logger.Warn("download: cannot flag the stream cache for cleanup",
-						"track_id", track.ID, "error", markErr)
-				}
-			} else {
-				s.logger.Debug("download: cannot discard the stream cache", "track_id", track.ID, "error", err)
-			}
+		if err := s.cached.DiscardEntry(ctx, track); err != nil &&
+			!errors.Is(err, domain.ErrStreamDiscardDeferred) {
+			s.logger.Debug("download: cannot discard the stream cache", "track_id", track.ID, "error", err)
 		}
 	}
 

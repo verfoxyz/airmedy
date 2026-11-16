@@ -9,15 +9,16 @@ import type { DownloadJobView } from '@/stores/download'
  *
  * The row never decides what a state means — the store already grouped it into
  * a tab. It only picks the copy, the icon and whether cancel/retry apply. A
- * promotion has no bytes to draw and cannot be canceled or retried, so its row
- * shows the kind badge, quality and outcome instead.
+ * media request has no bytes of its own, so its row reports the request phase
+ * as text; a stream-cache session has no user actions at all.
  *
  * `bytesTotal === 0` is "unknown size", not "0% done": the CDN often omits a
  * Content-Length, so the bar renders an indeterminate stripe instead.
  */
 const props = defineProps<{
   job: DownloadJobView
-  kind?: 'download' | 'promote'
+  kind?: 'request' | 'cache'
+  phase?: string
   busy?: boolean
 }>()
 
@@ -28,15 +29,18 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-const isPromote = computed(() => props.kind === 'promote')
-const isIndeterminate = computed(() => props.job.state === 'active' && props.job.bytesTotal <= 0)
+const isRequest = computed(() => props.kind !== 'cache')
+const isCache = computed(() => props.kind === 'cache')
 const isFailed = computed(() => props.job.state === 'failed')
 const isCanceled = computed(() => props.job.state === 'canceled')
 const isDone = computed(() => props.job.state === 'done')
 const isActive = computed(() => props.job.state === 'active')
 const isQueued = computed(() => props.job.state === 'queued')
-const canCancel = computed(() => !isPromote.value && (isActive.value || isQueued.value))
-const canRetry = computed(() => !isPromote.value && (isFailed.value || isCanceled.value))
+// A cache session has no user-facing cancel or retry: it belongs to playback,
+// and finishing (or failing) it is the stream cache's decision. A request can
+// be canceled while it runs and retried after it failed.
+const canCancel = computed(() => isRequest.value && (isActive.value || isQueued.value))
+const canRetry = computed(() => isRequest.value && (isFailed.value || isCanceled.value))
 
 /** Title, then the id, then a fallback: a deleted track must not blank the row. */
 const title = computed(() => props.job.title || props.job.trackId || t('download.unknown_track'))
@@ -44,16 +48,28 @@ const artist = computed(() => props.job.artist)
 /** The id is a secondary label; showing it twice when it is the title is noise. */
 const showTrackId = computed(() => !!props.job.trackId && title.value !== props.job.trackId)
 
-const percent = computed(() => Math.min(100, Math.max(0, props.job.percent)))
+const phaseText = computed(() => {
+  switch (props.phase) {
+    case 'resolving':
+      return t('tasks.phase_resolving')
+    case 'downloading':
+      return t('tasks.phase_downloading')
+    case 'promoting':
+      return t('tasks.phase_promoting')
+    case 'verifying':
+      return t('tasks.phase_verifying')
+    default:
+      return ''
+  }
+})
 
 const statusText = computed(() => {
   if (isFailed.value) return props.job.error || t('download.failed')
   if (isCanceled.value) return t('download.canceled')
   if (isDone.value) return props.job.quality || t('tasks.tab_done')
-  if (isPromote.value) return t('tasks.tab_active')
+  if (phaseText.value) return phaseText.value
   if (isQueued.value) return t('download.queued_hint')
-  if (isIndeterminate.value) return t('download.downloading')
-  return t('download.percent', { percent: percent.value })
+  return t('download.downloading')
 })
 
 const attemptText = computed(() => {
@@ -62,7 +78,10 @@ const attemptText = computed(() => {
   return t('download.attempt', { attempt: attempts, total: maxAttempts })
 })
 
-const kindLabel = computed(() => (isPromote.value ? t('tasks.kind_promote') : t('tasks.kind_download')))
+const kindLabel = computed(() => {
+  if (isCache.value) return t('tasks.kind_cache')
+  return t('tasks.kind_request')
+})
 </script>
 
 <template>
@@ -94,33 +113,9 @@ const kindLabel = computed(() => (isPromote.value ? t('tasks.kind_promote') : t(
       </div>
       <p v-if="artist" class="truncate text-xs text-[color:var(--text-muted)]">{{ artist }}</p>
 
-      <!-- Progress: a real bar while active; a promotion has no bytes to draw. -->
-      <div v-if="isActive && !isPromote" class="mt-1.5 flex items-center gap-2">
-        <div
-          class="h-1 flex-1 overflow-hidden rounded-full bg-foreground/10 transition-all duration-300 group-hover:h-1.5"
-          role="progressbar"
-          :aria-label="statusText"
-          :aria-valuenow="isIndeterminate ? undefined : percent"
-          aria-valuemin="0"
-          aria-valuemax="100"
-          :data-indeterminate="isIndeterminate ? 'true' : undefined">
-          <div
-            v-if="isIndeterminate"
-            class="h-full w-1/3 animate-pulse rounded-full bg-primary"
-            data-test="download-bar-indeterminate" />
-          <div
-            v-else
-            class="h-full rounded-full bg-primary transition-all duration-300"
-            :style="{ width: `${percent}%` }"
-            data-test="download-bar-fill" />
-        </div>
-        <span class="shrink-0 text-[10px] tabular-nums text-[color:var(--text-muted)]">
-          {{ isIndeterminate ? t('download.waiting') : `${percent}%` }}
-        </span>
-      </div>
-
+      <!-- A request reports its phase as text: bytes belong to the job it
+           delegates to, not to the request row the page lists. -->
       <p
-        v-else
         class="mt-1 truncate text-[11px]"
         :class="isFailed ? 'text-primary opacity-90' : 'text-dimmer'"
         :title="isFailed ? job.error : undefined"

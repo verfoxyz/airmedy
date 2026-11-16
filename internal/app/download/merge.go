@@ -345,6 +345,15 @@ func artistNames(t *domain.TrackDTO) []string {
 	return strings.Split(raw, ";")
 }
 
+// CarryArtworkKey gives a row (and its album) a cover when it has none. The
+// promotion path uses it for bytes found in the cover cache after the merge.
+func (m *Merger) CarryArtworkKey(ctx context.Context, trackID, artworkKey string) error {
+	if m == nil || m.repo == nil || strings.TrimSpace(artworkKey) == "" {
+		return nil
+	}
+	return m.repo.CarryArtworkKey(ctx, trackID, artworkKey)
+}
+
 // foldInto moves the remote row's playlist entries, favorite flag and play count
 // onto survivorID and deletes the remote row, all in one transaction.
 //
@@ -396,6 +405,13 @@ func (m *Merger) foldInto(ctx context.Context, survivorID, remoteID string) erro
 		if remote.PlayCount > 0 {
 			if err := m.repo.AddPlayCount(ctx, survivorID, remote.PlayCount); err != nil {
 				return fmt.Errorf("merge: carry play count to %s: %w", survivorID, err)
+			}
+		}
+		// A streamed row keeps the cover it displayed even when the downloaded
+		// file has no embedded art. The import's own key wins when present.
+		if survivor.ArtworkKey == "" && remote.ArtworkKey != "" {
+			if err := m.repo.CarryArtworkKey(ctx, survivorID, remote.ArtworkKey); err != nil {
+				return fmt.Errorf("merge: carry artwork to %s: %w", survivorID, err)
 			}
 		}
 

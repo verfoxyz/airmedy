@@ -20,6 +20,8 @@ import (
 
 	"airmedy/internal/app/config"
 	"airmedy/internal/domain"
+
+	"github.com/google/uuid"
 )
 
 // Prebuffer watermarks. Open returns only after enough of the body is on disk
@@ -32,6 +34,35 @@ const (
 	prebufferSeconds = 3.0
 	// prebufferTimeout bounds the wait; the caller gets an error past it.
 	prebufferTimeout = 10 * time.Second
+
+	// sessionStopWait bounds how long Close/Stop waits for one download
+	// goroutine. A blocked HTTP read is canceled first; the wait is only a
+	// guard, so shutdown cannot be held hostage by a stuck goroutine.
+	sessionStopWait = 500 * time.Millisecond
+
+	// prefetchAheadSeconds is how far ahead of the playback position the stream
+	// download runs. The download pauses at this water mark and resumes when
+	// playback advances, so a song is not fetched in full just to start playing.
+	// A complete request (promotion or an explicit download) ignores it.
+	prefetchAheadSeconds = 45
+
+	// demandWindowBytes is how close the decoder may read to the write edge
+	// before the water mark is lifted: a demuxer binary-searching for a seek, or
+	// a paused-at-zero decoder, must not be starved by the prefetch limit.
+	demandWindowBytes int64 = 2 << 20 // 2 MiB
+	// demandResumeBytes re-arms the water mark once the download is this far
+	// ahead of the decoder again (hysteresis: no start/stop churn).
+	demandResumeBytes int64 = 4 << 20 // 4 MiB
+
+	// seekBufferBytes is the extra lead kept on disk before a stream seek so the
+	// reopened decoder's own search never reaches the growing edge.
+	seekBufferBytes int64 = 1 << 20 // 1 MiB
+
+	// decoderHeadBytes is the amount the cache-file decoder needs on disk before
+	// FFmpeg is pointed at the file; the custom AVIO blocks for the rest.
+	decoderHeadBytes int64 = 2 << 20
+	// decoderHeadTimeout bounds that wait.
+	decoderHeadTimeout = 15 * time.Second
 )
 
 // matchDurationToleranceMs is how far two sources may disagree about a track's
@@ -71,6 +102,11 @@ type Cache struct {
 
 	mu       sync.Mutex
 	sessions map[string]*cacheSession
+	// deferredDiscards holds entries whose audio could not be deleted because a
+	// session still owned the file. The cache deletes them as soon as that
+	// session closes; the state lives in memory because a restart's startup
+	// cleanup already drops caches whose identity is local.
+	deferredDiscards map[string]*domain.StreamCacheEntry
 	// sessionClosed notifies promotion, which must wait until the decoder no
 	// longer owns the file before moving or deleting it.
 	sessionClosed []func(provider, externalID string)
@@ -82,8 +118,14 @@ type Cache struct {
 	// localIdentity lets Open refuse a row that already became a library file.
 	// *download.Service satisfies it; the cache only needs the yes/no answer.
 	localIdentity LocalIdentityChecker
+	// activeRequest lets the startup sweep keep audio a media request still
+	// needs. Optional; without it a local-identity cache is always obsolete.
+	activeRequest func(ctx context.Context, provider, externalID string) bool
 	// aliases expands the artist key for cross-source matching. Optional.
 	aliases domain.ArtistAliasRepository
+	// tasks records one row per actual download session for the tasks page.
+	// Optional: a cache without it still plays and caches.
+	tasks domain.StreamCacheTaskRepository
 }
 
 // SettingsProvider is the settings slice the cache needs. *appsettings.Service
@@ -105,19 +147,39 @@ func (c *Cache) SetArtistAliases(aliases domain.ArtistAliasRepository) {
 	c.aliases = aliases
 }
 
-// SetLocalIdentityChecker installs the guard used by Open. Safe to call before
-// Start; the cache never writes through it.
+// SetLocalIdentityChecker installs the guard used by Open and the startup
+// sweep. Safe to call before Start; the cache never writes through it.
 func (c *Cache) SetLocalIdentityChecker(checker LocalIdentityChecker) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.localIdentity = checker
 }
 
+// SetActiveRequestChecker installs the guard that keeps a cache entry a media
+// request still needs during the startup sweep.
+func (c *Cache) SetActiveRequestChecker(check func(ctx context.Context, provider, externalID string) bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.activeRequest = check
+}
+
+// SetTaskHistory installs the stream-cache task log the tasks page reads. Safe
+// to call before Start; without it caching is unchanged.
+func (c *Cache) SetTaskHistory(tasks domain.StreamCacheTaskRepository) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.tasks = tasks
+}
+
 // Session is one playback window over a cached stream. ID is derived from the
 // track's remote identity, so the same track always maps to the same entry.
+// Path/TotalBytes are the local file the decoder reads directly (cache-file
+// mode); URL remains for the debug HTTP proxy.
 type Session struct {
-	ID  string
-	URL string
+	ID         string
+	URL        string
+	Path       string
+	TotalBytes int64
 }
 
 // cacheSession is the in-memory state of one playback window.
@@ -132,6 +194,7 @@ type cacheSession struct {
 	received    int64
 	total       int64 // -1 until the upstream announces a length
 	contentType string
+	quality     string
 	complete    bool
 	failed      error
 	playing     bool
@@ -139,6 +202,30 @@ type cacheSession struct {
 	progress    float64
 	lastFlush   time.Time
 	closed      bool
+	// completeRequested means a promotion or download needs the whole file:
+	// the prefetch water mark is ignored and the download runs to EOF.
+	completeRequested bool
+	// halfPlayed marks the one-time "playback reached half the track" trigger.
+	// It is separate from completeRequested because a promotion may have asked
+	// for the whole file before the half-way point.
+	halfPlayed bool
+	// headTarget lifts the prefetch water mark until the decoder's probe head
+	// is on disk. 0 means no cache-file decoder is waiting.
+	headTarget int64
+	// decodeOffset is the decoder's current read position in the cache file,
+	// reported by the player. decodeDemand is the hysteresis state that keeps
+	// the water mark lifted until the download is demandResumeBytes ahead.
+	decodeOffset int64
+	decodeDemand bool
+	// seekTarget is the byte count a pending stream seek needs on disk; the
+	// water mark is ignored until it is reached.
+	seekTarget int64
+	// progressChanged wakes the download when playback advances, seeks or a
+	// complete request arrives. Capacity 1; sends never block.
+	progressChanged chan struct{}
+	// taskID is the stream_cache_tasks row for this download, empty when the
+	// entry was already complete or no task log is installed.
+	taskID string
 
 	fileMu sync.RWMutex
 	file   *os.File
@@ -160,13 +247,14 @@ func NewCache(
 		logger = slog.Default()
 	}
 	return &Cache{
-		dir:      cfg.StreamCachePath(),
-		repo:     repo,
-		resolver: resolver,
-		settings: settings,
-		covers:   covers,
-		logger:   logger,
-		sessions: make(map[string]*cacheSession),
+		dir:              cfg.StreamCachePath(),
+		repo:             repo,
+		resolver:         resolver,
+		settings:         settings,
+		covers:           covers,
+		logger:           logger,
+		sessions:         make(map[string]*cacheSession),
+		deferredDiscards: make(map[string]*domain.StreamCacheEntry),
 		client: &http.Client{
 			// No overall timeout: the body is written as it arrives. Only the
 			// handshake is bounded, so a dead host cannot stall a session
@@ -189,10 +277,17 @@ func (c *Cache) Start(ctx context.Context) error {
 	c.cleanupLegacyFiles(ctx)
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.started {
+		c.mu.Unlock()
 		return nil
 	}
+	c.mu.Unlock()
+	// Sessions left active by a crash can never finish; close them before new
+	// playback starts so the tasks page does not show phantom downloads.
+	c.interruptTasks(ctx)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return fmt.Errorf("listen for stream cache proxy: %w", err)
@@ -225,10 +320,12 @@ func (c *Cache) Stop(ctx context.Context) error {
 	c.mu.Unlock()
 
 	// Close the sessions first: a streaming handler only returns once its
-	// session is closed or the client disconnects, and Shutdown waits for
-	// active handlers.
+	// session is closed or the client disconnects.
 	c.closeAllSessions()
-	err := server.Shutdown(ctx)
+	c.interruptTasks(ctx)
+	// Close (not Shutdown): active handlers may be parked in waitReady and do
+	// not observe a Shutdown; Close drops the connections immediately.
+	err := server.Close()
 	c.mu.Lock()
 	c.sessions = make(map[string]*cacheSession)
 	c.mu.Unlock()
@@ -297,7 +394,7 @@ func (c *Cache) Open(ctx context.Context, track *domain.TrackDTO) (*Session, err
 		}
 	}
 
-	s, err := c.startSession(entry, track, false)
+	s, err := c.startSession(ctx, entry, track, false)
 	if err != nil {
 		return nil, err
 	}
@@ -312,13 +409,20 @@ func (c *Cache) Open(ctx context.Context, track *domain.TrackDTO) (*Session, err
 	}
 
 	c.enforceLimit(ctx)
-	return &Session{ID: id, URL: c.localURL() + "/stream/" + id}, nil
+	return &Session{
+		ID:         id,
+		URL:        c.localURL() + "/stream/" + id,
+		Path:       s.audioPath,
+		TotalBytes: s.totalOrZero(),
+	}, nil
 }
 
 // startSession registers a cache session for entry and starts its download when
 // bytes are missing. background marks a session opened only to complete the
 // cache, which is detached when the download ends instead of waiting for Close.
-func (c *Cache) startSession(entry *domain.StreamCacheEntry, track *domain.TrackDTO, background bool) (*cacheSession, error) {
+func (c *Cache) startSession(
+	ctx context.Context, entry *domain.StreamCacheEntry, track *domain.TrackDTO, background bool,
+) (*cacheSession, error) {
 	base := c.localURL()
 	if base == "" {
 		return nil, fmt.Errorf("open stream: cache proxy is not running")
@@ -331,10 +435,15 @@ func (c *Cache) startSession(entry *domain.StreamCacheEntry, track *domain.Track
 		track:      track,
 		audioPath:  filepath.Join(c.dir, entry.AudioPath),
 		total:      -1,
+		quality:    entry.Quality,
 		playing:    !background,
 		background: background,
-		lastFlush:  time.Now(),
-		done:       make(chan struct{}),
+		// A background session exists only to complete the entry, so it must
+		// never stop at the prefetch water mark.
+		completeRequested: background,
+		lastFlush:         time.Now(),
+		progressChanged:   make(chan struct{}, 1),
+		done:              make(chan struct{}),
 	}
 	if entry.TotalBytes > 0 {
 		s.total = entry.TotalBytes
@@ -359,6 +468,7 @@ func (c *Cache) startSession(entry *domain.StreamCacheEntry, track *domain.Track
 		close(s.done)
 		return s, nil
 	}
+	c.startTask(ctx, s, entry)
 	runCtx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	go c.runSession(runCtx, s)
@@ -397,7 +507,12 @@ func (c *Cache) takeSession(ctx context.Context, key string) (*Session, error) {
 			c.abandonSession(existing)
 			return nil, waitErr
 		}
-		return &Session{ID: key, URL: base + "/stream/" + key}, nil
+		return &Session{
+			ID:         key,
+			URL:        base + "/stream/" + key,
+			Path:       existing.audioPath,
+			TotalBytes: existing.totalOrZero(),
+		}, nil
 	}
 	// A failed download must be retried from scratch rather than reusing the
 	// dead session (its upstream URL is likely expired).
@@ -420,7 +535,6 @@ func (c *Cache) resolveEntry(ctx context.Context, provider string, track *domain
 	}
 	if entry != nil {
 		entry.LastUsed = now
-		c.healEntryForReplay(ctx, entry)
 		if upsertErr := c.repo.Upsert(ctx, entry); upsertErr != nil {
 			c.logger.Warn("Failed to touch stream cache entry", "cache_key", entry.CacheKey, "error", upsertErr)
 		}
@@ -453,33 +567,6 @@ func (c *Cache) resolveEntry(ctx context.Context, provider string, track *domain
 		return nil, fmt.Errorf("register stream cache entry: %w", err)
 	}
 	return entry, nil
-}
-
-// healEntryForReplay clears deletion intent when the user plays a cached entry
-// again. A discard that never ran must not delete the audio the player is about
-// to use; a promoted entry whose file was moved away is no longer promoted,
-// because the next Open downloads it afresh and the worker must not treat that
-// new cache as the old, already-moved one.
-func (c *Cache) healEntryForReplay(ctx context.Context, entry *domain.StreamCacheEntry) {
-	if entry == nil || (!entry.DiscardPending && !entry.Promoted) {
-		return
-	}
-	if entry.Promoted {
-		if _, err := os.Stat(filepath.Join(c.dir, entry.AudioPath)); err != nil {
-			entry.Promoted = false
-			if resetErr := c.repo.SetPromoted(ctx, entry.CacheKey, false); resetErr != nil {
-				c.logger.Warn("Failed to reset stream cache promotion flag",
-					"cache_key", entry.CacheKey, "error", resetErr)
-			}
-		}
-	}
-	if entry.DiscardPending {
-		entry.DiscardPending = false
-		if resetErr := c.repo.SetDiscardPending(ctx, entry.CacheKey, false); resetErr != nil {
-			c.logger.Warn("Failed to reset stream cache discard flag",
-				"cache_key", entry.CacheKey, "error", resetErr)
-		}
-	}
 }
 
 // lookupEntry finds an existing entry by identity first, then by the same
@@ -611,6 +698,184 @@ func (c *Cache) Close(session *Session) {
 	c.notifySessionClosed(s)
 }
 
+// cachedBytesOnDisk is the bytes a range request can read right now: the
+// session counter capped by the file's real length, so metadata that survived a
+// truncated file cannot make the proxy promise bytes it does not hold.
+func (s *cacheSession) cachedBytesOnDisk() int64 {
+	s.mu.Lock()
+	received := s.received
+	s.mu.Unlock()
+	s.fileMu.RLock()
+	defer s.fileMu.RUnlock()
+	if s.file == nil {
+		return 0
+	}
+	if info, err := s.file.Stat(); err == nil && info.Size() < received {
+		return info.Size()
+	}
+	return received
+}
+
+// BufferedBytes is the bytes a decoder can read right now; a growing value
+// means the download is still buffering.
+func (c *Cache) BufferedBytes(session *Session) int64 {
+	if session == nil {
+		return 0
+	}
+	c.mu.Lock()
+	s := c.sessions[session.ID]
+	c.mu.Unlock()
+	if s == nil {
+		return 0
+	}
+	return s.cachedBytesOnDisk()
+}
+
+// SessionError reports why the download failed, if it did.
+func (c *Cache) SessionError(session *Session) error {
+	if session == nil {
+		return nil
+	}
+	c.mu.Lock()
+	s := c.sessions[session.ID]
+	c.mu.Unlock()
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.failed
+}
+
+// WaitComplete blocks until the download finishes. A failed or closed session
+// returns its reason instead, so an unknown-length decoder never sees EOF early.
+func (c *Cache) WaitComplete(ctx context.Context, session *Session) error {
+	if session == nil {
+		return nil
+	}
+	c.mu.Lock()
+	s := c.sessions[session.ID]
+	c.mu.Unlock()
+	if s == nil {
+		return fmt.Errorf("%w: stream session %s is not active",
+			domain.ErrStreamUnavailable, session.ID)
+	}
+	for {
+		s.mu.Lock()
+		complete := s.complete
+		failed := s.failed
+		closed := s.closed
+		s.mu.Unlock()
+		switch {
+		case complete:
+			return nil
+		case failed != nil:
+			return failed
+		case closed:
+			return fmt.Errorf("%w: stream session %s closed before completion",
+				domain.ErrStreamUnavailable, session.ID)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+// WaitHead blocks until the cache file has enough bytes for the decoder to
+// probe (min(2 MiB, total)), or reports a failure. The FFmpeg AVIO then blocks
+// per read, so the head wait only keeps the initial probe from stalling.
+func (c *Cache) WaitHead(ctx context.Context, session *Session) error {
+	if session == nil {
+		return nil
+	}
+	c.mu.Lock()
+	s := c.sessions[session.ID]
+	c.mu.Unlock()
+	if s == nil {
+		return fmt.Errorf("%w: stream session %s is not active",
+			domain.ErrStreamUnavailable, session.ID)
+	}
+
+	deadline := time.Now().Add(decoderHeadTimeout)
+	for {
+		s.mu.Lock()
+		total := s.total
+		failed := s.failed
+		closed := s.closed
+		complete := s.complete
+		target := decoderHeadBytes
+		if total > 0 && total < target {
+			target = total
+		}
+		lifted := false
+		if s.headTarget < target {
+			// Let the download run past the playback water mark until the head
+			// exists; a paused-at-zero session would otherwise never get there.
+			s.headTarget = target
+			lifted = true
+		}
+		s.mu.Unlock()
+		if lifted {
+			signalStreamProgress(s)
+		}
+
+		received := s.cachedBytesOnDisk()
+		switch {
+		case complete || (target > 0 && received >= target):
+			return nil
+		case failed != nil:
+			return failed
+		case closed:
+			return fmt.Errorf("%w: stream session %s closed before the head was buffered",
+				domain.ErrStreamUnavailable, session.ID)
+		case time.Now().After(deadline):
+			return fmt.Errorf("%w: stream session %s has only %d/%d head bytes",
+				domain.ErrStreamUnavailable, session.ID, received, target)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// WaitReady blocks until the session's proxy knows the upstream response, or
+// reports why it cannot. A session opened from partially cached bytes can
+// satisfy the prebuffer without having contacted the source yet; pointing the
+// decoder at that URL makes the load fail immediately.
+func (c *Cache) WaitReady(ctx context.Context, session *Session) error {
+	if session == nil {
+		return nil
+	}
+	c.mu.Lock()
+	s := c.sessions[session.ID]
+	c.mu.Unlock()
+	if s == nil {
+		return fmt.Errorf("%w: stream session %s is not active", domain.ErrStreamUnavailable, session.ID)
+	}
+	if !s.waitReady(ctx, 30*time.Second) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		failed := s.failed
+		s.mu.Unlock()
+		if failed != nil {
+			return failed
+		}
+		return fmt.Errorf("%w: stream session %s has no upstream response",
+			domain.ErrStreamUnavailable, session.ID)
+	}
+	s.mu.Lock()
+	failed := s.failed
+	s.mu.Unlock()
+	return failed
+}
+
 // ReportProgress records how far the player has advanced, in seconds. It only
 // touches memory unless thirty seconds have passed since the last flush: the
 // player reports every tick, while readers of this value (eviction, a replay)
@@ -626,12 +891,31 @@ func (c *Cache) ReportProgress(session *Session, seconds float64) {
 		return
 	}
 	s.mu.Lock()
+	changed := seconds != s.progress
 	s.progress = seconds
+	// Reaching the middle of the track is the signal to cache the rest: the
+	// user is committed to the song, so the water mark must stop limiting the
+	// download. A promotion may already have requested completion; the half-way
+	// marker is still recorded so a later session does not re-trigger it.
+	halfTriggered := false
+	if !s.halfPlayed && !s.complete && s.track != nil && s.track.Duration > 0 &&
+		seconds >= float64(s.track.Duration)/2 {
+		s.halfPlayed = true
+		if !s.completeRequested {
+			s.completeRequested = true
+			halfTriggered = true
+		}
+	}
 	flush := time.Since(s.lastFlush) >= progressFlushInterval
 	if flush {
 		s.lastFlush = time.Now()
 	}
 	s.mu.Unlock()
+	if changed || halfTriggered {
+		// The download may be paused at the prefetch water mark; a seek or a
+		// tick forward is what lets it continue.
+		signalStreamProgress(s)
+	}
 	if flush {
 		c.saveProgress(s)
 		c.saveStats(s)
@@ -655,6 +939,95 @@ func (c *Cache) FlushProgress(session *Session) {
 	s.mu.Unlock()
 	c.saveProgress(s)
 	c.saveStats(s)
+}
+
+// SetDecodeOffset records the decoder's current read position in the cache
+// file. A decoder parked near the write edge (a seek's binary search, or the
+// initial probe) pulls the download past the playback water mark; without this
+// the demuxer can be starved at the very edge the prefetch limit created.
+func (c *Cache) SetDecodeOffset(session *Session, offset int64) {
+	if session == nil || offset < 0 {
+		return
+	}
+	c.mu.Lock()
+	s := c.sessions[session.ID]
+	c.mu.Unlock()
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	changed := s.decodeOffset != offset
+	s.decodeOffset = offset
+	s.mu.Unlock()
+	if changed {
+		// Wake a download paused at the water mark immediately instead of
+		// waiting for waitForPrefetch's one-second fallback.
+		signalStreamProgress(s)
+	}
+}
+
+// EnsureSeekable blocks until about seconds of audio plus a 1 MiB margin are on
+// disk. It lifts the prefetch water mark for that window and does not touch the
+// decoder: the caller reopens the decoder afterwards, which then timestamp-seeks
+// inside downloaded bytes instead of stalling at the growing edge.
+func (c *Cache) EnsureSeekable(ctx context.Context, session *Session, seconds float64) error {
+	if session == nil {
+		return nil
+	}
+	if seconds < 0 {
+		seconds = 0
+	}
+	c.mu.Lock()
+	s := c.sessions[session.ID]
+	c.mu.Unlock()
+	if s == nil {
+		return fmt.Errorf("%w: stream session %s is not active", domain.ErrStreamUnavailable, session.ID)
+	}
+
+	s.mu.Lock()
+	need := int64(seconds*s.bytesPerSecondLocked()) + seekBufferBytes
+	if s.total > 0 && need > s.total {
+		need = s.total
+	}
+	if s.complete || s.received >= need {
+		s.mu.Unlock()
+		return nil
+	}
+	if need > s.seekTarget {
+		s.seekTarget = need
+	}
+	s.mu.Unlock()
+	// The download may be parked at the water mark: wake it for the seek window.
+	signalStreamProgress(s)
+
+	for {
+		s.mu.Lock()
+		complete := s.complete
+		received := s.received
+		failed := s.failed
+		closed := s.closed
+		total := s.total
+		s.mu.Unlock()
+
+		switch {
+		case complete || received >= need:
+			return nil
+		case failed != nil:
+			return failed
+		case closed:
+			return fmt.Errorf("%w: stream session %s closed while buffering for a seek",
+				domain.ErrStreamUnavailable, session.ID)
+		case total > 0 && received >= total:
+			return nil
+		case ctx.Err() != nil:
+			return ctx.Err()
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }
 
 // CachedFileInfo reports the entry for track without creating a row or touching
@@ -701,7 +1074,13 @@ func (c *Cache) EnsureComplete(ctx context.Context, track *domain.TrackDTO) (<-c
 	if existing != nil {
 		existing.mu.Lock()
 		failed := existing.failed != nil
+		requested := existing.completeRequested
+		existing.completeRequested = true
 		existing.mu.Unlock()
+		if !requested {
+			// Waiving the prefetch water mark must wake a download paused at it.
+			signalStreamProgress(existing)
+		}
 		if failed {
 			// Retry from scratch: the upstream URL of a dead attempt is expired.
 			c.mu.Lock()
@@ -721,31 +1100,12 @@ func (c *Cache) EnsureComplete(ctx context.Context, track *domain.TrackDTO) (<-c
 			close(done)
 			return done, nil
 		}
-		existing, err = c.startSession(entry, track, true)
+		existing, err = c.startSession(ctx, entry, track, true)
 		if err != nil {
 			return nil, err
 		}
 	}
 	return c.watchCompletion(existing), nil
-}
-
-// MarkPendingPromote flags the track's cache entry so eviction keeps it. It
-// creates the entry when the track was never streamed; EnsureComplete then
-// fills it.
-func (c *Cache) MarkPendingPromote(ctx context.Context, track *domain.TrackDTO) error {
-	if track == nil {
-		return nil
-	}
-	provider := domain.NormalizeProvider(track.Provider)
-	if provider == "" || strings.TrimSpace(track.ExternalID) == "" {
-		return fmt.Errorf("%w: track %s has no provider/external id", domain.ErrStreamUnavailable, track.ID)
-	}
-	entry, err := c.resolveEntry(ctx, provider, track)
-	if err != nil {
-		return err
-	}
-	c.pinCover(entry)
-	return c.repo.SetPendingPromote(ctx, entry.CacheKey, true)
 }
 
 // OnSessionClosed registers a callback fired after a session has been removed
@@ -760,19 +1120,8 @@ func (c *Cache) OnSessionClosed(fn func(provider, externalID string)) {
 	c.sessionClosed = append(c.sessionClosed, fn)
 }
 
-// PendingPromotions returns every entry the promotion worker must handle.
-func (c *Cache) PendingPromotions(ctx context.Context) ([]*domain.StreamCacheEntry, error) {
-	return c.repo.ListPendingPromote(ctx)
-}
-
-// PendingDiscards returns every entry whose cache must be deleted once idle.
-func (c *Cache) PendingDiscards(ctx context.Context) ([]*domain.StreamCacheEntry, error) {
-	return c.repo.ListPendingDiscard(ctx)
-}
-
-// AllEntries lists every cached entry, least recently used first. The promotion
-// sweep uses it to find caches whose identity already became a library file but
-// whose flags were never set (a crash or a race left them behind).
+// AllEntries lists every cached entry, least recently used first. The cleanup
+// uses it to find caches whose identity already became a library file.
 func (c *Cache) AllEntries(ctx context.Context) ([]*domain.StreamCacheEntry, error) {
 	return c.repo.ListForEviction(ctx)
 }
@@ -843,50 +1192,69 @@ func (c *Cache) HasActiveSession(provider, externalID string) bool {
 	return false
 }
 
+// HasPlayingSession reports whether a healthy playback session (not a
+// background completion) owns the entry. Only then can a request finish the
+// partial cache: with no player attached, a normal download reports failures
+// and retries with the queue's backoff.
+func (c *Cache) HasPlayingSession(provider, externalID string) bool {
+	provider = domain.NormalizeProvider(provider)
+	externalID = strings.TrimSpace(externalID)
+	if provider == "" || externalID == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range c.sessions {
+		if s.provider != provider || s.externalID != externalID {
+			continue
+		}
+		s.mu.Lock()
+		playing := s.playing && !s.background && s.failed == nil && !s.closed
+		s.mu.Unlock()
+		if playing {
+			return true
+		}
+	}
+	return false
+}
+
 // notifySessionClosed wakes the observers after the session left the map. It
 // runs without the cache lock: a listener must not be able to deadlock playback.
+// A discard requested while this session owned the file runs here, now that the
+// audio is released.
 func (c *Cache) notifySessionClosed(s *cacheSession) {
 	if s == nil {
 		return
 	}
 	c.mu.Lock()
+	entry, deferred := c.deferredDiscards[s.id]
+	if deferred {
+		delete(c.deferredDiscards, s.id)
+	}
 	listeners := append([]func(string, string){}, c.sessionClosed...)
 	c.mu.Unlock()
+	if deferred && entry != nil {
+		c.removeEntry(entry)
+	}
 	for _, fn := range listeners {
 		fn(s.provider, s.externalID)
 	}
 }
 
-// SetPromoted records whether the entry's audio was moved into the library.
-// The row stays so the cleanup can delete the cache file without re-downloading
-// it; a promoted entry is never completed again.
-func (c *Cache) SetPromoted(ctx context.Context, track *domain.TrackDTO, promoted bool) error {
-	entry, err := c.entryFor(ctx, track)
-	if err != nil || entry == nil {
-		return err
+// removeEntry deletes one cache row and its audio file. It is the shared tail of
+// DiscardEntry and the deferred discard that runs when a session closes.
+func (c *Cache) removeEntry(entry *domain.StreamCacheEntry) {
+	if entry == nil {
+		return
 	}
-	return c.repo.SetPromoted(ctx, entry.CacheKey, promoted)
-}
-
-// ClearPendingPromote ends the request after a higher-quality download was
-// queued: that job owns the file now and deletes the cache when it finishes.
-func (c *Cache) ClearPendingPromote(ctx context.Context, track *domain.TrackDTO) error {
-	entry, err := c.entryFor(ctx, track)
-	if err != nil || entry == nil {
-		return err
+	if err := os.Remove(filepath.Join(c.dir, entry.AudioPath)); err != nil && !os.IsNotExist(err) {
+		c.logger.Warn("Failed to delete stream cache audio", "cache_key", entry.CacheKey, "error", err)
 	}
-	return c.repo.SetPendingPromote(ctx, entry.CacheKey, false)
-}
-
-// SetDiscardPending flags the entry's cache for deletion once no session owns
-// it. Callers use it when DiscardEntry cannot run right now (a normal download
-// finished while the user is still playing the cached audio).
-func (c *Cache) SetDiscardPending(ctx context.Context, track *domain.TrackDTO, pending bool) error {
-	entry, err := c.entryFor(ctx, track)
-	if err != nil || entry == nil {
-		return err
+	if err := c.repo.Delete(context.Background(), entry.CacheKey); err != nil {
+		c.logger.Warn("Failed to delete stream cache row", "cache_key", entry.CacheKey, "error", err)
+		return
 	}
-	return c.repo.SetDiscardPending(ctx, entry.CacheKey, pending)
+	c.unpinCover(entry.Provider, entry.ExternalID)
 }
 
 // entryFor resolves a track's entry through the same identity-then-cross-source
@@ -906,9 +1274,9 @@ func (c *Cache) entryFor(ctx context.Context, track *domain.TrackDTO) (*domain.S
 //
 // A session that is still playing defers the deletion — removing the file under
 // the decoder breaks playback — and returns domain.ErrStreamDiscardDeferred; the
-// caller sets discard_pending so the maintenance worker retries once the
-// session closes. A promoted entry whose file is already gone is a success, not
-// an error: the move is the only thing that mattered.
+// cache remembers the entry and deletes it as soon as that session closes. A
+// promoted entry whose file is already gone is a success, not an error: the move
+// is the only thing that mattered.
 func (c *Cache) DiscardEntry(ctx context.Context, track *domain.TrackDTO) error {
 	entry, err := c.entryFor(ctx, track)
 	if err != nil || entry == nil {
@@ -917,18 +1285,15 @@ func (c *Cache) DiscardEntry(ctx context.Context, track *domain.TrackDTO) error 
 
 	c.mu.Lock()
 	_, active := c.sessions[entry.CacheKey]
-	c.mu.Unlock()
 	if active {
+		c.deferredDiscards[entry.CacheKey] = entry
+		c.mu.Unlock()
 		return domain.ErrStreamDiscardDeferred
 	}
+	delete(c.deferredDiscards, entry.CacheKey)
+	c.mu.Unlock()
 
-	if err := os.Remove(filepath.Join(c.dir, entry.AudioPath)); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("discard stream cache audio %s: %w", entry.CacheKey, err)
-	}
-	if err := c.repo.Delete(ctx, entry.CacheKey); err != nil {
-		return err
-	}
-	c.unpinCover(entry.Provider, entry.ExternalID)
+	c.removeEntry(entry)
 	return nil
 }
 
@@ -1054,7 +1419,7 @@ func (c *Cache) waitForPrebuffer(ctx context.Context, s *cacheSession) error {
 	}
 }
 
-// prebufferTarget is 1 MiB, reduced to a three-second lead when the total size
+// prefetchTarget is 1 MiB, reduced to a three-second lead when the total size
 // and duration are both known, so a small or low-bitrate file is not held back
 // waiting for a megabyte that may be most of the track.
 func prebufferTarget(total int64, durationSeconds int) int64 {
@@ -1066,6 +1431,103 @@ func prebufferTarget(total int64, durationSeconds int) int64 {
 		}
 	}
 	return target
+}
+
+// prefetchLimitReachedLocked reports whether the download has run far enough
+// ahead of playback to pause. A complete request (promotion or download) and a
+// finished entry never pause.
+func (s *cacheSession) prefetchLimitReachedLocked() bool {
+	if s.completeRequested || s.complete || s.closed {
+		return false
+	}
+	// The cache-file decoder cannot probe until its head is on disk; ignore the
+	// water mark for that window even when playback is still at zero.
+	if s.headTarget > 0 && s.received < s.headTarget {
+		return false
+	}
+	// A pending seek needs its target bytes regardless of the playback water
+	// mark; the download may continue until they are on disk.
+	if s.seekTarget > 0 && s.received < s.seekTarget {
+		return false
+	}
+	// Decoder demand beats the water mark: if the reader is within
+	// demandWindowBytes of the write edge, keep downloading. The lifted state is
+	// sticky until the download is demandResumeBytes ahead again, so it cannot
+	// flap on every poll.
+	if s.decodeDemand {
+		if s.received-s.decodeOffset > demandResumeBytes {
+			s.decodeDemand = false
+		}
+	} else if s.decodeOffset > 0 && s.received-s.decodeOffset < demandWindowBytes {
+		s.decodeDemand = true
+	}
+	if s.decodeDemand {
+		return false
+	}
+	bytesPerSecond := s.bytesPerSecondLocked()
+	ahead := float64(s.received) - s.progress*bytesPerSecond
+	return ahead >= float64(prefetchAheadSeconds)*bytesPerSecond
+}
+
+// bytesPerSecondLocked derives the streaming bitrate. The real size and
+// duration win; otherwise the resolved tier is used, with 320k as the fallback
+// for an unlabelled entry.
+func (s *cacheSession) bytesPerSecondLocked() float64 {
+	duration := 0
+	if s.track != nil {
+		duration = s.track.Duration
+	}
+	if s.total > 0 && duration > 0 {
+		return float64(s.total) / float64(duration)
+	}
+	return streamBytesPerSecond(s.quality)
+}
+
+// streamBytesPerSecond is the rough byte rate of a quality tier, used only when
+// the upstream did not report both a size and a duration.
+func streamBytesPerSecond(quality string) float64 {
+	switch quality {
+	case domain.QualityFlac:
+		return 150 * 1024
+	case domain.Quality128k:
+		return 16 * 1024
+	case domain.Quality320k:
+		return 40 * 1024
+	}
+	// Unknown tiers are estimated as 320k, the default stream quality.
+	return 40 * 1024
+}
+
+// signalStreamProgress wakes a download paused at the prefetch water mark. It
+// never blocks: a pending wake already covers this change.
+func signalStreamProgress(s *cacheSession) {
+	if s == nil || s.progressChanged == nil {
+		return
+	}
+	select {
+	case s.progressChanged <- struct{}{}:
+	default:
+	}
+}
+
+// waitForPrefetch blocks until playback advances past the water mark, the entry
+// is completed, or the session ends. It re-checks once a second so a stalled
+// position cannot hide a seek that was not reported as a change.
+func (c *Cache) waitForPrefetch(ctx context.Context, s *cacheSession) bool {
+	for {
+		s.mu.Lock()
+		paused := s.prefetchLimitReachedLocked()
+		s.mu.Unlock()
+		if !paused {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-s.progressChanged:
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 // abandonSession removes a session whose Open failed and releases its file.
@@ -1138,6 +1600,7 @@ func (c *Cache) runSession(ctx context.Context, s *cacheSession) {
 			s.complete = true
 			s.failed = nil
 			s.mu.Unlock()
+			c.finishTask(s)
 			c.saveStats(s)
 			// The cover may have been cached while the audio was downloading;
 			// pin it now that the entry is complete.
@@ -1224,7 +1687,16 @@ func (c *Cache) fetch(ctx context.Context, s *cacheSession, ref domain.StreamRef
 			}
 			s.mu.Lock()
 			s.received += int64(n)
+			paused := s.prefetchLimitReachedLocked()
 			s.mu.Unlock()
+			if paused {
+				// Stop reading here rather than buffering the whole song: the
+				// unread tail stays upstream until playback advances.
+				c.saveStats(s)
+				if !c.waitForPrefetch(ctx, s) {
+					return ctx.Err()
+				}
+			}
 		}
 		if readErr == io.EOF {
 			break
@@ -1246,6 +1718,7 @@ func (c *Cache) fail(s *cacheSession, err error) {
 	s.mu.Unlock()
 	c.logger.Warn("Stream cache download failed",
 		"provider", s.track.Provider, "external_id", s.track.ExternalID, "error", err)
+	c.failTask(s, err)
 	c.saveStats(s)
 }
 
@@ -1271,13 +1744,26 @@ func (c *Cache) handleStream(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusOK
 	contentRange := ""
 	var written int64
+	startedAt := time.Now()
+	firstByteMs := int64(-1)
 	// miniaudio only surfaces "ma_player_load failed: -10", so the proxy side
 	// of a failed load must be diagnosable from its own log: the requested
-	// Range, the status returned and the bytes actually written.
+	// Range, how long the response took to start, the status returned and the
+	// bytes actually written. Cached-range requests are normal traffic, so the
+	// line is Info; a failed response is Warn.
 	defer func() {
-		c.logger.Debug("Stream proxy response",
+		s.mu.Lock()
+		received, total := s.received, s.total
+		s.mu.Unlock()
+		level := slog.LevelInfo
+		if status >= http.StatusBadRequest {
+			level = slog.LevelWarn
+		}
+		c.logger.Log(context.Background(), level, "Stream proxy response",
 			"id", id, "method", r.Method, "range", rangeHeader,
-			"status", status, "content_range", contentRange, "written", written)
+			"status", status, "content_range", contentRange, "written", written,
+			"first_byte_ms", firstByteMs, "elapsed_ms", time.Since(startedAt).Milliseconds(),
+			"received_bytes", received, "total_bytes", total)
 	}()
 
 	if rangeErr != nil {
@@ -1288,6 +1774,43 @@ func (c *Cache) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.mu.Lock()
+	total := s.total
+	contentType := s.contentType
+	s.mu.Unlock()
+
+	// A range already on disk is served without touching the upstream. A seek
+	// inside the buffered part used to wait for a handshake that could fail or
+	// expire, turning a perfectly playable range into a 502.
+	if start, end, ok := cachedRequestRange(spec, hasRange, total, s.cachedBytesOnDisk()); ok {
+		status = http.StatusOK
+		if hasRange {
+			status = http.StatusPartialContent
+		}
+		w.Header().Set("Accept-Ranges", "bytes")
+		if contentType != "" {
+			w.Header().Set("Content-Type", contentType)
+		}
+		if hasRange {
+			totalLabel := "*"
+			if total > 0 {
+				totalLabel = strconv.FormatInt(total, 10)
+			}
+			contentRange = fmt.Sprintf("bytes %d-%d/%s", start, end, totalLabel)
+			w.Header().Set("Content-Range", contentRange)
+		}
+		if end >= start {
+			w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+		}
+		w.WriteHeader(status)
+		firstByteMs = time.Since(startedAt).Milliseconds()
+		if r.Method == http.MethodHead {
+			return
+		}
+		written = serveFromSession(w, r, s, start, end+1)
+		return
+	}
+
 	// Wait for the upstream handshake so Content-Type/Length are real. Without
 	// this the response would have to start before the first byte is known.
 	if !s.waitReady(r.Context(), 30*time.Second) {
@@ -1295,14 +1818,21 @@ func (c *Cache) handleStream(w http.ResponseWriter, r *http.Request) {
 			status = 0
 			return
 		}
+		s.mu.Lock()
+		failed := s.failed
+		received, knownTotal := s.received, s.total
+		s.mu.Unlock()
+		c.logger.Warn("Stream proxy: session not ready",
+			"id", id, "range", rangeHeader, "received_bytes", received,
+			"total_bytes", knownTotal, "failed", failed)
 		status = http.StatusBadGateway
 		http.Error(w, "stream unavailable", status)
 		return
 	}
 
 	s.mu.Lock()
-	total := s.total
-	contentType := s.contentType
+	total = s.total
+	contentType = s.contentType
 	failed := s.failed
 	s.mu.Unlock()
 	if failed != nil {
@@ -1336,6 +1866,7 @@ func (c *Cache) handleStream(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", strconv.FormatInt(total, 10))
 	}
 	w.WriteHeader(status)
+	firstByteMs = time.Since(startedAt).Milliseconds()
 	if r.Method == http.MethodHead {
 		return
 	}
@@ -1344,25 +1875,58 @@ func (c *Cache) handleStream(w http.ResponseWriter, r *http.Request) {
 	if status == http.StatusPartialContent {
 		limit = end + 1
 	}
+	written = serveFromSession(w, r, s, start, limit)
+}
 
+// cachedRequestRange resolves the requested range against the bytes on disk.
+// ok means the whole range can be served without an upstream response.
+func cachedRequestRange(
+	spec byteRange, hasRange bool, total, cached int64,
+) (start, end int64, ok bool) {
+	if cached <= 0 {
+		return 0, 0, false
+	}
+	if !hasRange {
+		if total > 0 && total <= cached {
+			return 0, total - 1, true
+		}
+		return 0, 0, false
+	}
+	if start, end, resolved := spec.resolve(total); resolved {
+		return start, end, end+1 <= cached
+	}
+	// An explicit end does not need the total: the client named it.
+	if spec.suffixLen == 0 && spec.end >= 0 && spec.end >= spec.start {
+		return spec.start, spec.end, spec.end+1 <= cached
+	}
+	return 0, 0, false
+}
+
+// serveFromSession writes bytes from offset. limit is exclusive; a value <= 0
+// means "until the session ends". It blocks while the download catches up, so
+// the decoder never reads a short body as end-of-track.
+func serveFromSession(
+	w http.ResponseWriter, r *http.Request, s *cacheSession, offset, limit int64,
+) int64 {
 	flusher, _ := w.(http.Flusher)
 	buf := make([]byte, 64*1024)
-	offset := start
+	bounded := limit > 0
+	var written int64
 	for {
 		if r.Context().Err() != nil || s.isClosed() {
-			return
+			return written
 		}
-		if limit >= 0 && offset >= limit {
-			return
+		if bounded && offset >= limit {
+			return written
 		}
 		readBuf := buf
-		if limit >= 0 && limit-offset < int64(len(readBuf)) {
+		if bounded && limit-offset < int64(len(readBuf)) {
 			readBuf = readBuf[:int(limit-offset)]
 		}
 		n, readErr := s.readAt(readBuf, offset)
 		if n > 0 {
 			if _, err := w.Write(readBuf[:n]); err != nil {
-				return
+				return written
 			}
 			written += int64(n)
 			offset += int64(n)
@@ -1372,17 +1936,17 @@ func (c *Cache) handleStream(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if readErr != nil {
-			return
+			return written
 		}
 		// Nothing available yet: block briefly instead of returning EOF, which
 		// the decoder would read as end-of-track.
 		select {
 		case <-r.Context().Done():
-			return
+			return written
 		case <-s.done:
 			// Download finished or failed; loop once more to drain what landed.
 			if s.isComplete() && offset >= s.receivedSnapshot() {
-				return
+				return written
 			}
 			select {
 			case <-time.After(20 * time.Millisecond):
@@ -1530,7 +2094,21 @@ func (c *Cache) stopSession(s *cacheSession) {
 	}
 	select {
 	case <-s.done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(sessionStopWait):
+		// The goroutine is blocked in a call that ignored cancellation. Close
+		// the file anyway: a later write fails instead of holding exit open.
+		c.logger.Warn("Stream session did not stop in time",
+			"id", s.id, "wait", sessionStopWait)
+	}
+	// A download cut short by Close/Stop never reaches runSession's failure
+	// path; close its task row here. It was stopped on purpose (track switch,
+	// shutdown), so it is recorded as canceled, never as an error.
+	s.mu.Lock()
+	complete := s.complete
+	failed := s.failed != nil
+	s.mu.Unlock()
+	if !complete && !failed {
+		c.cancelTask(s)
 	}
 	c.saveStats(s)
 	c.saveProgress(s)
@@ -1550,9 +2128,17 @@ func (c *Cache) closeAllSessions() {
 		sessions = append(sessions, s)
 	}
 	c.mu.Unlock()
+	// Close in parallel: each wait is bounded, but a sequential loop over many
+	// sessions would multiply the bound into the exit time.
+	var wg sync.WaitGroup
 	for _, s := range sessions {
-		c.stopSession(s)
+		wg.Add(1)
+		go func(session *cacheSession) {
+			defer wg.Done()
+			c.stopSession(session)
+		}(s)
 	}
+	wg.Wait()
 }
 
 // recordActualQuality persists the tier that actually resolved when it differs
@@ -1563,6 +2149,9 @@ func (c *Cache) recordActualQuality(s *cacheSession, requested, actual string) {
 	if actual == "" || actual == requested {
 		return
 	}
+	s.mu.Lock()
+	s.quality = actual
+	s.mu.Unlock()
 	c.logger.Info("Stream quality fallback",
 		"cache_key", s.id, "provider", s.provider, "external_id", s.externalID,
 		"requested", requested, "actual", actual)
@@ -1597,6 +2186,127 @@ func (c *Cache) saveProgress(s *cacheSession) {
 	}
 }
 
+// taskRepo reads the optional task log; the setter may run at any time.
+func (c *Cache) taskRepo() domain.StreamCacheTaskRepository {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.tasks
+}
+
+// startTask records one actual download session. A cache hit (complete entry)
+// returns before this runs, so replays of finished caches add no rows.
+func (c *Cache) startTask(ctx context.Context, s *cacheSession, entry *domain.StreamCacheEntry) {
+	repo := c.taskRepo()
+	if repo == nil {
+		return
+	}
+	total := s.total
+	if total < 0 {
+		total = 0
+	}
+	// Prefer the track being played: a cross-source hit reuses an entry whose
+	// stored title came from the other provider's metadata.
+	title := strings.TrimSpace(s.track.Title)
+	if title == "" {
+		title = entry.Title
+	}
+	artist := primaryArtist(s.track)
+	if artist == "" {
+		artist = entry.Artist
+	}
+	task := &domain.StreamCacheTask{
+		ID:         uuid.NewString(),
+		Provider:   entry.Provider,
+		ExternalID: entry.ExternalID,
+		Title:      title,
+		Artist:     artist,
+		Quality:    entry.Quality,
+		State:      domain.StreamCacheTaskStateActive,
+		BytesTotal: total,
+		BytesDone:  s.received,
+		StartedAt:  time.Now(),
+	}
+	if err := repo.Start(ctx, task); err != nil {
+		c.logger.Warn("Failed to record a stream cache task",
+			"provider", entry.Provider, "external_id", entry.ExternalID, "error", err)
+		return
+	}
+	s.mu.Lock()
+	s.taskID = task.ID
+	s.mu.Unlock()
+}
+
+// finishTask closes the session's task row with its final byte counters.
+func (c *Cache) finishTask(s *cacheSession) {
+	id, total, done := s.taskSnapshot()
+	if id == "" {
+		return
+	}
+	repo := c.taskRepo()
+	if repo == nil {
+		return
+	}
+	if total < 0 {
+		total = 0
+	}
+	if err := repo.Finish(context.Background(), id, total, done, time.Now()); err != nil {
+		c.logger.Warn("Failed to finish a stream cache task", "task_id", id, "error", err)
+	}
+}
+
+// cancelTask closes the session's row as canceled (an intentional stop).
+func (c *Cache) cancelTask(s *cacheSession) {
+	id, total, done := s.taskSnapshot()
+	if id == "" {
+		return
+	}
+	repo := c.taskRepo()
+	if repo == nil {
+		return
+	}
+	if total < 0 {
+		total = 0
+	}
+	if err := repo.Cancel(context.Background(), id, total, done, time.Now()); err != nil {
+		c.logger.Warn("Failed to cancel a stream cache task", "task_id", id, "error", err)
+	}
+}
+
+// failTask closes the session's row as failed. A session without a row (cache
+// hit or no task log) is a no-op.
+func (c *Cache) failTask(s *cacheSession, cause error) {
+	id, total, done := s.taskSnapshot()
+	if id == "" || cause == nil {
+		return
+	}
+	repo := c.taskRepo()
+	if repo == nil {
+		return
+	}
+	if total < 0 {
+		total = 0
+	}
+	if err := repo.Fail(context.Background(), id, cause.Error(), total, done, time.Now()); err != nil {
+		c.logger.Warn("Failed to fail a stream cache task", "task_id", id, "error", err)
+	}
+}
+
+// interruptTasks closes active rows left behind by a shutdown or a crash.
+func (c *Cache) interruptTasks(ctx context.Context) {
+	repo := c.taskRepo()
+	if repo == nil {
+		return
+	}
+	changed, err := repo.MarkActiveInterrupted(ctx, "interrupted", time.Now())
+	if err != nil {
+		c.logger.Warn("Failed to close interrupted stream cache tasks", "error", err)
+		return
+	}
+	if changed > 0 {
+		c.logger.Info("Stream cache: closed interrupted tasks", "count", changed)
+	}
+}
+
 // pinCover marks a stream entry's identity so its cover is evicted last.
 func (c *Cache) pinCover(entry *domain.StreamCacheEntry) {
 	if entry == nil {
@@ -1623,19 +2333,42 @@ func (c *Cache) unpinCover(provider, externalID string) {
 	}
 }
 
-// cleanupLegacyFiles removes the JSON sidecars of the pre-database cache and
-// any audio file no row references. Metadata is rebuilt on demand, so dropping
-// it is safe; the audio files that remain are still addressable.
+// cleanupLegacyFiles removes the JSON sidecars of the pre-database cache, any
+// audio file no row references, and rows whose identity already became a
+// library file. Metadata is rebuilt on demand, so dropping it is safe; the
+// audio files that remain are still addressable. A cache a media request still
+// needs is kept so a pending promotion does not turn into a download.
 func (c *Cache) cleanupLegacyFiles(ctx context.Context) {
 	entries, err := c.repo.ListForEviction(ctx)
 	if err != nil {
 		c.logger.Warn("Failed to list stream cache entries for startup cleanup", "error", err)
 		return
 	}
+	c.mu.Lock()
+	localIdentity := c.localIdentity
+	activeRequest := c.activeRequest
+	c.mu.Unlock()
+
 	referenced := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		if c.obsoleteLocalEntry(ctx, entry, localIdentity, activeRequest) {
+			if err := os.Remove(filepath.Join(c.dir, entry.AudioPath)); err != nil && !os.IsNotExist(err) {
+				c.logger.Warn("Failed to delete an already-local stream cache",
+					"cache_key", entry.CacheKey, "error", err)
+			}
+			if err := c.repo.Delete(ctx, entry.CacheKey); err != nil {
+				c.logger.Warn("Failed to drop an already-local stream cache row",
+					"cache_key", entry.CacheKey, "error", err)
+			}
+			c.unpinCover(entry.Provider, entry.ExternalID)
+			continue
+		}
 		referenced[entry.CacheKey] = struct{}{}
 	}
+
 	dirEntries, err := os.ReadDir(c.dir)
 	if err != nil {
 		return
@@ -1655,6 +2388,34 @@ func (c *Cache) cleanupLegacyFiles(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// obsoleteLocalEntry reports whether a cache row describes audio that is
+// already a library file and no request still needs.
+func (c *Cache) obsoleteLocalEntry(
+	ctx context.Context,
+	entry *domain.StreamCacheEntry,
+	localIdentity LocalIdentityChecker,
+	activeRequest func(ctx context.Context, provider, externalID string) bool,
+) bool {
+	if localIdentity == nil {
+		return false
+	}
+	provider := domain.NormalizeProvider(entry.Provider)
+	externalID := strings.TrimSpace(entry.ExternalID)
+	if provider == "" || externalID == "" {
+		return false
+	}
+	if activeRequest != nil && activeRequest(ctx, provider, externalID) {
+		return false
+	}
+	local, err := localIdentity.HasLocalIdentity(ctx, provider, externalID)
+	if err != nil {
+		c.logger.Debug("Stream cache: cannot check the local identity",
+			"provider", provider, "external_id", externalID, "error", err)
+		return false
+	}
+	return local
 }
 
 // enforceLimit deletes whole entries until the directory fits the configured
@@ -1726,9 +2487,6 @@ func (c *Cache) enforceLimitBytes(limit int64) {
 			return
 		}
 		if _, inUse := active[cand.entry.CacheKey]; inUse {
-			continue
-		}
-		if cand.entry.PendingPromote {
 			continue
 		}
 		if err := os.Remove(filepath.Join(c.dir, cand.entry.AudioPath)); err == nil {
@@ -1858,4 +2616,11 @@ func (s *cacheSession) totalOrZero() int64 {
 		return 0
 	}
 	return s.total
+}
+
+// taskSnapshot reads the task row id and byte counters under the session lock.
+func (s *cacheSession) taskSnapshot() (id string, total, done int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.taskID, s.total, s.received
 }

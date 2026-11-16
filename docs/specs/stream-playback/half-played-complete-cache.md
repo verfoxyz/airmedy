@@ -1,6 +1,6 @@
 # 任务：播放过半后自动补全整首缓存
 
-> 状态：待开工
+> 状态：✅ 已完成（`ReportProgress` 在 `position >= duration/2` 时置一次 `halfPlayed` + `completeRequested`，无视预取水位下载到 EOF；duration=0 不触发；重开 session 后按首次上报位置同样触发）
 > 目的：只要听到（或拖到）歌曲一半，就把整首缓存下载完，避免后半段再卡顿、也保证这只歌后续可用
 > 关联：`bounded-prefetch.md`（有界预取）、`fix-stream-seek.md`（远端 seek 重载）
 

@@ -61,6 +61,30 @@ type PlayerStatus struct {
 	StreamArtworkURL string `json:"stream_artwork_url"`
 }
 
+// PlayerDiagnostics is a read-only snapshot used by the seek-silence
+// investigation: decoder reads/frames, cache AVIO wait time, and the output
+// layer's volumes/cursor. Optional on AudioPlayer (miniaudio only).
+type PlayerDiagnostics struct {
+	Reads         int64
+	Frames        int64
+	EmptyReads    int64
+	AVIOWaits     int64
+	AVIOWaitMS    int64
+	FilePos       int64
+	FileSize      int64
+	ExpectedSize  int64
+	CursorSeconds float64
+	SoundVolume   float64
+	EngineVolume  float64
+	Loaded        bool
+	// What the last seek saw: requested time, bytes on disk and the announced
+	// total at that moment, and whether the demuxer seek succeeded.
+	SeekRequested float64
+	SeekReceived  int64
+	SeekTotal     int64
+	SeekOK        bool
+}
+
 // LyricsEvent is the lifecycle update for the current track's lyric request.
 // RequestID lets clients discard results from an older load of the same track.
 type LyricsEvent struct {

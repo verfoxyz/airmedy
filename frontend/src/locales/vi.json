@@ -854,6 +854,12 @@
     "tab_failed": "Lỗi",
     "kind_download": "Tải xuống",
     "kind_promote": "Nâng cấp",
+    "kind_request": "Yêu cầu",
+    "kind_cache": "Bộ nhớ đệm",
+    "phase_resolving": "Đang phân giải",
+    "phase_downloading": "Đang tải xuống",
+    "phase_promoting": "Đang chuyển vào thư viện",
+    "phase_verifying": "Đang xác minh",
     "empty_all": "Chưa có tác vụ nào",
     "empty_active": "Không có tác vụ đang thực hiện",
     "empty_done": "Chưa có tác vụ hoàn thành",
@@ -946,6 +952,17 @@
     "play_all": "Phát tất cả",
     "shuffle": "Phát ngẫu nhiên",
     "more_actions": "Thao tác khác",
-    "list_empty": "Chưa có bài hát."
+    "list_empty": "Chưa có bài hát.",
+    "play_matching": "Đang tiếp tục khớp nguồn. Hãy thử lại sau giây lát.",
+    "play_unavailable": "Danh sách này không có bài hát nào phát được.",
+    "play_skipped": "Đã bỏ qua {count} bài hát không thể phát.",
+    "discover": "Khám phá",
+    "weekly_echo": "Vang vọng tuần",
+    "week_prev": "Tuần trước",
+    "week_next": "Tuần sau",
+    "plays_count": "{count} lượt phát",
+    "auto_refresh": "Tự động kiểm tra gợi ý mới",
+    "load_more": "Tải thêm",
+    "no_more": "Không còn gợi ý nào"
   }
 }

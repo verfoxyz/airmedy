@@ -21,16 +21,75 @@ export interface PlainLine {
 
 const LINE_PATTERN = /^\[(\d+):([0-5]\d(?:\.\d{1,3})?)\](.*)/
 const WORD_PATTERN = /^<(\d+):([0-5]\d(?:\.\d{1,3})?)>$/
+// Enhanced LRC tags every word's *end*: [mm:ss]text<mm:ss>...
+const LRC_INLINE_TAG = /<\d+:[^<>]*>/g
+// KuGou KRC tags every word's start and duration in milliseconds: <offset,duration>.
+const KRC_WORD_TAG = /<-?\d+,-?\d+>/g
+const KRC_WORD_PATTERN = /^<(-?\d+),(-?\d+)>$/
 // Also remove malformed timing tags when falling back to line-level lyrics.
-const INLINE_TAG = /<\d+:[^<>]*>/g
+const INLINE_TAG = /<\d+:[^<>]*>|<-?\d+,-?\d+>/g
 const BILINGUAL_SEP = /\s*\^\s*|\s*\/\s*/
 
 function cleanText(text: string) {
   return text.replace(INLINE_TAG, '').trim()
 }
 
+/**
+ * parseKrcWords reads KuGou's per-word tags: <offsetMs,durationMs>text.
+ *
+ * A positive duration ends the word directly; KRC often writes a negative one
+ * (or zero), so the next tag's start is the end. The final word falls back to
+ * the next line's time, capped at one second when the next line is far away.
+ * The offset is relative to the line timestamp.
+ */
+function parseKrcWords(text: string, time: number, nextTime?: number): LyricWord[] | undefined {
+  const markers = [...text.matchAll(KRC_WORD_TAG)]
+  if (!markers.length) return undefined
+
+  const words: LyricWord[] = []
+  const leading = text.slice(0, markers[0].index)
+  const first = markers[0][0].match(KRC_WORD_PATTERN)
+  if (!first) return undefined
+  if (leading.trim()) {
+    const end = time + Number(first[1]) / 1000
+    if (Number.isFinite(end) && end >= time) words.push({ text: leading, start: time, end })
+  }
+
+  for (let index = 0; index < markers.length; index++) {
+    const match = markers[index][0].match(KRC_WORD_PATTERN)
+    if (!match) return undefined
+    const start = time + Number(match[1]) / 1000
+    const duration = Number(match[2])
+    const segmentStart = markers[index].index! + markers[index][0].length
+    const segmentEnd = index + 1 < markers.length ? markers[index + 1].index! : text.length
+    const segment = text.slice(segmentStart, segmentEnd)
+    if (!segment.trim()) continue
+
+    let end: number
+    if (duration > 0) {
+      end = start + duration / 1000
+    } else if (index + 1 < markers.length) {
+      const next = markers[index + 1][0].match(KRC_WORD_PATTERN)
+      if (!next) return undefined
+      end = time + Number(next[1]) / 1000
+    } else {
+      end = Math.min(start + 1, nextTime ?? Infinity)
+    }
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return undefined
+    words.push({ text: segment, start, end: Math.max(start, end) })
+  }
+  if (!words.length) return undefined
+  words[0].text = words[0].text.trimStart()
+  words[words.length - 1].text = words[words.length - 1].text.trimEnd()
+  return words
+}
+
 function parseWords(text: string, time: number, nextTime?: number): LyricWord[] | undefined {
-  const markers = [...text.matchAll(INLINE_TAG)]
+  if (KRC_WORD_TAG.test(text)) {
+    KRC_WORD_TAG.lastIndex = 0
+    return parseKrcWords(text, time, nextTime)
+  }
+  const markers = [...text.matchAll(LRC_INLINE_TAG)]
   if (!markers.length) return undefined
   const words: LyricWord[] = []
   let start = time

@@ -854,6 +854,12 @@
     "tab_failed": "Errori",
     "kind_download": "Download",
     "kind_promote": "Promozione",
+    "kind_request": "Richiesta",
+    "kind_cache": "Cache",
+    "phase_resolving": "Risoluzione",
+    "phase_downloading": "Download",
+    "phase_promoting": "Promozione",
+    "phase_verifying": "Verifica",
     "empty_all": "Nessuna attività registrata",
     "empty_active": "Nessuna attività in corso",
     "empty_done": "Nessuna attività completata",
@@ -946,6 +952,17 @@
     "play_all": "Riproduci tutto",
     "shuffle": "Riproduzione casuale",
     "more_actions": "Altre azioni",
-    "list_empty": "Ancora nessun brano."
+    "list_empty": "Ancora nessun brano.",
+    "play_matching": "Le fonti sono ancora in abbinamento. Riprova tra poco.",
+    "play_unavailable": "Nessun brano riproducibile in questa lista.",
+    "play_skipped": "Saltati {count} brani non riproducibili.",
+    "discover": "Scopri",
+    "weekly_echo": "Eco settimanale",
+    "week_prev": "Settimana precedente",
+    "week_next": "Settimana successiva",
+    "plays_count": "{count} ascolti",
+    "auto_refresh": "Cerca automaticamente nuovi consigli",
+    "load_more": "Carica altro",
+    "no_more": "Nessun altro consiglio"
   }
 }

@@ -1,6 +1,6 @@
 # Bug：seek 后立即 EOF（AVIO 把声明总长当成文件大小）
 
-> 状态：待开工
+> 状态：✅ 已完成（`AVSEEK_SIZE`/`SEEK_END` 只暴露已写入字节；seek 到未下载区等待下载追上，超出声明总长报错；read 仅在真实结束处 EOF；单测覆盖见 `internal/infra/audio/ffmpeg_cache_io_test.go`）
 > 现象：远端曲目 seek 后无声；日志 `verdict=engine_not_consuming`，但真正原因是解码器 seek 后读到 EOF
 > 关联：`cache-file-decoder.md`、`diagnose-seek-silence.md`
 

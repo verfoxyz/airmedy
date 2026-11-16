@@ -3,6 +3,7 @@ package wails
 import (
 	"airmedy/internal/app/lastfm"
 	"context"
+	"strconv"
 	"time"
 )
 
@@ -190,10 +191,16 @@ type TopTrackItemDTO struct {
 	// Suspicious reports a local match whose duration disagrees; the row stays
 	// playable and the UI asks before saving or downloading.
 	Suspicious bool `json:"suspicious"`
-	// Kind is the list this row belongs to: top_tracks or similar.
+	// Kind is the list this row belongs to: top_tracks, similar, discover or
+	// weekly_echo:<from>.
 	Kind string `json:"kind"`
 	// MatchKey is artist + "\x00" + title; the frontend replaces rows by it.
 	MatchKey string `json:"match_key"`
+	// PlayCount is Last.fm's playcount inside a weekly chart.
+	PlayCount int `json:"play_count"`
+	// WeekFrom / WeekTo are the chart window of a weekly row, in Unix seconds.
+	WeekFrom int64 `json:"week_from"`
+	WeekTo   int64 `json:"week_to"`
 }
 
 // RecommendationListSummaryDTO is one card on the Last.fm page.
@@ -204,7 +211,10 @@ type RecommendationListSummaryDTO struct {
 	MatchingCount int      `json:"matching_count"`
 	TotalDuration int      `json:"total_duration"`
 	CoverURLs     []string `json:"cover_urls"`
-	UpdatedAt     string   `json:"updated_at"`
+	// WeekFrom / WeekTo are the chart window of a weekly_echo card.
+	WeekFrom  int64  `json:"week_from"`
+	WeekTo    int64  `json:"week_to"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // RecommendationListCollectionDTO is the cards page payload.
@@ -220,12 +230,21 @@ type RecommendationListDTO struct {
 	Title     string            `json:"title"`
 	Items     []TopTrackItemDTO `json:"items"`
 	UpdatedAt string            `json:"updated_at"`
+	// Weekly echo navigation: the selected window, its neighbours (0 when the
+	// week is the oldest/newest one) and the discover "load more" flag.
+	WeekFrom int64 `json:"week_from"`
+	WeekTo   int64 `json:"week_to"`
+	PrevFrom int64 `json:"prev_from"`
+	NextFrom int64 `json:"next_from"`
+	HasMore  bool  `json:"has_more"`
 }
 
-// ListRecommendationLists returns the persisted cards. Only a list that was
-// never built costs a Last.fm request; reopening the page reads the database.
-func (s *LastFmService) ListRecommendationLists() (RecommendationListCollectionDTO, error) {
-	collection, err := s.recommender.ListRecommendationLists(context.Background())
+// ListRecommendationLists returns the persisted cards. autoRefresh lets the
+// page's own toggle decide whether the discover TTL and a new week are checked;
+// missing lists are always built once.
+func (s *LastFmService) ListRecommendationLists(autoRefresh bool) (RecommendationListCollectionDTO, error) {
+	collection, err := s.recommender.ListRecommendationListsWithRefresh(
+		context.Background(), autoRefresh)
 	if err != nil {
 		return RecommendationListCollectionDTO{}, err
 	}
@@ -241,6 +260,8 @@ func (s *LastFmService) ListRecommendationLists() (RecommendationListCollectionD
 			MatchingCount: summary.MatchingCount,
 			TotalDuration: summary.TotalDuration,
 			CoverURLs:     append([]string{}, summary.CoverURLs...),
+			WeekFrom:      summary.WeekFrom,
+			WeekTo:        summary.WeekTo,
 			UpdatedAt:     summary.UpdatedAt.UTC().Format(time.RFC3339),
 		})
 	}
@@ -253,12 +274,52 @@ func (s *LastFmService) GetRecommendationList(kind string) (RecommendationListDT
 	if err != nil {
 		return RecommendationListDTO{}, err
 	}
+	return toRecommendationListDTO(list), nil
+}
+
+// GetWeeklyEchoWeek returns one stored week, building it on first visit.
+func (s *LastFmService) GetWeeklyEchoWeek(from int64) (RecommendationListDTO, error) {
+	list, err := s.recommender.GetRecommendationList(
+		context.Background(), weeklyEchoKindForWails(from))
+	if err != nil {
+		return RecommendationListDTO{}, err
+	}
+	return toRecommendationListDTO(list), nil
+}
+
+// RefreshWeeklyEchoWeek re-fetches the selected week.
+func (s *LastFmService) RefreshWeeklyEchoWeek(from int64) error {
+	return s.recommender.RefreshWeeklyEcho(context.Background(), from)
+}
+
+// LoadMoreRecommendationItems appends the next discover page.
+func (s *LastFmService) LoadMoreRecommendationItems(kind string) (RecommendationListDTO, error) {
+	list, err := s.recommender.LoadMoreRecommendationItems(context.Background(), kind)
+	if err != nil {
+		return RecommendationListDTO{}, err
+	}
+	return toRecommendationListDTO(list), nil
+}
+
+func weeklyEchoKindForWails(from int64) string {
+	if from <= 0 {
+		return "weekly_echo"
+	}
+	return "weekly_echo:" + strconv.FormatInt(from, 10)
+}
+
+func toRecommendationListDTO(list lastfm.RecommendationList) RecommendationListDTO {
 	return RecommendationListDTO{
 		Kind:      list.Kind,
 		Title:     list.Title,
 		Items:     toTopTrackItemDTOs(list.Items),
 		UpdatedAt: list.UpdatedAt.UTC().Format(time.RFC3339),
-	}, nil
+		WeekFrom:  list.WeekFrom,
+		WeekTo:    list.WeekTo,
+		PrevFrom:  list.PrevFrom,
+		NextFrom:  list.NextFrom,
+		HasMore:   list.HasMore,
+	}
 }
 
 // RefreshRecommendationList rebuilds exactly one list.
@@ -300,6 +361,9 @@ func toTopTrackItemDTOs(items []lastfm.TopTrackItem) []TopTrackItemDTO {
 			Suspicious:    item.Suspicious,
 			Kind:          item.Kind,
 			MatchKey:      item.MatchKey,
+			PlayCount:     item.PlayCount,
+			WeekFrom:      item.WeekFrom,
+			WeekTo:        item.WeekTo,
 		})
 	}
 	return result

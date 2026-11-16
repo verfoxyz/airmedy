@@ -1,6 +1,6 @@
 # Bug：提升后的本地行没有封面
 
-> 状态：待开工
+> 状态：✅ 已完成（合并时 `CarryArtworkKey` 仅在目标为空时继承旧行键并写入专辑；提升在文件无内嵌图时用封面缓存字节 `Save` 后回填；优先级：内嵌图 > 旧键 > 缓存字节 > 空。测试：`go test ./internal/app/download/ ./internal/infra/sqlite/`）
 > 现象：远端曲目提升（保存/收藏）后，封面消失（本地行 `artwork_key` 为空）
 > 关联：`promote.go`、`fix-recommendation-covers.md`、本地导入流程
 

@@ -57,6 +57,11 @@ type TrackDTO struct {
 	Genres          []*Genre    `json:"genres,omitempty"`
 	Composers       []*Composer `json:"composers,omitempty"`
 	ListenedSeconds int         `json:"listened_seconds,omitempty" db:"-"`
+	// StreamCachePath and StreamTotalBytes describe cache-file decode mode:
+	// when the path is non-empty the audio backend reads this growing local
+	// file through a blocking AVIO instead of opening Path as a URL.
+	StreamCachePath  string `json:"stream_cache_path,omitempty"`
+	StreamTotalBytes int64  `json:"stream_total_bytes,omitempty"`
 }
 
 // DurationRepairResult reports the outcome of a user-triggered duration repair.

@@ -13,16 +13,15 @@ import (
 // CatalogRowStates implements domain.CatalogRowStateResolver.
 //
 // The search screen asks this before offering an action, so a row the user has
-// already registered is not offered for a second download: a finished row reads
-// as "in library", a queued/active one as "downloading", a permanently failed
-// one as "failed" (where the UI offers a retry instead of a fresh enqueue), and
-// a registered row with no job at all as "saved" (metadata only, which is what
-// a playlist add with auto-download off leaves behind).
+// already asked for is not offered a second time. The state comes from the
+// media request, the same record the tasks page renders: a running/wanted
+// request reads as "downloading", a failed one as "failed" (where the UI offers
+// a retry instead of a fresh enqueue), and a registered row with no request at
+// all as "saved" (metadata only, which is what a playlist add with
+// auto-download off leaves behind).
 //
-// It answers for a whole page in one call. The queue is read once — a job list is
-// small and already loaded by the downloads panel — and each identity costs one
-// indexed lookup by (provider, external_id), which is the same lookup
-// EnsureRemoteTrack does.
+// It answers for a whole page in one call. Each identity costs one indexed
+// lookup by (provider, external_id), the same lookup EnsureRemoteTrack does.
 func (s *Service) CatalogRowStates(
 	ctx context.Context, identities []domain.CatalogIdentity,
 ) (map[domain.CatalogIdentity]string, error) {
@@ -36,37 +35,7 @@ func (s *Service) CatalogRowStates(
 		return states, nil
 	}
 
-	// The newest job per track decides: a retried job overwrites the failed row,
-	// and a finished job leaves an older done row behind.
-	jobs, err := s.jobs.List(ctx)
-	if err != nil {
-		return states, fmt.Errorf("catalog row states: list jobs: %w", err)
-	}
-	latest := make(map[string]*domain.DownloadJob, len(jobs))
-	for _, job := range jobs {
-		if job == nil {
-			continue
-		}
-		current := latest[job.TrackID]
-		if current == nil || job.UpdatedAt.After(current.UpdatedAt) {
-			latest[job.TrackID] = job
-		}
-	}
-
 	var errs []error
-	// A promotion is a task like a download, and the search row does not
-	// distinguish them. One batch lookup keeps the page at a constant query
-	// count.
-	activePromotions := map[domain.CatalogIdentity]bool{}
-	if s.promotionTask != nil {
-		promotions, promoErr := s.promotionTask.ActivePromotions(ctx, identities)
-		if promoErr != nil {
-			errs = append(errs, fmt.Errorf("catalog row states: active promotions: %w", promoErr))
-		} else {
-			activePromotions = promotions
-		}
-	}
-
 	for _, identity := range identities {
 		provider := domain.NormalizeProvider(identity.Provider)
 		externalID := strings.TrimSpace(identity.ExternalID)
@@ -91,18 +60,28 @@ func (s *Service) CatalogRowStates(
 			continue
 		}
 
-		job := latest[track.ID]
+		request, requestErr := s.requestForIdentity(ctx, provider, externalID)
+		if requestErr != nil {
+			errs = append(errs, fmt.Errorf("%s/%s: %w", provider, externalID, requestErr))
+			continue
+		}
 		switch {
-		case job != nil && domain.IsActiveState(job.State):
-			states[key] = domain.CatalogRowStateDownloading
-		case activePromotions[key]:
-			states[key] = domain.CatalogRowStateDownloading
-		case job != nil && job.State == domain.DownloadStateFailed:
+		case request == nil:
+			// Registered but idle: the library holds the metadata only.
+			states[key] = domain.CatalogRowStateSaved
+		case request.State == domain.MediaRequestStateFailed && request.NextAttemptAt == nil:
+			// A permanent failure offers a retry; a scheduled one is still work.
 			states[key] = domain.CatalogRowStateFailed
+		case request.State == domain.MediaRequestStateDone:
+			// The merge failed and the identity stayed on the remote row; the
+			// audio itself is imported, so the row is already in the library.
+			states[key] = domain.CatalogRowStateInLibrary
+		case request.State == domain.MediaRequestStateWanted,
+			request.State == domain.MediaRequestStateQueued,
+			request.State == domain.MediaRequestStateRunning,
+			request.State == domain.MediaRequestStateFailed:
+			states[key] = domain.CatalogRowStateDownloading
 		default:
-			// Registered but idle (never queued, canceled, or finished without
-			// the merge): the library holds the metadata only. Reporting "saved"
-			// keeps the row from looking like a download that never started.
 			states[key] = domain.CatalogRowStateSaved
 		}
 	}
@@ -111,6 +90,17 @@ func (s *Service) CatalogRowStates(
 		return states, errors.Join(errs...)
 	}
 	return states, nil
+}
+
+// requestForIdentity reads the authoritative request row, if any. A graph
+// without the request store reports none, and the row falls back to "saved".
+func (s *Service) requestForIdentity(
+	ctx context.Context, provider, externalID string,
+) (*domain.MediaRequest, error) {
+	if s.requests == nil {
+		return nil, nil
+	}
+	return s.requests.GetByIdentity(ctx, provider, externalID)
 }
 
 // absoluteDifference returns |a - b| for the duration hint.

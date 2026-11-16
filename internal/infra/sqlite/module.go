@@ -43,7 +43,8 @@ var Module = fx.Module("sqlite",
 		func(db *DB) domain.LastFmRecommendationRepository {
 			return NewLastFmRecommendationRepository(db)
 		},
-		func(db *DB) domain.PromotionTaskRepository { return NewPromotionTaskRepository(db) },
+		func(db *DB) domain.StreamCacheTaskRepository { return NewStreamCacheTaskRepository(db) },
+		func(db *DB) domain.MediaRequestRepository { return NewMediaRequestRepository(db) },
 		func(db *DB) domain.PluginSettingsRepository { return NewPluginSettingsRepository(db) },
 		func(db *DB) domain.PluginKVRepository { return NewPluginKVRepository(db) },
 		func(db *DB) domain.LxSourceRepository { return NewLxSourceRepository(db) },

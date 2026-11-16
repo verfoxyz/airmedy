@@ -270,16 +270,23 @@ composers/genres and their unreferenced artwork are pruned (also non-fatal). `li
 lets views drop the row in place, and `library:updated` makes album/artist/genre/composer
 list views reload so a now-empty entity disappears.
 
+When the deleted row carries a provider identity, the same call also re-opens that
+identity's finished media request through the `MediaRequestInvalidator` port
+(`done → wanted`, worker woken) and drops any leftover stream cache through
+`StreamCacheDiscarder`. Without this a later save or playlist add would be treated as
+already complete and no promotion/download would run. The media-request worker also
+re-runs the same check at startup for files deleted outside the app.
+
 `LibraryService.RemoveTrackFromLibrary(ctx, id)` is the streamed-row counterpart, called
 from the same dialog when the row has no local file. It refuses local rows (deleting their
 bytes must go through `DeleteTrackFile`) and, in this order: releases playback through the
 `PlaybackRemover` port (the player stops when the row is loaded and removes it from the
 queue, which also closes the stream session), drops the cache entry through
-`StreamCacheDiscarder` (a deferred result sets `discard_pending` and
-`domain.ErrStreamDiscardDeferred` is not a failure), then runs the same DB delete,
-index removal and orphan cleanup as `DeleteTrackFile`. Both ports are wired in `app.Module`,
-so `app/library` imports neither `app/stream` nor `app/player`; the download maintenance
-worker deletes a deferred cache entry once playback releases it.
+`StreamCacheDiscarder` (a deferred result leaves `domain.ErrStreamDiscardDeferred` as
+the expected outcome: the cache itself deletes the entry once the session closes), then
+runs the same DB delete, index removal and orphan cleanup as `DeleteTrackFile`. Both
+ports are wired in `app.Module`, so `app/library` imports neither `app/stream` nor
+`app/player`.
 
 ## Play Count & Recently Played
 

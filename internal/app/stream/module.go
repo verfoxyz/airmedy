@@ -30,6 +30,14 @@ var Module = fx.Module("stream",
 		},
 		fx.ParamTags(``, `optional:"true"`),
 	)),
+	// The task log is the tasks page's third kind. Optional so a cache can run
+	// without a database in tests.
+	fx.Invoke(fx.Annotate(
+		func(cache *Cache, tasks domain.StreamCacheTaskRepository) {
+			cache.SetTaskHistory(tasks)
+		},
+		fx.ParamTags(``, `optional:"true"`),
+	)),
 	fx.Invoke(func(lifecycle fx.Lifecycle, cache *Cache, logger *slog.Logger) {
 		lifecycle.Append(fx.Hook{
 			OnStart: func(ctx context.Context) error {

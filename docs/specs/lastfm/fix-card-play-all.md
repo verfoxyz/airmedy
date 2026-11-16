@@ -1,6 +1,6 @@
 # Bug：Last.fm 歌单「播放全部」没有反应（单首可播）
 
-> 状态：待开工
+> 状态：✅ 已完成（`planLastFmPlayback` 逐行容错 + `play_matching`/`play_unavailable`/`play_skipped` 提示，卡片与详情页一致，前端 53 项相关测试通过）
 > 现象：Last.fm 页「为你推荐」卡片点「播放全部」没有任何效果；单首播放正常
 > 页面：`LastFmView.vue` 卡片、`LastFmListView.vue` 详情页
 

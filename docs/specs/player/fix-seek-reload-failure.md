@@ -1,6 +1,6 @@
 # Bug：拖动后重载失败，界面继续走进度但无声
 
-> 状态：待开工
+> 状态：✅ 已完成（重载前 `StreamCache.WaitReady` 等上游响应；就绪/加载失败即暂停并 emit `player:playback-failed`；看门狗 2s/10s/60s 退避、最多 3 次，手动 Play 清零；代理日志增加首字节耗时与 session/URL）
 > 现象：远端曲目拖动进度条后没有声音；进度条继续前进，不暂停、不提示
 > 日志：`ma_player_load failed: -10`、`stream stall reload failed`，看门狗反复重试
 > 关联：`fix-stream-seek.md`（远端 seek 改为重载）

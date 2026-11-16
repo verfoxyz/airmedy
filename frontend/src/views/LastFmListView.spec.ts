@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick, reactive } from 'vue'
 import LastFmListView from './LastFmListView.vue'
@@ -12,6 +12,9 @@ const mocks = vi.hoisted(() => ({
   refreshList: vi.fn(),
   refreshAll: vi.fn(),
   refreshItem: vi.fn(),
+  getWeek: vi.fn(),
+  refreshWeek: vi.fn(),
+  loadMore: vi.fn(),
   preparePlayback: vi.fn(),
   save: vi.fn(),
   playTrackIds: vi.fn(),
@@ -23,6 +26,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string, params?: Record<string, unknown>) => {
+      if (params && 'count' in params) return `${key}:${params.count}`
       if (params?.source) return `${key}:${params.source}`
       return key
     },
@@ -49,6 +53,9 @@ vi.mock('../../bindings/airmedy/internal/infra/wails/lastfmservice', () => ({
   RefreshRecommendationList: mocks.refreshList,
   RefreshAllRecommendationLists: mocks.refreshAll,
   RefreshRecommendationItem: mocks.refreshItem,
+  GetWeeklyEchoWeek: mocks.getWeek,
+  RefreshWeeklyEchoWeek: mocks.refreshWeek,
+  LoadMoreRecommendationItems: mocks.loadMore,
 }))
 
 vi.mock('@/stores/catalog', () => ({
@@ -64,6 +71,50 @@ vi.mock('@/stores/player', () => ({
 }))
 
 type RowState = 'matching' | 'matched' | 'no_match'
+
+// jsdom has no IntersectionObserver; the fake keeps each instance so a test can
+// drive the sentinel's intersection and assert the observer was disconnected.
+class FakeIntersectionObserver {
+  static instances: FakeIntersectionObserver[] = []
+  readonly options: IntersectionObserverInit | undefined
+  disconnected = false
+  observed: Element[] = []
+  private readonly callback: IntersectionObserverCallback
+
+  constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+    this.callback = callback
+    this.options = options
+    FakeIntersectionObserver.instances.push(this)
+  }
+
+  observe(target: Element) {
+    this.observed.push(target)
+  }
+
+  unobserve(target: Element) {
+    this.observed = this.observed.filter((element) => element !== target)
+  }
+
+  disconnect() {
+    this.disconnected = true
+    this.observed = []
+  }
+
+  takeRecords() {
+    return []
+  }
+
+  trigger(isIntersecting: boolean) {
+    this.callback(
+      [{ isIntersecting } as IntersectionObserverEntry],
+      this as unknown as IntersectionObserver,
+    )
+  }
+}
+
+function lastObserver() {
+  return FakeIntersectionObserver.instances.at(-1)!
+}
 
 function item(title: string, state: RowState = 'matching', kind = 'top_tracks') {
   return {
@@ -84,6 +135,9 @@ function item(title: string, state: RowState = 'matching', kind = 'top_tracks') 
     blocked_reason: '',
     sources: state === 'matched' ? ['wy'] : [],
     downloadable: state === 'matched',
+    play_count: 0,
+    week_from: 0,
+    week_to: 0,
     kind,
     match_key: `artist\u0000${title.toLowerCase()}`,
   }
@@ -95,6 +149,11 @@ function list(items: ReturnType<typeof item>[]) {
     title: 'lastfm.top',
     items,
     updated_at: '2026-01-01T00:00:00Z',
+    week_from: 0,
+    week_to: 0,
+    prev_from: 0,
+    next_from: 0,
+    has_more: false,
   }
 }
 
@@ -128,6 +187,9 @@ describe('LastFmListView (one persisted list)', () => {
     mocks.refreshList.mockReset()
     mocks.refreshAll.mockReset()
     mocks.refreshItem.mockReset()
+    mocks.getWeek.mockReset()
+    mocks.refreshWeek.mockReset()
+    mocks.loadMore.mockReset()
     mocks.preparePlayback.mockReset()
     mocks.save.mockReset()
     mocks.playTrackIds.mockReset()
@@ -142,6 +204,13 @@ describe('LastFmListView (one persisted list)', () => {
     mocks.refreshList.mockResolvedValue(undefined)
     mocks.refreshAll.mockResolvedValue(undefined)
     mocks.refreshItem.mockResolvedValue(undefined)
+    mocks.refreshWeek.mockResolvedValue(undefined)
+    FakeIntersectionObserver.instances = []
+    vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
   })
 
   it('renders the stored rows, mosaic, count and duration', async () => {
@@ -238,6 +307,72 @@ describe('LastFmListView (one persisted list)', () => {
     )
   })
 
+  it('browses weekly echo history with the window and play counts', async () => {
+    mocks.route.params = reactive({ kind: 'weekly_echo' })
+    const rows = [item('Echo', 'matched')]
+    rows[0].play_count = 7
+    const latest = {
+      ...list(rows),
+      kind: 'weekly_echo',
+      title: 'lastfm.weekly_echo',
+      week_from: 200,
+      week_to: 300,
+      prev_from: 100,
+      next_from: 0,
+    }
+    mocks.getList.mockResolvedValue(latest)
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="lastfm-week-nav"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="lastfm-week-range"]').text()).toMatch(
+      /^\d{2}\/\d{2} – \d{2}\/\d{2}$/,
+    )
+    expect(wrapper.find('[data-test="top-track-plays"]').text()).toBe('lastfm.plays_count:7')
+    expect(wrapper.find('[data-test="lastfm-week-prev"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-test="lastfm-week-next"]').attributes('disabled')).toBeDefined()
+
+    mocks.getWeek.mockResolvedValue({
+      ...latest,
+      week_from: 100,
+      week_to: 200,
+      prev_from: 0,
+      next_from: 200,
+    })
+    await wrapper.find('[data-test="lastfm-week-prev"]').trigger('click')
+    await flushPromises()
+
+    expect(mocks.getWeek).toHaveBeenCalledWith(100)
+    expect(wrapper.find('[data-test="lastfm-week-next"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('appends another discover page from the load-more button', async () => {
+    mocks.route.params = reactive({ kind: 'discover' })
+    const first = {
+      ...list([item('One', 'matched')]),
+      kind: 'discover',
+      title: 'lastfm.discover',
+      has_more: true,
+    }
+    mocks.getList.mockResolvedValue(first)
+    const wrapper = await mountView()
+
+    const button = () => wrapper.find('[data-test="lastfm-load-more"]')
+    expect(button().text()).toBe('lastfm.load_more')
+
+    mocks.loadMore.mockResolvedValue({
+      ...first,
+      items: [item('One', 'matched'), item('Two', 'matched')],
+      has_more: false,
+    })
+    await button().trigger('click')
+    await flushPromises()
+
+    expect(mocks.loadMore).toHaveBeenCalledWith('discover')
+    expect(wrapper.findAll('[data-test="top-track-row"]')).toHaveLength(2)
+    expect(button().text()).toBe('lastfm.no_more')
+    expect(button().attributes('disabled')).toBeDefined()
+  })
+
   it('plays every playable row from the header', async () => {
     mocks.preparePlayback.mockImplementation(async (row: { title: string }) => `id-${row.title}`)
     mocks.getList.mockResolvedValue(list([
@@ -252,6 +387,86 @@ describe('LastFmListView (one persisted list)', () => {
 
     expect(mocks.preparePlayback).toHaveBeenCalledTimes(2)
     expect(mocks.playTrackIds).toHaveBeenCalledWith(['id-Hit', 'id-Other'])
+  })
+
+  it('keeps playing the other rows when one row cannot be prepared', async () => {
+    mocks.preparePlayback.mockImplementation(async (row: { title: string }) => {
+      if (row.title === 'Broken') throw new Error('no source')
+      return `id-${row.title}`
+    })
+    mocks.getList.mockResolvedValue(list([
+      item('Hit', 'matched'),
+      item('Broken', 'matched'),
+      item('Other', 'matched'),
+    ]))
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const wrapper = await mountView()
+
+    await wrapper.find('[data-test="lastfm-list-play"]').trigger('click')
+    await flushPromises()
+
+    expect(mocks.playTrackIds).toHaveBeenCalledWith(['id-Hit', 'id-Other'])
+    expect(wrapper.find('[data-test="lastfm-play-notice"]').text()).toBe('lastfm.play_skipped:1')
+    expect(warning).toHaveBeenCalled()
+    warning.mockRestore()
+  })
+
+  it('words an all-matching list instead of doing nothing', async () => {
+    mocks.getList.mockResolvedValue(list([item('One'), item('Two')]))
+    const wrapper = await mountView()
+
+    await wrapper.find('[data-test="lastfm-list-play"]').trigger('click')
+    await flushPromises()
+
+    expect(mocks.preparePlayback).not.toHaveBeenCalled()
+    expect(mocks.playTrackIds).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="lastfm-play-notice"]').text()).toBe('lastfm.play_matching')
+  })
+
+  it('words a list with no playable row', async () => {
+    mocks.getList.mockResolvedValue(list([item('Gone', 'no_match'), item('Also gone', 'no_match')]))
+    const wrapper = await mountView()
+
+    await wrapper.find('[data-test="lastfm-list-play"]').trigger('click')
+    await flushPromises()
+
+    expect(mocks.playTrackIds).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="lastfm-play-notice"]').text()).toBe('lastfm.play_unavailable')
+  })
+
+  it('plays the matched subset and words the skipped rows', async () => {
+    mocks.preparePlayback.mockImplementation(async (row: { title: string }) => `id-${row.title}`)
+    mocks.getList.mockResolvedValue(list([
+      item('Hit', 'matched'),
+      item('Gone', 'no_match'),
+      item('Other', 'matched'),
+    ]))
+    const wrapper = await mountView()
+
+    await wrapper.find('[data-test="lastfm-list-play"]').trigger('click')
+    await flushPromises()
+
+    expect(mocks.playTrackIds).toHaveBeenCalledWith(['id-Hit', 'id-Other'])
+    expect(wrapper.find('[data-test="lastfm-play-notice"]').text()).toBe('lastfm.play_skipped:1')
+  })
+
+  it('ignores a second click while the list is still resolving', async () => {
+    mocks.getList.mockResolvedValue(list([item('Hit', 'matched')]))
+    let release: (id: string) => void = () => {}
+    mocks.preparePlayback.mockReturnValue(new Promise<string>((resolve) => {
+      release = resolve
+    }))
+    const wrapper = await mountView()
+
+    const button = wrapper.find('[data-test="lastfm-list-play"]')
+    await button.trigger('click')
+    await button.trigger('click')
+
+    expect(mocks.preparePlayback).toHaveBeenCalledTimes(1)
+
+    release('id-Hit')
+    await flushPromises()
+    expect(mocks.playTrackIds).toHaveBeenCalledTimes(1)
   })
 
   it('shuffles the playable rows from the header', async () => {
@@ -279,6 +494,71 @@ describe('LastFmListView (one persisted list)', () => {
 
     expect(mocks.refreshList).toHaveBeenCalledWith('top_tracks')
     expect(mocks.getList).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows the sticky bar when the hero title leaves the scroller', async () => {
+    mocks.getList.mockResolvedValue(list([item('One'), item('Two', 'matched')]))
+    const wrapper = await mountView()
+    const bar = wrapper.find('[data-test="lastfm-sticky-bar"]')
+    const observer = lastObserver()
+
+    expect(observer).toBeDefined()
+    expect(bar.attributes('data-visible')).toBe('false')
+
+    observer.trigger(false)
+    await nextTick()
+    expect(bar.attributes('data-visible')).toBe('true')
+    expect(bar.find('[role="toolbar"]').attributes('aria-label')).toBe('lastfm.top')
+
+    observer.trigger(true)
+    await nextTick()
+    expect(bar.attributes('data-visible')).toBe('false')
+  })
+
+  it('returns from the sticky bar', async () => {
+    mocks.getList.mockResolvedValue(list([item('One')]))
+    const wrapper = await mountView()
+
+    await wrapper.find('[data-test="lastfm-sticky-back"]').trigger('click')
+    expect(mocks.back).toHaveBeenCalledTimes(1)
+  })
+
+  it('plays from the sticky bar like the hero', async () => {
+    mocks.preparePlayback.mockImplementation(async (row: { title: string }) => `id-${row.title}`)
+    mocks.getList.mockResolvedValue(list([item('Hit', 'matched'), item('Other', 'matched')]))
+    const wrapper = await mountView()
+
+    await wrapper.find('[data-test="lastfm-sticky-play"]').trigger('click')
+    await flushPromises()
+
+    expect(mocks.playTrackIds).toHaveBeenCalledWith(['id-Hit', 'id-Other'])
+  })
+
+  it('filters from the sticky search and closes it on Escape', async () => {
+    mocks.getList.mockResolvedValue(list([item('One', 'matched'), item('Two', 'matched')]))
+    const wrapper = await mountView()
+
+    await wrapper.find('[data-test="lastfm-sticky-search"]').trigger('click')
+    const input = wrapper.find('[data-test="lastfm-sticky-search-input"]')
+    expect(input.exists()).toBe(true)
+
+    await input.setValue('Two')
+    const rows = wrapper.findAll('[data-test="top-track-row"]')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].text()).toContain('Two')
+
+    await input.trigger('keydown', { key: 'Escape' })
+    expect(wrapper.find('[data-test="lastfm-sticky-search-input"]').exists()).toBe(false)
+  })
+
+  it('disconnects the title observer on unmount', async () => {
+    mocks.getList.mockResolvedValue(list([item('One')]))
+    const wrapper = await mountView()
+    const observer = lastObserver()
+
+    wrapper.unmount()
+
+    expect(observer.disconnected).toBe(true)
   })
 
   it('returns to the cards page', async () => {

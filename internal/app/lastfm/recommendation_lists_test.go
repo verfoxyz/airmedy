@@ -13,12 +13,16 @@ import (
 
 // fakeRecommendationStore is the in-memory persisted list store.
 type fakeRecommendationStore struct {
-	mu    sync.Mutex
-	lists map[string]domain.RecommendationList
+	mu         sync.Mutex
+	lists      map[string]domain.RecommendationList
+	candidates map[string][]domain.RecommendationItem
 }
 
 func newFakeRecommendationStore() *fakeRecommendationStore {
-	return &fakeRecommendationStore{lists: make(map[string]domain.RecommendationList)}
+	return &fakeRecommendationStore{
+		lists:      make(map[string]domain.RecommendationList),
+		candidates: make(map[string][]domain.RecommendationItem),
+	}
 }
 
 func (f *fakeRecommendationStore) ListRecommendationLists(
@@ -32,6 +36,8 @@ func (f *fakeRecommendationStore) ListRecommendationLists(
 			Kind:      list.Kind,
 			Title:     list.Title,
 			CoverURLs: []string{},
+			WeekFrom:  list.WeekFrom,
+			WeekTo:    list.WeekTo,
 			UpdatedAt: list.UpdatedAt,
 		}
 		for _, item := range list.Items {
@@ -73,8 +79,27 @@ func (f *fakeRecommendationStore) SaveRecommendationList(
 		Title:     list.Title,
 		Items:     append([]domain.RecommendationItem{}, list.Items...),
 		UpdatedAt: list.UpdatedAt,
+		WeekFrom:  list.WeekFrom,
+		WeekTo:    list.WeekTo,
 	}
 	return nil
+}
+
+func (f *fakeRecommendationStore) SaveRecommendationCandidates(
+	_ context.Context, kind string, items []domain.RecommendationItem,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.candidates[kind] = append([]domain.RecommendationItem{}, items...)
+	return nil
+}
+
+func (f *fakeRecommendationStore) GetRecommendationCandidates(
+	_ context.Context, kind string,
+) ([]domain.RecommendationItem, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]domain.RecommendationItem{}, f.candidates[kind]...), nil
 }
 
 func (f *fakeRecommendationStore) UpdateRecommendationItems(
@@ -186,12 +211,13 @@ func TestListRecommendationListsBuildsOnceAndThenReadsTheStore(t *testing.T) {
 	if source.topCalls != 1 {
 		t.Fatalf("Last.fm top-track calls = %d, want 1", source.topCalls)
 	}
-	if len(collection.Lists) != 2 {
-		t.Fatalf("lists = %d, want both cards", len(collection.Lists))
+	if len(collection.Lists) != 3 {
+		t.Fatalf("lists = %d, want the discover, similar and top cards", len(collection.Lists))
 	}
-	if collection.Lists[0].Kind != domain.LastFmRecommendationSimilar ||
-		collection.Lists[1].Kind != domain.LastFmRecommendationTopTracks {
-		t.Fatalf("card order = %+v, want similar then top_tracks", collection.Lists)
+	if collection.Lists[0].Kind != domain.LastFmRecommendationDiscover ||
+		collection.Lists[1].Kind != domain.LastFmRecommendationSimilar ||
+		collection.Lists[2].Kind != domain.LastFmRecommendationTopTracks {
+		t.Fatalf("card order = %+v, want discover, similar, top_tracks", collection.Lists)
 	}
 	capture.waitDone(t)
 
@@ -202,7 +228,7 @@ func TestListRecommendationListsBuildsOnceAndThenReadsTheStore(t *testing.T) {
 	if source.topCalls != 1 {
 		t.Fatalf("Last.fm top-track calls = %d after reopen, want the stored list", source.topCalls)
 	}
-	if len(second.Lists) != 2 || second.Lists[1].TrackCount != 1 {
+	if len(second.Lists) != 3 || second.Lists[2].TrackCount != 1 {
 		t.Fatalf("second summaries = %+v, want the stored row", second.Lists)
 	}
 

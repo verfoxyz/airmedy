@@ -854,6 +854,12 @@
     "tab_failed": "出错",
     "kind_download": "下载",
     "kind_promote": "提升",
+    "kind_request": "请求",
+    "kind_cache": "缓存",
+    "phase_resolving": "解析中",
+    "phase_downloading": "下载中",
+    "phase_promoting": "提升中",
+    "phase_verifying": "校验中",
     "empty_all": "还没有任务记录",
     "empty_active": "当前没有正在进行的任务",
     "empty_done": "还没有已完成的任务",
@@ -946,6 +952,17 @@
     "play_all": "播放全部",
     "shuffle": "随机播放",
     "more_actions": "更多操作",
-    "list_empty": "暂无曲目。"
+    "list_empty": "暂无曲目。",
+    "play_matching": "仍在匹配音源，请稍后再试。",
+    "play_unavailable": "此列表中没有可播放的曲目。",
+    "play_skipped": "已跳过 {count} 首无法播放的曲目。",
+    "discover": "发现",
+    "weekly_echo": "每周回响",
+    "week_prev": "上一周",
+    "week_next": "下一周",
+    "plays_count": "{count} 次播放",
+    "auto_refresh": "自动检查新推荐",
+    "load_more": "加载更多",
+    "no_more": "没有更多推荐"
   }
 }

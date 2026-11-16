@@ -169,18 +169,24 @@ static void finish_fade_locked(MaPlayer* p) {
     }
 }
 
-static int load_into_slot(MaPlayer* p,
-                          const char* path,
-                          ma_sound* sound,
-                          ma_ffmpeg_data_source* ffmpeg_ds,
-                          int* out_using_ffmpeg,
-                          int* out_loaded)
+static int load_into_slot_ex(MaPlayer* p,
+                             const char* path,
+                             int cache_mode,
+                             int64_t cache_total,
+                             ma_sound* sound,
+                             ma_ffmpeg_data_source* ffmpeg_ds,
+                             int* out_using_ffmpeg,
+                             int* out_loaded)
 {
     ma_result sr;
     ma_uint32 engine_rate = ma_engine_get_sample_rate(&p->engine);
     if (engine_rate == 0) engine_rate = 44100;
 
-    sr = ma_ffmpeg_data_source_init(path, engine_rate, ffmpeg_ds);
+    if (cache_mode) {
+        sr = ma_ffmpeg_data_source_init_cache(path, cache_total, engine_rate, ffmpeg_ds);
+    } else {
+        sr = ma_ffmpeg_data_source_init(path, engine_rate, ffmpeg_ds);
+    }
     if (sr != MA_SUCCESS) return (int)sr;
     *out_using_ffmpeg = 1;
 
@@ -197,6 +203,16 @@ static int load_into_slot(MaPlayer* p,
     }
     *out_loaded = 1;
     return 0;
+}
+
+static int load_into_slot(MaPlayer* p,
+                          const char* path,
+                          ma_sound* sound,
+                          ma_ffmpeg_data_source* ffmpeg_ds,
+                          int* out_using_ffmpeg,
+                          int* out_loaded)
+{
+    return load_into_slot_ex(p, path, 0, 0, sound, ffmpeg_ds, out_using_ffmpeg, out_loaded);
 }
 
 MaPlayer* ma_player_create(void) {
@@ -265,6 +281,64 @@ int ma_player_load(MaPlayer* p, const char* path) {
     }
     ma_mutex_unlock(&p->mu);
     return r;
+}
+
+int ma_player_load_cache(MaPlayer* p, const char* path, int64_t expected_size) {
+    if (!p || !path) return -1;
+    ma_mutex_lock(&p->mu);
+    finish_fade_locked(p);
+    unload_nxt_locked(p);
+    unload_cur_locked(p);
+
+    int r = load_into_slot_ex(p, path, 1, expected_size,
+                              p->cur_sound, p->cur_ffmpeg_ds,
+                              &p->cur_using_ffmpeg, &p->cur_loaded);
+    if (r == 0) {
+        ma_sound_set_volume(p->cur_sound, p->volume * p->preamp_cur_linear * p->eq_preamp_linear);
+        if (p->end_cb) ma_sound_set_end_callback(p->cur_sound, internal_end_cb, p);
+    }
+    ma_mutex_unlock(&p->mu);
+    return r;
+}
+
+void ma_player_mark_stream_complete(MaPlayer* p) {
+    if (!p) return;
+    ma_mutex_lock(&p->mu);
+    if (p->cur_using_ffmpeg && p->cur_ffmpeg_ds->ffmpeg) {
+        ffmpeg_mark_cache_complete(p->cur_ffmpeg_ds->ffmpeg);
+    }
+    ma_mutex_unlock(&p->mu);
+}
+
+void ma_player_get_diag(MaPlayer* p, MaPlayerDiag* out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!p) return;
+    ma_mutex_lock(&p->mu);
+    out->loaded = p->cur_loaded;
+    if (p->cur_loaded) {
+        out->sound_volume = ma_sound_get_volume(p->cur_sound);
+    }
+    out->engine_volume = ma_engine_get_volume(&p->engine);
+    if (p->cur_using_ffmpeg && p->cur_ffmpeg_ds->ffmpeg) {
+        FFmpegHandle* fh = p->cur_ffmpeg_ds->ffmpeg;
+        out->reads = (uint64_t)__atomic_load_n(&fh->diag.reads, __ATOMIC_RELAXED);
+        out->frames = (uint64_t)__atomic_load_n(&fh->diag.frames, __ATOMIC_RELAXED);
+        out->empty_reads = (uint64_t)__atomic_load_n(&fh->diag.empty_reads, __ATOMIC_RELAXED);
+        out->seek_requested = (double)__atomic_load_n(&fh->diag.seek_requested_ms, __ATOMIC_RELAXED) / 1000.0;
+        out->seek_received = (int64_t)__atomic_load_n(&fh->diag.seek_received, __ATOMIC_RELAXED);
+        out->seek_total = (int64_t)__atomic_load_n(&fh->diag.seek_total, __ATOMIC_RELAXED);
+        out->seek_ok = __atomic_load_n(&fh->diag.seek_ok, __ATOMIC_RELAXED);
+        if (fh->cache_io) {
+            out->avio_waits = (uint64_t)__atomic_load_n(&fh->cache_io->waits, __ATOMIC_RELAXED);
+            out->avio_wait_ms = (uint64_t)__atomic_load_n(&fh->cache_io->wait_ms_total, __ATOMIC_RELAXED);
+            out->file_pos = fh->cache_io->pos;
+            out->file_size = ffmpeg_path_size(fh->cache_io->path);
+            out->expected_size = fh->cache_io->expected_size;
+        }
+    }
+    ma_mutex_unlock(&p->mu);
+    out->cursor_seconds = ma_player_get_cursor(p);
 }
 
 int ma_player_unload(MaPlayer* p) {

@@ -1,6 +1,6 @@
 # Bug：字节 seek 落点错误（拖到 10s 实际跳到 ~1s，随后切歌）
 
-> 状态：待开工
+> 状态：⛔ 已被 `seek-metadata-duration.md` 取代（字节 seek 分支与回退状态已全部删除；远端 seek 改为补数据 + 重开解码器 + 时间戳 seek）
 > 现象：从 5s 可以拖回 0s；拖到 10s 却直接切下一首
 > 关联：`fix-prefetch-seek-deadlock.md`（字节 seek 实现）、`cache-file-decoder.md`
 

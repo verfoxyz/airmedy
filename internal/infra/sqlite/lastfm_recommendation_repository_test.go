@@ -126,6 +126,63 @@ func TestRecommendationRepositoryMissingList(t *testing.T) {
 	}
 }
 
+func TestRecommendationRepositoryKeepsWeeklyFieldsAndCandidates(t *testing.T) {
+	_, repo := newRecommendationStore(t)
+	ctx := context.Background()
+	const kind = "weekly_echo:1700000000"
+	list := &domain.RecommendationList{
+		Kind:      kind,
+		Title:     "lastfm.weekly_echo",
+		WeekFrom:  1_700_000_000,
+		WeekTo:    1_700_604_800,
+		UpdatedAt: time.Unix(1_700_500_000, 0).UTC(),
+		Items: []domain.RecommendationItem{{
+			Kind: kind, MatchKey: "a\x00echo", Title: "Echo", Artist: "A",
+			PlayCount: 9, WeekFrom: 1_700_000_000, WeekTo: 1_700_604_800,
+			Matching: true,
+		}},
+	}
+	if err := repo.SaveRecommendationList(ctx, list); err != nil {
+		t.Fatalf("SaveRecommendationList: %v", err)
+	}
+
+	got, err := repo.GetRecommendationList(ctx, kind)
+	if err != nil || got == nil {
+		t.Fatalf("GetRecommendationList = %+v, %v", got, err)
+	}
+	if got.WeekFrom != list.WeekFrom || got.WeekTo != list.WeekTo {
+		t.Fatalf("header window = %d-%d, want %d-%d",
+			got.WeekFrom, got.WeekTo, list.WeekFrom, list.WeekTo)
+	}
+	if len(got.Items) != 1 || got.Items[0].PlayCount != 9 ||
+		got.Items[0].WeekFrom != list.WeekFrom || got.Items[0].WeekTo != list.WeekTo {
+		t.Fatalf("weekly row = %+v, want playcount and window", got.Items)
+	}
+
+	summaries, err := repo.ListRecommendationLists(ctx)
+	if err != nil || len(summaries) != 1 {
+		t.Fatalf("summaries = %+v, %v", summaries, err)
+	}
+	if summaries[0].WeekFrom != list.WeekFrom || summaries[0].WeekTo != list.WeekTo {
+		t.Fatalf("summary window = %+v", summaries[0])
+	}
+
+	pool := []domain.RecommendationItem{{
+		Kind: kind, MatchKey: "b\x00next", Title: "Next", Artist: "B", Matching: true,
+	}}
+	if err := repo.SaveRecommendationCandidates(ctx, kind, pool); err != nil {
+		t.Fatalf("SaveRecommendationCandidates: %v", err)
+	}
+	// Saving the rows again must not clear the pool stored in payload.
+	if err := repo.SaveRecommendationList(ctx, list); err != nil {
+		t.Fatalf("re-save list: %v", err)
+	}
+	gotPool, err := repo.GetRecommendationCandidates(ctx, kind)
+	if err != nil || len(gotPool) != 1 || gotPool[0].Title != "Next" {
+		t.Fatalf("candidates = %+v, %v, want the stored pool", gotPool, err)
+	}
+}
+
 func TestRecommendationListsMigration_UpDown(t *testing.T) {
 	db, _ := newRecommendationStore(t)
 	ctx := context.Background()

@@ -106,6 +106,48 @@ func TestFlexListAcceptsArray(t *testing.T) {
 	}
 }
 
+func TestWeeklyChartListDecodesStringBounds(t *testing.T) {
+	body := []byte(`{"weeklychartlist":{"chart":[` +
+		`{"from":"1704067200","to":"1704672000","#text":"..."},` +
+		`{"from":"1704672000","to":"1705276800"}]}}`)
+	var response struct {
+		WeeklyChartList struct {
+			Chart flexList[lastFmWeekWire] `json:"chart"`
+		} `json:"weeklychartlist"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	weeks := response.WeeklyChartList.Chart
+	if len(weeks) != 2 {
+		t.Fatalf("weeks = %d, want 2", len(weeks))
+	}
+	if int64(weeks[0].From) != 1704067200 || int64(weeks[0].To) != 1704672000 {
+		t.Fatalf("first week = %d-%d", weeks[0].From, weeks[0].To)
+	}
+}
+
+func TestWeeklyTrackChartKeepsPlaycountAndCover(t *testing.T) {
+	body := []byte(`{"weeklytrackchart":{"track":[` +
+		`{"name":"Song","artist":{"#text":"Artist"},"playcount":"42",` +
+		`"image":[{"#text":"https://img/large.jpg","size":"extralarge"}]}]}}`)
+	var response struct {
+		WeeklyTrackChart struct {
+			Track flexList[lastFmTrackWire] `json:"track"`
+		} `json:"weeklytrackchart"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	tracks := parseTrackList(response.WeeklyTrackChart.Track)
+	if len(tracks) != 1 {
+		t.Fatalf("tracks = %d, want 1", len(tracks))
+	}
+	if tracks[0].PlayCount != 42 || tracks[0].ImageURL != "https://img/large.jpg" {
+		t.Fatalf("track = %+v, want playcount and cover", tracks[0])
+	}
+}
+
 func TestLargestImageSkipsEmptyRenditions(t *testing.T) {
 	images := []lastFmImage{
 		{Text: "", Size: "small"},

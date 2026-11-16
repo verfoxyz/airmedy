@@ -31,6 +31,22 @@ type StreamCache interface {
 	Close(session *stream.Session)
 	ReportProgress(session *stream.Session, seconds float64)
 	FlushProgress(session *stream.Session)
+	// WaitHead blocks until the cache file has enough bytes for the decoder to
+	// probe. The decoder then reads the growing file directly (no HTTP).
+	WaitHead(ctx context.Context, session *stream.Session) error
+	// BufferedBytes is the current on-disk size; growth means the download is
+	// still buffering, so a static position is not a stall.
+	BufferedBytes(session *stream.Session) int64
+	// SessionError reports a failed download for the session, if any.
+	SessionError(session *stream.Session) error
+	// WaitComplete blocks until the download finishes (nil) or fails/closes.
+	WaitComplete(ctx context.Context, session *stream.Session) error
+	// SetDecodeOffset reports the decoder's current byte position in the cache
+	// file; a decoder near the write edge lifts the prefetch water mark.
+	SetDecodeOffset(session *stream.Session, offset int64)
+	// EnsureSeekable blocks until the target position's bytes (plus a margin) are
+	// on disk, lifting the prefetch water mark for that window.
+	EnsureSeekable(ctx context.Context, session *stream.Session, seconds float64) error
 }
 
 // StreamCoverProvider resolves the host-local cover cached for a remote
@@ -69,6 +85,7 @@ type PlayerService struct {
 	streamCache                     StreamCache
 	streamSession                   *stream.Session
 	streamMu                        sync.Mutex
+	streamReloading                 bool
 	streamCovers                    StreamCoverProvider
 	artworkStore                    domain.TrackArtworkStore
 	streamArtworkURL                string
@@ -96,6 +113,34 @@ type PlayerService struct {
 	tickerMu     sync.Mutex
 	tickerCancel context.CancelFunc
 	tickInterval time.Duration
+
+	// serviceCtx is canceled first during shutdown so stream Open/WaitHead and
+	// any other cancellable wait return immediately instead of riding out their
+	// own timeouts (the exit used to wait tens of seconds after a failed stream).
+	serviceCtx    context.Context
+	serviceCancel context.CancelFunc
+
+	// Remote seek is a session reload, so a drag would rebuild the decoder on
+	// every tick. These fields coalesce a burst into the last position.
+	seekMu       sync.Mutex
+	seekTimer    *time.Timer
+	seekSerial   int
+	seekDebounce time.Duration
+
+	// Stream stall watchdog: a playing remote row whose position does not move
+	// for the window is reloaded, paced by streamStallBackoff. Guarded by mu.
+	stallTrackID  string
+	stallPosition float64
+	stallSince    time.Time
+	stallAttempts int
+	stallRetryAt  time.Time
+	stallBytes    int64
+	stallFailed   bool
+	stallWindow   time.Duration
+
+	// seeking is set while a remote seek buffers and reopens the decoder. A
+	// stale end callback from the outgoing sound must not advance the queue.
+	seeking bool
 
 	endedNaturally bool             // true when queue ran out; cleared on Play or loadAndPlay
 	nextPreQueued  *domain.TrackDTO // track pre-enqueued for gapless transition
@@ -143,6 +188,14 @@ const listeningWriteQueueSize = 64
 
 const lyricsFetchTimeout = 35 * time.Second
 
+// defaultStreamStallWindow is how long a playing remote row may hold its
+// position before the watchdog reloads the session.
+const defaultStreamStallWindow = 2 * time.Second
+
+// streamStallBackoff paces the watchdog's reload attempts. Three failures end
+// automatic recovery; a manual play/retry clears the counter.
+var streamStallBackoff = []time.Duration{2 * time.Second, 10 * time.Second, 60 * time.Second}
+
 func NewPlayerService(
 	player domain.AudioPlayer,
 	queue *QueueService,
@@ -161,6 +214,7 @@ func NewPlayerService(
 	listeningRepo domain.ListeningRepository,
 	lc fx.Lifecycle,
 ) *PlayerService {
+	serviceCtx, serviceCancel := context.WithCancel(context.Background())
 	s := &PlayerService{
 		player:                          player,
 		queue:                           queue,
@@ -179,6 +233,10 @@ func NewPlayerService(
 		listeningRepo:                   listeningRepo,
 		autoAdvanceNotificationsEnabled: true,
 		tickInterval:                    500 * time.Millisecond,
+		seekDebounce:                    300 * time.Millisecond,
+		stallWindow:                     defaultStreamStallWindow,
+		serviceCtx:                      serviceCtx,
+		serviceCancel:                   serviceCancel,
 		playCounted:                     make(map[string]bool),
 		npReported:                      make(map[string]bool),
 		posConfirmed:                    make(map[string]bool),
@@ -234,6 +292,12 @@ func NewPlayerService(
 // share SQLite; a delayed listening write must not consume the shutdown context
 // and prevent the resume position from being saved.
 func (s *PlayerService) shutdown(ctx context.Context) error {
+	// Abort first: a failed stream leaves Open/WaitHead blocked, and waiting
+	// for their own timeouts is what made exit slow. The service context is
+	// the parent of every cancellable wait in a load.
+	if s.serviceCancel != nil {
+		s.serviceCancel()
+	}
 	s.cancelLyricsRequest()
 	s.stopPositionTicker()
 	s.saveState(ctx)
@@ -242,11 +306,23 @@ func (s *PlayerService) shutdown(ctx context.Context) error {
 	s.stopListeningWriter(ctx)
 	s.reportStreamProgress(s.player.GetStatus().Position)
 	s.flushStreamProgress()
+	// Unload cancels a decoder blocked in the cache AVIO read before the
+	// backend is destroyed; both are bounded by the cancel above.
+	_ = s.player.Unload()
 	s.dropStreamSession()
 	if closer, ok := s.player.(interface{ Close() }); ok {
 		closer.Close()
 	}
 	return nil
+}
+
+// loadContext is the cancellable parent for stream opens and head waits.
+// A directly constructed service (tests) has none and keeps Background.
+func (s *PlayerService) loadContext() context.Context {
+	if s.serviceCtx != nil {
+		return s.serviceCtx
+	}
+	return context.Background()
 }
 
 // AddStatusListener registers a callback that will be called whenever the player status changes.
@@ -294,7 +370,10 @@ func (s *PlayerService) AddPlaybackFailureListener(f func(*domain.TrackDTO, erro
 	s.playbackFailureListeners = append(s.playbackFailureListeners, f)
 }
 
-// reportPlaybackFailure notifies listeners after a remote load/play error.
+// reportPlaybackFailure notifies listeners after a remote load/play error and
+// tells the UI, which shows the shared "playback failed" retry line. Reloads the
+// watchdog or a seek performs happen outside a Wails call, so this event is
+// their only path to the footer.
 func (s *PlayerService) reportPlaybackFailure(track *domain.TrackDTO, err error) {
 	if err == nil || track == nil || !track.IsRemote() {
 		return
@@ -305,6 +384,21 @@ func (s *PlayerService) reportPlaybackFailure(track *domain.TrackDTO, err error)
 	for _, f := range listeners {
 		f(track, err)
 	}
+	if app := application.Get(); app != nil && app.Event != nil {
+		app.Event.Emit(playerPlaybackFailedEvent, PlaybackFailureEvent{
+			TrackID: track.ID,
+			Error:   err.Error(),
+		})
+	}
+}
+
+// playerPlaybackFailedEvent reports a background playback failure to the UI.
+const playerPlaybackFailedEvent = "player:playback-failed"
+
+// PlaybackFailureEvent is the payload of player:playback-failed.
+type PlaybackFailureEvent struct {
+	TrackID string `json:"track_id"`
+	Error   string `json:"error"`
 }
 
 // AddLyricsListener registers a callback that will be called whenever lyrics are resolved for the current track.
@@ -357,6 +451,9 @@ func (s *PlayerService) GetRemotePlayerState() domain.RemotePlayerState {
 // Play starts or resumes playback. If no track is loaded and the queue is empty,
 // loads all library tracks in random order and begins playing.
 func (s *PlayerService) Play() error {
+	// A manual play/retry clears the watchdog's stall backoff: the user asked
+	// for another attempt, so automatic recovery starts from zero.
+	s.resetStreamWatchdog()
 	s.mu.Lock()
 	ct := s.currentTrack
 	ended := s.endedNaturally
@@ -623,10 +720,50 @@ func (s *PlayerService) ToggleMute() error {
 }
 
 // Seek moves playback to the specified position in seconds.
+//
+// A remote row is decoded from its growing local cache file, so a seek is an
+// ordinary decoder seek; when the target bytes have not been downloaded yet the
+// blocking cache AVIO waits for them instead of failing. Local files behave the
+// same way.
 func (s *PlayerService) Seek(position float64) error {
 	// Snap an in-flight crossfade first so the seek targets the incoming track.
 	s.finishActiveCrossfade()
+	s.mu.RLock()
+	track := s.currentTrack
+	s.mu.RUnlock()
+	if track != nil && track.IsRemote() {
+		if position < 0 {
+			position = 0
+		}
+		s.scheduleRemoteSeek(track, position)
+		return nil
+	}
+	return s.applyDecoderSeek(position)
+}
+
+// applyDecoderSeek moves the loaded decoder in place. Local files and remote
+// seeks that hit cached bytes both use it.
+func (s *PlayerService) applyDecoderSeek(position float64) error {
+	s.mu.RLock()
+	track := s.currentTrack
+	s.mu.RUnlock()
+	from := s.player.GetStatus().Position
 	err := s.player.Seek(position)
+	rc := 0
+	if err != nil {
+		rc = -1
+	}
+	remote := track != nil && track.IsRemote()
+	cached, covers := false, false
+	if remote {
+		cached, covers = s.streamCacheState(track, position)
+	}
+	if s.logger != nil {
+		s.logger.Info("seek",
+			"track", trackID(track), "from", from, "to", position,
+			"remote", remote, "cached", cached, "covers", covers,
+			"player_seek_rc", rc)
+	}
 	if err == nil {
 		s.mu.Lock()
 		// Adjust trackStartTime so that time.Since(trackStartTime) reflects the seeked position.
@@ -638,8 +775,353 @@ func (s *PlayerService) Seek(position float64) error {
 		s.mu.Unlock()
 		s.emitStatus()
 		s.emitRemoteState()
+		s.scheduleSeekDiagnostics(track, position)
 	}
 	return err
+}
+
+// streamCacheState reports whether the current stream window has any bytes and
+// whether the target position's approximate byte offset is already on disk.
+func (s *PlayerService) streamCacheState(track *domain.TrackDTO, position float64) (cached, covers bool) {
+	if s.streamCache == nil {
+		return false, false
+	}
+	session := s.currentStreamSession()
+	if session == nil {
+		return false, false
+	}
+	buffered := s.streamCache.BufferedBytes(session)
+	if buffered <= 0 {
+		return false, false
+	}
+	if session.TotalBytes <= 0 || track == nil || track.Duration <= 0 {
+		return true, false
+	}
+	offset := int64(position / float64(track.Duration) * float64(session.TotalBytes))
+	return true, offset < buffered
+}
+
+// scheduleSeekDiagnostics logs the decoder/output counters one second after a
+// successful seek. That single line distinguishes "no frames decoded" from
+// "frames decoded but the output is silent"; see docs/specs/player/diagnose-seek-silence.md.
+func (s *PlayerService) scheduleSeekDiagnostics(track *domain.TrackDTO, target float64) {
+	provider, ok := s.player.(interface {
+		GetDiagnostics() domain.PlayerDiagnostics
+	})
+	if !ok || s.logger == nil {
+		return
+	}
+	go func() {
+		select {
+		case <-time.After(time.Second):
+		case <-s.loadContext().Done():
+			return
+		}
+		diag := provider.GetDiagnostics()
+		s.logger.Info("seek: after 1s",
+			"track", trackID(track), "to", target,
+			"reads", diag.Reads, "frames", diag.Frames, "empty", diag.EmptyReads,
+			"waits", diag.AVIOWaits, "wait_ms", diag.AVIOWaitMS,
+			"cursor", diag.CursorSeconds,
+			"file_pos", diag.FilePos, "file_size", diag.FileSize,
+			"expected_size", diag.ExpectedSize,
+			"requested", diag.SeekRequested, "received", diag.SeekReceived,
+			"total", diag.SeekTotal, "seek_ok", diag.SeekOK,
+			"sound_volume", diag.SoundVolume, "engine_volume", diag.EngineVolume,
+			"verdict", classifySeekOutcome(diag, target))
+	}()
+}
+
+// streamSeekBufferTimeout bounds how long a seek waits for the target bytes.
+const streamSeekBufferTimeout = 30 * time.Second
+
+// seekStream is the only remote seek path: make sure the target's bytes are on
+// disk, then reopen the decoder and let it timestamp-seek. No in-place or
+// byte-offset seek is attempted; see docs/specs/stream-playback/seek-metadata-duration.md.
+func (s *PlayerService) seekStream(track *domain.TrackDTO, position float64) error {
+	if track == nil {
+		return fmt.Errorf("%w: seek has no track", domain.ErrStreamUnavailable)
+	}
+	if track.Duration <= 0 {
+		// The position cannot be mapped without a duration; refusing beats
+		// silently landing at 0 and advancing to the next track.
+		return fmt.Errorf("%w: track %s has no duration metadata", domain.ErrStreamUnavailable, track.ID)
+	}
+	session := s.currentStreamSession()
+	if session == nil || s.streamCache == nil {
+		return fmt.Errorf("%w: no active stream session", domain.ErrStreamUnavailable)
+	}
+
+	s.mu.Lock()
+	s.seeking = true
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.seeking = false
+		s.mu.Unlock()
+	}()
+
+	ctx, cancel := context.WithTimeout(s.loadContext(), streamSeekBufferTimeout)
+	defer cancel()
+	if err := s.streamCache.EnsureSeekable(ctx, session, position); err != nil {
+		return fmt.Errorf("buffer stream for seek: %w", err)
+	}
+
+	paused := s.player.GetStatus().PlaybackState != domain.PlaybackStatePlaying
+	err := s.reloadRemoteAtPosition(track, position, paused)
+	if err != nil {
+		// One retry, then report: a transient open failure should not end the
+		// track, and a repeated failure must not loop.
+		s.logger.Warn("stream seek reload failed; retrying once",
+			"track_id", track.ID, "to", position, "error", err)
+		err = s.reloadRemoteAtPosition(track, position, paused)
+	}
+	return err
+}
+
+// classifySeekOutcome maps the counters to the diagnosis table: A is a decode
+// block, B is a decoded stream that never reaches the output.
+func classifySeekOutcome(diag domain.PlayerDiagnostics, target float64) string {
+	switch {
+	case diag.Frames == 0 && diag.AVIOWaitMS >= 500:
+		return "decode_blocked" // A: reads parked on undownloaded bytes
+	case diag.Frames == 0:
+		return "decoder_state" // seek left the decoder with no output
+	case diag.CursorSeconds < target+0.2:
+		return "engine_not_consuming" // frames exist but the engine cursor is stuck
+	default:
+		return "output_silent" // B: frames decoded, output layer silent
+	}
+}
+
+// trackID is the diagnostic label for a track, empty when nothing is loaded.
+func trackID(track *domain.TrackDTO) string {
+	if track == nil {
+		return ""
+	}
+	return track.ID
+}
+
+// scheduleRemoteSeek coalesces a seek burst into the last position. The reload
+// itself is a full decoder rebuild, so a drag that reports every pixel would
+// otherwise open one session per tick.
+func (s *PlayerService) scheduleRemoteSeek(track *domain.TrackDTO, position float64) {
+	s.resetStreamWatchdog()
+	if s.seekDebounce <= 0 {
+		s.runRemoteSeek(track, position)
+		return
+	}
+
+	s.seekMu.Lock()
+	s.seekSerial++
+	serial := s.seekSerial
+	if s.seekTimer != nil {
+		s.seekTimer.Stop()
+	}
+	s.seekTimer = time.AfterFunc(s.seekDebounce, func() {
+		s.seekMu.Lock()
+		if serial != s.seekSerial {
+			s.seekMu.Unlock()
+			return
+		}
+		s.seekTimer = nil
+		s.seekMu.Unlock()
+		s.runRemoteSeek(track, position)
+	})
+	s.seekMu.Unlock()
+}
+
+// runRemoteSeek performs one debounced reload if the track is still current.
+func (s *PlayerService) runRemoteSeek(track *domain.TrackDTO, position float64) {
+	s.mu.RLock()
+	current := s.currentTrack
+	s.mu.RUnlock()
+	if current == nil || current.ID != track.ID {
+		return
+	}
+	status := s.player.GetStatus()
+	if status.PlaybackState == domain.PlaybackStateStopped {
+		return
+	}
+	// Every remote seek rebuilds the decoder from the local cache file; see
+	// docs/specs/stream-playback/seek-metadata-duration.md.
+	if err := s.seekStream(track, position); err != nil {
+		s.markStreamStalled(track, err)
+	}
+}
+
+// reloadRemoteAtPosition closes the current stream window and loads the same
+// track again at position. Queue and current track stay unchanged.
+func (s *PlayerService) reloadRemoteAtPosition(
+	track *domain.TrackDTO, position float64, paused bool,
+) error {
+	s.streamMu.Lock()
+	if s.streamReloading {
+		s.streamMu.Unlock()
+		return nil
+	}
+	s.streamReloading = true
+	s.streamMu.Unlock()
+	defer func() {
+		s.streamMu.Lock()
+		s.streamReloading = false
+		s.streamMu.Unlock()
+	}()
+
+	if !paused {
+		// Freeze the reported position while the decoder is rebuilt: the session
+		// wait can take seconds, and the UI must not keep advancing with no audio.
+		_ = s.player.Pause()
+		s.emitStatus()
+		s.emitRemoteState()
+	}
+
+	// Persist where the old window got to before the session is dropped.
+	s.flushStreamProgress()
+	s.dropStreamSession()
+	if err := s.loadInactiveAtPosition(track, position, paused); err != nil {
+		return err
+	}
+	if !paused {
+		// loadInactiveAtPosition leaves the decoder loaded but stopped; a seek
+		// during playback must resume immediately at the new position.
+		if err := s.player.Play(); err != nil {
+			return fmt.Errorf("resume after stream seek: %w", err)
+		}
+		s.pushNowPlaying(track, position)
+		s.setNowPlayingPlaybackState(true)
+	}
+	s.startPositionTicker()
+	s.emitStatus()
+	s.emitRemoteState()
+	return nil
+}
+
+// currentStreamSession is the session the decoder is reading, if any.
+func (s *PlayerService) currentStreamSession() *stream.Session {
+	s.streamMu.Lock()
+	defer s.streamMu.Unlock()
+	return s.streamSession
+}
+
+// resetStreamWatchdog forgets the previous stall episode, so a manual seek,
+// play or retry gets a fresh recovery budget.
+func (s *PlayerService) resetStreamWatchdog() {
+	s.mu.Lock()
+	s.stallTrackID = ""
+	s.stallPosition = 0
+	s.stallSince = time.Time{}
+	s.stallAttempts = 0
+	s.stallRetryAt = time.Time{}
+	s.stallBytes = 0
+	s.stallFailed = false
+	s.mu.Unlock()
+}
+
+// checkStreamStall reloads a playing remote row whose position has not moved for
+// the watchdog window. Attempts are paced by streamStallBackoff and stop after
+// three failures; a position that moves again re-arms the whole budget.
+func (s *PlayerService) checkStreamStall(track *domain.TrackDTO, status domain.PlayerStatus) {
+	if track == nil || !track.IsRemote() {
+		s.resetStreamWatchdog()
+		return
+	}
+	window := s.stallWindow
+	if window <= 0 {
+		window = defaultStreamStallWindow
+	}
+	now := time.Now()
+	s.mu.Lock()
+	if s.stallTrackID != track.ID {
+		s.stallTrackID = track.ID
+		s.stallPosition = status.Position
+		s.stallSince = now
+		s.stallAttempts = 0
+		s.stallRetryAt = time.Time{}
+		s.stallBytes = 0
+		s.stallFailed = false
+		s.mu.Unlock()
+		return
+	}
+	if status.PlaybackState != domain.PlaybackStatePlaying {
+		// A pause is not a stall; restart the window when playback resumes.
+		s.stallPosition = status.Position
+		s.stallSince = now
+		s.mu.Unlock()
+		return
+	}
+	if math.Abs(status.Position-s.stallPosition) > 0.05 {
+		s.stallPosition = status.Position
+		s.stallSince = now
+		s.stallAttempts = 0
+		s.stallRetryAt = time.Time{}
+		s.stallFailed = false
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+
+	// A static position with a growing cache is buffering, not a stall: the
+	// decoder is parked in ffmpeg_cache_read waiting for bytes. Reloading here
+	// was the "position freezes and reloads every 2 s" loop.
+	if session := s.currentStreamSession(); session != nil && s.streamCache != nil {
+		if err := s.streamCache.SessionError(session); err != nil {
+			s.mu.Lock()
+			alreadyFailed := s.stallFailed
+			s.stallFailed = true
+			s.mu.Unlock()
+			if !alreadyFailed {
+				s.markStreamStalled(track, err)
+			}
+			return
+		}
+		buffered := s.streamCache.BufferedBytes(session)
+		s.mu.Lock()
+		if buffered > s.stallBytes {
+			s.stallBytes = buffered
+			s.stallSince = now
+			s.stallFailed = false
+			s.mu.Unlock()
+			return
+		}
+		s.mu.Unlock()
+	}
+
+	s.mu.Lock()
+	if now.Sub(s.stallSince) < window {
+		s.mu.Unlock()
+		return
+	}
+	if s.stallAttempts >= len(streamStallBackoff) || now.Before(s.stallRetryAt) {
+		s.mu.Unlock()
+		return
+	}
+	attempt := s.stallAttempts + 1
+	s.stallAttempts = attempt
+	s.stallRetryAt = now.Add(streamStallBackoff[attempt-1])
+	position := s.stallPosition
+	s.mu.Unlock()
+
+	s.logger.Warn("stream playback stalled; reloading the session",
+		"track_id", track.ID, "position", position, "attempt", attempt)
+	go func() {
+		if err := s.reloadRemoteAtPosition(track, position, false); err != nil {
+			s.logger.Error("stream stall reload failed",
+				"track_id", track.ID, "position", position, "attempt", attempt, "error", err)
+			s.markStreamStalled(track, err)
+		}
+	}()
+}
+
+// markStreamStalled stops the false "still playing" state after a reload or
+// readiness failure: playback pauses at the last position and the footer shows
+// the shared failure/retry line.
+func (s *PlayerService) markStreamStalled(track *domain.TrackDTO, cause error) {
+	if pauseErr := s.Pause(); pauseErr != nil {
+		s.logger.Warn("stream stall: cannot pause the player",
+			"track_id", track.ID, "error", pauseErr)
+	}
+	s.reportPlaybackFailure(track, cause)
 }
 
 // SetVolume sets the playback volume (0.0 to 1.0).
@@ -959,8 +1441,8 @@ func (s *PlayerService) PeekPreviousTrack() *domain.TrackDTO {
 }
 
 // PlayingTrack reports the row the decoder currently has loaded, even while it
-// is paused. The promotion worker refuses to move a cache file this row points
-// at. ok is false when nothing is loaded.
+// is paused. The media request worker refuses to move a cache file this row
+// points at. ok is false when nothing is loaded.
 func (s *PlayerService) PlayingTrack(_ context.Context) (string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1257,13 +1739,49 @@ func (s *PlayerService) preparePlayable(track *domain.TrackDTO) (*domain.TrackDT
 	if !track.IsRemote() {
 		return track, nil, nil
 	}
-	session, err := s.streamCache.Open(context.Background(), track)
+	session, err := s.streamCache.Open(s.loadContext(), track)
 	if err != nil {
 		return nil, nil, err
 	}
+	if waitErr := s.streamCache.WaitHead(s.loadContext(), session); waitErr != nil {
+		s.streamCache.Close(session)
+		return nil, nil, waitErr
+	}
+	if session.TotalBytes <= 0 {
+		// No announced length: only the download finishing can turn the file
+		// edge into EOF, so tell the decoder the moment that happens.
+		go s.watchStreamCompletion(session)
+	}
 	playable := *track
-	playable.Path = session.URL
+	// The backend decodes the local cache file directly through a blocking AVIO;
+	// FFmpeg never opens a URL or performs network I/O.
+	playable.Path = session.Path
+	playable.StreamCachePath = session.Path
+	playable.StreamTotalBytes = session.TotalBytes
 	return &playable, session, nil
+}
+
+// sessionID is the diagnostic session id, empty when the row is local.
+func sessionID(session *stream.Session) string {
+	if session == nil {
+		return ""
+	}
+	return session.ID
+}
+
+// watchStreamCompletion marks the decoder's file edge as EOF once a download of
+// unknown length finishes. It exits on failure or when the session is replaced.
+func (s *PlayerService) watchStreamCompletion(session *stream.Session) {
+	if err := s.streamCache.WaitComplete(s.loadContext(), session); err != nil {
+		return
+	}
+	current := s.currentStreamSession()
+	if current == nil || current.ID != session.ID {
+		return
+	}
+	if marker, ok := s.player.(interface{ MarkStreamComplete() }); ok {
+		marker.MarkStreamComplete()
+	}
 }
 
 // swapStreamSession makes next the active playback window and closes the
@@ -1304,6 +1822,32 @@ func (s *PlayerService) reportStreamProgress(position float64) {
 		return
 	}
 	s.streamCache.ReportProgress(session, position)
+}
+
+// reportDecodeOffset tells the cache where the decoder is reading the cache
+// file. A decoder parked at the write edge (a seek's binary search) pulls the
+// download past the playback water mark, which is what breaks the
+// "seek inside cached bytes never plays" deadlock. Backends without cache-mode
+// diagnostics (local files, tests) report nothing.
+func (s *PlayerService) reportDecodeOffset() {
+	if s.streamCache == nil {
+		return
+	}
+	session := s.currentStreamSession()
+	if session == nil {
+		return
+	}
+	provider, ok := s.player.(interface {
+		GetDiagnostics() domain.PlayerDiagnostics
+	})
+	if !ok {
+		return
+	}
+	diag := provider.GetDiagnostics()
+	if diag.FileSize <= 0 {
+		return // local file or no cache AVIO
+	}
+	s.streamCache.SetDecodeOffset(session, diag.FilePos)
 }
 
 // refreshStreamArtwork resolves the host-local cover for a streamed track. The
@@ -1401,7 +1945,9 @@ func (s *PlayerService) loadInactiveAtPosition(track *domain.TrackDTO, position 
 	s.swapStreamSession(streamSession)
 	if err := s.player.Load(playable); err != nil {
 		s.dropStreamSession()
-		s.logger.Error("failed to reload inactive track", "track", track.Path, "error", err)
+		s.logger.Error("failed to reload inactive track",
+			"track", track.Path, "stream_session", sessionID(streamSession),
+			"stream_url", playable.Path, "error", err)
 		s.reportPlaybackFailure(track, err)
 		return err
 	}
@@ -1442,6 +1988,8 @@ func (s *PlayerService) loadInactiveAtPosition(track *domain.TrackDTO, position 
 }
 
 func (s *PlayerService) loadAndPlayAtPosition(track *domain.TrackDTO, position float64, previousReason domain.PlaybackEndReason) error {
+	// A hard load, including the footer's retry, is a fresh recovery episode.
+	s.resetStreamWatchdog()
 	if err := s.ensurePlayable(track); err != nil {
 		s.reportPlaybackFailure(track, err)
 		return err
@@ -2413,6 +2961,8 @@ func (s *PlayerService) startPositionTicker() {
 
 				status := s.player.GetStatus()
 				s.reportStreamProgress(status.Position)
+				s.reportDecodeOffset()
+				s.checkStreamStall(track, status)
 				s.checkThreshold(track, status)
 				s.checkpointListening()
 				s.maybeStartCrossfade(status)
@@ -2727,11 +3277,19 @@ func (s *PlayerService) finishActiveCrossfade() {
 
 // HandleTrackEnd is called by the native player when a track finishes playing.
 func (s *PlayerService) HandleTrackEnd() {
-	// During a crossfade the outgoing source's end is already accounted for;
-	// the native layers also guard this, but never double-advance the queue.
+	// While a remote seek buffers and rebuilds the decoder, an end callback from
+	// the outgoing sound is stale; advancing the queue here would skip the next
+	// track ("drag to 10s switches track").
 	s.mu.RLock()
+	seeking := s.seeking
 	fading := s.fading
 	s.mu.RUnlock()
+	if seeking {
+		s.logger.Debug("track end during a seek ignored")
+		return
+	}
+	// During a crossfade the outgoing source's end is already accounted for;
+	// the native layers also guard this, but never double-advance the queue.
 	if fading {
 		s.logger.Debug("track end during crossfade ignored")
 		return

@@ -130,14 +130,20 @@ SQLite database managed via `golang-migrate` for schema versioning and `sqlx` fo
 | 000091 | `stream_cache.up.sql` | Add `stream_cache(cache_key, provider, external_id, title, title_key, artist, artist_key, artists, album, duration_ms, quality, audio_path, total_bytes, received_bytes, complete, playback_progress, pending_promote, created_at, last_used)` plus identity/match/LRU indexes. The audio body stays at `<DataDir>/stream-cache/<cache_key>.audio`; this row is the only metadata, replacing the `<key>.json` sidecar. `cache_key` is `sha256(provider + "/" + external_id)`; `title_key` is a `domain.NormalizationKey` value and `artist_key` a `domain.ArtistSetKey` value (order and separator independent) used for strict cross-source matching, with `duration_ms` compared only when both sides are non-zero. Timestamps are Unix seconds. Down drops the indexes and table |
 | 000092 | `cover_cache_identity.up.sql` | Add `cover_cache.provider/external_id/pinned` plus `idx_cover_cache_identity`. The identity is written by `GetCatalogCovers` so a cover can be pinned while its audio is in `stream_cache`; eviction orders by `pinned ASC, last_used ASC`, so unpinned covers go first and a pinned one survives until every unpinned row is gone. Existing rows get an empty identity and `pinned = 0` (pure LRU) and are filled in on the next hit for the same URL. Down drops the index and columns |
 | 000093 | `cover_cache_url.up.sql` | Add `cover_cache.url TEXT NOT NULL DEFAULT ''`, the remote URL a cover came from. A row keyed only by `url_hash` can serve the file but cannot re-fetch an evicted image, and promotion into the library needs the URL (or the cached bytes) to embed artwork. Existing rows keep an empty URL, filled in on the next hit for the same hash. Down drops the column |
-| 000094 | `stream_cache_promoted.up.sql` | Add `stream_cache.promoted INTEGER NOT NULL DEFAULT 0`. Promotion **moves** the cache file, so the row outlives its audio; `promoted=1` tells the worker the entry must never be completed again (that would re-download bytes already in the library). Down drops the column. Frozen: applied databases never re-run it, so later columns go in a new migration |
-| 000095 | `promotion_tasks.up.sql` | Add `promotion_tasks(id, track_id, provider, external_id, title, artist, state, quality, error, created_at, started_at, finished_at)` plus `(state, created_at)` and `(provider, external_id)` indexes. One row per promotion request: `queued|running` is the single active row an entry may have (a repeated save reuses it), `done|failed` is history for the download/tasks page. Title/artist are request-time snapshots. Down drops the indexes and table |
-| 000096 | `stream_cache_discard_pending.up.sql` | Add `stream_cache.discard_pending INTEGER NOT NULL DEFAULT 0`, the independent "this cache is no longer needed" flag: set by a promotion after the move, and by a finished download whose `DiscardEntry` was deferred because playback still owned the file. The cache-maintenance worker deletes flagged entries once idle. This is a separate migration because 000094 had already run on existing databases (editing it afterwards left them without the column). Down drops the column |
+| 000094 | `stream_cache_promoted.up.sql` | Add `stream_cache.promoted INTEGER NOT NULL DEFAULT 0`. Promotion **moves** the cache file, so the row outlives its audio; `promoted=1` tells the worker the entry must never be completed again. **Retired by 000105**. Down drops the column |
+| 000095 | `promotion_tasks.up.sql` | Add `promotion_tasks(id, track_id, provider, external_id, title, artist, state, quality, error, created_at, started_at, finished_at)` plus `(state, created_at)` and `(provider, external_id)` indexes. One row per promotion request; title/artist are request-time snapshots. **Retired by 000104**, which mirrors queued/running rows into `media_requests` before dropping it. Down drops the indexes and table |
+| 000096 | `stream_cache_discard_pending.up.sql` | Add `stream_cache.discard_pending INTEGER NOT NULL DEFAULT 0`, the independent "this cache is no longer needed" flag. **Retired by 000105**; a deferred discard is now remembered in memory by the cache and runs on session close. Down drops the column |
 | 000097 | `cover_cache_links.up.sql` | Add `cover_cache_links(url_hash, provider, external_id, created_at)` plus identity and hash indexes, and backfill it from the non-empty single-value `cover_cache.provider/external_id` columns. One album cover is shared by several tracks, so identity is many-to-many: `AssetForIdentity`/`RemoteForIdentity`/`BytesForIdentity` join links, and every `Get` inserts a link for the identity that resolved to the URL. `pinned` stays on `cover_cache` (any linked identity pins the URL). Down drops the indexes and table; the legacy columns stay for rollback |
 | 000098 | `lastfm_pending_scrobbles.up.sql` | Add `lastfm_pending_scrobbles(id, artist, title, album, album_artist, track_number, duration, started_at, attempts, last_error, next_retry_at, created_at)` plus `idx_lastfm_pending_retry`. A qualified play is written before the network request; `UNIQUE(artist, title, started_at)` makes one play enqueue once. `started_at` is the Last.fm scrobble timestamp (Unix seconds); `next_retry_at` is the next allowed attempt (`NULL` = permanently refused/ignored). The worker reads due rows oldest-first, batches at most fifty, and cleanup enforces the 30-day/20-attempt/5000-row limits. Down drops the index and table |
 | 000099 | `artist_aliases.up.sql` | Add `artist_aliases(alias_key, canonical_key, evidence, enabled, created_at)` with `(alias_key, canonical_key)` as the PK and `idx_artist_aliases_canonical`. One row stores one direction of an unordered pair; expansion reads both directions. `evidence` is `merge` (learned from a successful merge) or `manual` (settings). `enabled=0` keeps the row but removes it from matching, so a learned mistake is not re-learned. Only normalized single-artist keys are stored; `ArtistAliasRepository.ExpandArtists` expands one hop. Down drops the index and table |
 | 000100 | `lastfm_recommendation_lists.up.sql` | Add `lastfm_recommendation_lists(kind, title, payload, updated_at)` and `lastfm_recommendation_items(kind, position, match_key, title, artist, artists, album, duration, cover_url, cover_url_large, downloadable, blocked_reason, sources, matching, matched, no_source, provider, external_id, state, local_track_id)` with `(kind, match_key)` as the PK and `idx_lastfm_recommendation_matching`. `kind` is `top_tracks` / `similar`; `position` preserves Last.fm order; `artists` and `sources` are JSON. Saving a list replaces its rows in one transaction; match progress updates rows in place. `matching=1` is the restart queue the worker drains. Down drops the index and tables |
 | 000101 | `lastfm_suspicious_matches.up.sql` | Add `lastfm_recommendation_items.suspicious INTEGER NOT NULL DEFAULT 0`. A local match is accepted when title + artist set agree even if the duration disagrees by more than `domain.LocalMatchSuspiciousSeconds` (10s); the flag persists with the row so the UI keeps showing "questionable track" after a restart. Down drops the column |
+| 000102 | `stream_cache_tasks.up.sql` | Add `stream_cache_tasks(id, provider, external_id, title, artist, quality, state, bytes_total, bytes_done, error, started_at, finished_at)` plus `(state, started_at DESC)` and `(provider, external_id)` indexes. One row per **actual** stream-cache download session (a cache hit writes none); `active` is closed as `done`/`failed`, shutdown and crash recovery mark leftovers failed with `interrupted`, and only finished rows are trimmed/cleared. Down drops the table |
+| 000103 | `media_requests.up.sql` | Add `media_requests(id, provider, external_id, track_id, desired, quality, state, phase, attempts, last_error, next_attempt_at, created_at, updated_at, finished_at)` with `UNIQUE(provider, external_id)` and `(state, next_attempt_at)`, plus append-only `media_request_events(id, request_id, state, phase, detail, created_at)` and its request index. The unique key is the idempotency boundary: every save entry point upserts one request, and download/promotion work becomes its execution detail. Down drops the event index and both tables |
+| 000104 | `drop_promotion_tasks.up.sql` | Mirror queued/running `promotion_tasks` and active `download_jobs` (joined to their track's identity) into `media_requests` with `INSERT OR IGNORE`, then drop `promotion_tasks`. Down recreates the empty table and indexes; the mirrored requests stay |
+| 000105 | `drop_stream_cache_flags.up.sql` | Mirror `stream_cache` rows with `pending_promote=1` into `media_requests`, then drop `pending_promote`, `promoted` and `discard_pending`. Down re-adds the three columns with `DEFAULT 0`; the requests already mirrored are kept |
+| 000106 | `lastfm_weekly_discover.up.sql` | Add `lastfm_recommendation_items.play_count`, `week_from`, `week_to` and the same `week_from` / `week_to` to `lastfm_recommendation_lists` (all `INTEGER NOT NULL DEFAULT 0`). Weekly rows keep Last.fm's playcount and the chart window, and the list header keeps the window for an empty week; `kind` becomes `weekly_echo:<from>` per week, plus `discover`. The list header's `payload` now holds the discover candidate pool. Down deletes the discover/weekly lists and their rows before dropping the columns |
+| 000107 | `media_request_snapshot.up.sql` | Add `media_requests.title` and `media_requests.artist` (`TEXT NOT NULL DEFAULT ''`), filled from the saved row when the request is first created. A promotion merge can delete that row; the snapshot keeps the tasks page's label readable and its `request_id` is the stable row key. Existing rows keep empty values and fall back to a track lookup / external id. Down drops both columns |
 
 `listeningRepository.GetListeningInsights` returns up to 50 entries for both Top Artists
 (ordered by listened seconds) and Top Tracks (ordered by play count, then listened
@@ -414,22 +420,53 @@ cover_cache_links (   -- many-to-many identity → cover (000097)
 ```
 
 ```sql
-promotion_tasks (   -- stream-cache promotion history (000095)
+stream_cache_tasks (   -- per-session stream-cache history (000102)
     id TEXT PRIMARY KEY,
-    track_id TEXT,                           -- snapshot; the row may be merged away later
-    provider TEXT NOT NULL DEFAULT '',
-    external_id TEXT NOT NULL DEFAULT '',
+    provider TEXT NOT NULL,
+    external_id TEXT NOT NULL,
     title TEXT NOT NULL DEFAULT '',
     artist TEXT NOT NULL DEFAULT '',
-    state TEXT NOT NULL DEFAULT 'queued',    -- queued|running|done|failed
     quality TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'active',    -- active|done|failed|canceled (000108)
+    bytes_total INTEGER NOT NULL DEFAULT 0,
+    bytes_done INTEGER NOT NULL DEFAULT 0,
     error TEXT NOT NULL DEFAULT '',
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    started_at DATETIME,
+    started_at DATETIME NOT NULL,
     finished_at DATETIME
 )
--- idx_promotion_tasks_state: INDEX(state, created_at DESC)
--- idx_promotion_tasks_identity: INDEX(provider, external_id)
+-- idx_stream_cache_tasks_state: INDEX(state, started_at DESC)
+-- idx_stream_cache_tasks_identity: INDEX(provider, external_id)
+```
+
+```sql
+media_requests (   -- authoritative save record (000103)
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    track_id TEXT,                           -- latest row; merge may replace it
+    desired TEXT NOT NULL,                   -- download|promote
+    quality TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'wanted',    -- wanted|queued|running|done|failed|canceled
+    phase TEXT NOT NULL DEFAULT '',          -- resolving|downloading|promoting|verifying
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    next_attempt_at DATETIME,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    finished_at DATETIME,
+    UNIQUE (provider, external_id)
+)
+-- idx_media_requests_state: INDEX(state, next_attempt_at)
+
+media_request_events (   -- append-only transition history
+    id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    phase TEXT NOT NULL DEFAULT '',
+    detail TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL
+)
+-- idx_media_request_events_request: INDEX(request_id, created_at)
 ```
 
 ### Listening Insights Tables

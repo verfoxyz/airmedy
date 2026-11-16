@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"airmedy/internal/app/download"
+	"airmedy/internal/app/mediarequest"
 	"airmedy/internal/domain"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -41,13 +42,17 @@ type DownloadProgressEvent struct {
 // DownloadService is the Wails binding for the download queue: translation
 // only, no logic (see AGENTS.md §3).
 type DownloadService struct {
-	svc *download.Service
+	svc      *download.Service
+	requests *mediarequest.Service
+	worker   *mediarequest.Worker
 }
 
 // NewDownloadService installs itself as the event sink, so the pipeline is
 // constructed before the window and events are simply dropped until one exists.
-func NewDownloadService(svc *download.Service) *DownloadService {
-	s := &DownloadService{svc: svc}
+func NewDownloadService(
+	svc *download.Service, requests *mediarequest.Service, worker *mediarequest.Worker,
+) *DownloadService {
+	s := &DownloadService{svc: svc, requests: requests, worker: worker}
 	// The sink wrapper keeps TaskUpdated off the Wails method surface: it is an
 	// event payload trigger, not something the frontend calls.
 	svc.SetEventSink(downloadEventSink{DownloadService: s})
@@ -77,7 +82,7 @@ type downloadEventSink struct {
 	*DownloadService
 }
 
-// TaskUpdated implements download.EventSink: a promotion task changed state, so
+// TaskUpdated implements download.EventSink: a request or cache row changed, so
 // the tasks page reloads its list.
 func (downloadEventSink) TaskUpdated() {
 	app := application.Get()
@@ -161,16 +166,32 @@ func (s *DownloadService) ListDownloads() ([]*domain.DownloadJob, error) {
 	return s.svc.List(context.Background())
 }
 
-// ListTasks returns downloads and promotions merged for the tasks page. Rows
-// are newest first; the page groups them by state.
+// ListTasks returns one row per media request plus the stream-cache sessions.
+// Rows are newest first; the page groups them by state.
 func (s *DownloadService) ListTasks() ([]domain.TaskRun, error) {
 	return s.svc.ListTasks(context.Background())
 }
 
-// ClearTaskHistory deletes finished downloads and promotions. Active work is
+// ClearTaskHistory deletes finished requests and cache sessions. Active work is
 // untouched; the tasks page reloads when task:updated arrives.
 func (s *DownloadService) ClearTaskHistory() error {
 	return s.svc.ClearTaskHistory(context.Background())
+}
+
+// CancelTask cancels a media request listed on the tasks page. The executor may
+// still finish work it already started; the row stays canceled.
+func (s *DownloadService) CancelTask(taskID string) error {
+	_, err := s.requests.Cancel(context.Background(), taskID)
+	return err
+}
+
+// RetryTask re-opens a failed or canceled request so the worker tries again.
+func (s *DownloadService) RetryTask(taskID string) error {
+	if _, err := s.requests.Retry(context.Background(), taskID); err != nil {
+		return err
+	}
+	s.worker.Wake()
+	return nil
 }
 
 // ScanDuplicateCache reports what a stream-cache cleanup would remove. It never

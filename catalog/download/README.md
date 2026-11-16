@@ -7,6 +7,10 @@ file yet, see [database](../database/README.md#full-schema)) is queued in `downl
 resolved to a stream URL, downloaded to a partial file, validated, tagged, imported into
 the library and finally attached to the playlist that asked for it.
 
+Only the media request worker (`mediarequest.Worker` → `download.Service.Execute`) starts
+a job: saves upsert a request, and the executor either promotes a cached copy in place or
+enqueues the download described here.
+
 The pipeline owns no UI and no network policy: adapters are injected as domain ports, and
 the only external interaction is "give me a URL for this track" plus "move these bytes".
 
@@ -14,7 +18,7 @@ the only external interaction is "give me a URL for this track" plus "move these
 
 | Layer | Owns |
 |---|---|
-| `internal/app/download` | queue worker, retry policy, finalize, merge, auto-download decision |
+| `internal/app/download` | queue worker, retry policy, finalize, merge, media-request executor (promote or enqueue) |
 | `internal/domain/download.go` | job/state model, ports, retry classification |
 | `internal/infra/downloader` | HTTP transfer, ranges, signature validation |
 | `internal/infra/metadata` | tag writing (taglib) |
@@ -119,54 +123,36 @@ against; when every tier fails, the error names the tried tiers.
 ## Stream promotion
 
 A saved remote track can be turned into a library file without downloading it again:
-the stream cache's audio is *moved* into the download directory. Because the move must
-not happen while the decoder holds the file, the request is durable and the work runs in
-a worker.
+the stream cache's audio is finalised into the download directory. Playback owns that
+file while a session is open, so a promotion that cannot run is deferred, never forced.
 
-- **Request.** `download.Service.OnRemoteTrackSaved(ctx, domain.RemoteTrackSaved)` is the
-  single decision point for a saved remote row. A stream-cache entry for the identity wins:
-  it calls `PromoteOnSave`, which writes `stream_cache.pending_promote=1` and a `queued`
-  `promotion_tasks` row and wakes the worker — no download job is created, and the call
-  returns `downloading` (the search row's one task state). Without a cache
-  an explicit save (search-row save, favorite) downloads, and a playlist add follows the
-  "download when adding to a playlist" switch. A repeated request reuses the active history
-  row, and an active download job wins: nothing is promoted then. The catalog action, the
-  playlist auto-download hook and the favorite listener only send the event; they never
-  queue or promote themselves.
-- **Worker.** Its own loop (not the download worker): one sweep on `Start`, one on every
-  wake, and a 30 s backstop. `stream.Cache.OnSessionClosed` wakes it, wired in `app.Module`.
-  `RunCacheMaintenanceSweep` is single-flight and handles **pending discards first**, then
-  pending promotions, then orphaned caches. Entries with an active playback session are
-  skipped, not failed, and the worker also skips the row the player currently has loaded
-  (`PlayingTrack`), because moving that file would break the decoder even when no cache
-  session owns it.
-- **Orphan sweep.** Every sweep lists all cached entries and deletes any whose identity
-  already maps to a non-remote track, covering a crash or race that left the flags unset.
-  A live session defers that delete to the next sweep.
-- **Two independent flags.** `promoted` means the audio was moved into the library;
-  `discard_pending` means the cache is no longer needed and must be deleted once idle. A
-  promotion sets both after the move; a finished download sets only `discard_pending` when
-  `DiscardEntry` is deferred, because nothing was moved. Neither flag may reach
-  `EnsureComplete` (the file is gone or already in the library): `promoted=1` entries and
-  `discard_pending=1` entries only get deleted.
-- **Quality.** Cache tier ≥ download setting → promote. Download setting higher (or the
-  cache tier unknown, treated as lowest) → `Enqueue` at the download quality and clear
-  `pending_promote`; that job owns the file and flags the cache for cleanup when it
-  finishes.
+- **Request.** Every save goes through `mediarequest.Saver` (favorites, playlist adds,
+  catalog/search/Last.fm saves), which upserts one `media_requests` row by
+  `(provider, external_id)` and wakes the request worker. No caller creates a download
+  job or a promotion row.
+- **Execution.** `download.Service.Execute` decides: an active job owns the work; a
+  complete cache at or above the wanted tier is promoted in place by
+  `PromoteCachedFile` (`finalize → import → merge`), then the cache entry is discarded;
+  anything else is enqueued as a normal download.
+- **Blocked by playback.** When a cache session still owns the identity, or the player
+  has the row loaded (`PlayingTrack`), `Execute` returns
+  `domain.ErrMediaRequestDeferred`. The request stays `wanted`;
+  `stream.Cache.OnSessionClosed` wakes the worker and the next sweep retries. A
+  deferral records no failure and consumes no retry.
+- **Quality.** Cache tier ≥ download setting → promote. Lower (or the cache tier
+  unknown, treated as lowest) → download at the configured quality; a finished download
+  discards the cache.
 - **Deferred delete.** `DiscardEntry` returns `domain.ErrStreamDiscardDeferred` while a
-  session owns the entry; every caller then sets `discard_pending` so the maintenance
-  worker deletes it once the session closes. A promoted entry whose file is already gone
-  is a success.
-- **Replay.** Opening a `discard_pending` entry clears the flag and reuses the audio (the
-  user asked to play it again). If a promoted entry's file was already moved, Open clears
-  `promoted` too, so the fresh download is not treated as the old, moved one.
-- **Failure.** The entry stays pending and the history row goes `failed`; the next sweep
-  retries the same request. A missing library row (deleted while pending) or a row that
-  is already local flags the cache for deletion instead of promoting, so a removed track
-  is not resurrected.
-- **History.** `promotion_tasks` is the tasks page's source: `queued → running →
-  done|failed`, written through `domain.PromotionTaskRepository`. Every write emits
-  `task:updated`.
+  session owns the entry. The cache remembers that entry in memory and deletes the row
+  and file itself when the session closes, so callers never write a cleanup flag. A
+  promoted entry whose file is already gone is a success.
+- **Replay.** Opening a cached entry reuses the audio; a discarded entry no longer
+  exists, so the next playback simply downloads it again.
+- **Startup / upgrade.** There is no promotion table and no cache flag. Migration 000104
+  mirrors queued/running `promotion_tasks` and active `download_jobs` into
+  `media_requests` before dropping the table; 000105 mirrors `pending_promote` entries
+  before dropping the three flags. At startup `stream.Cache` deletes entries whose
+  identity already maps to a local row, keeping any entry a request still needs.
 
 ## Merge rules
 
@@ -198,6 +184,22 @@ local-file behaviour (tag writes, file watching, delete). Two invariants follow:
   requested only *after* the merge, using `MergeResult.SurvivorTrackID`: fetching
   before it attached the lyric to the row that was about to be deleted, and
   `lyrics.track_id ON DELETE CASCADE` removed it.
+- **Artwork follows the row.** The imported file's embedded art wins; when it has
+  none, `CarryArtworkKey` copies the streamed row's `artwork_key` onto the
+  survivor (and its album) if those columns are still empty. Promotion then falls
+  back to the bytes the stream cover cache served for the identity
+  (`coverAssets.BytesForIdentity` → `artworkCache.Save` → same carry), so a
+  promoted coverless file keeps the image the UI was showing instead of turning
+  into a placeholder. When none of the three sources exist the key stays empty.
+- **Deleting the file re-opens the request.** `media_requests` is keyed by
+  identity, not by the row it produced: after a local file is deleted,
+  `LibraryService.DeleteTrackFile` re-opens the identity's `done` row as `wanted`
+  (same intent/quality, history kept) and wakes the worker, so the next save or
+  playlist add promotes/downloads again. `MediaRequestService.Upsert` makes the
+  same decision itself by asking `HasLocalTrack` when it sees `done` with an
+  unchanged intent, and the worker re-runs that check for finished rows at
+  startup (files deleted outside the app). A healthy local row keeps the old
+  idempotent no-op behaviour.
 
 **Decoded duration.** After the merge, `applyDecodedDuration` stores the duration and
 bitrate on the row that owns the file. The duration is read by `domain.MediaDurationProbe`
@@ -262,15 +264,13 @@ package nor the playlist or library services.
   the relationship; the file stays in the library. There is no implicit deletion.
 
 `CatalogRowStates` answers what the search row should show, for a whole page in one
-call: `in_library` (audio on disk), `downloading` (a queued/active download **or**
-promotion), `failed` (the newest download job failed permanently), `saved`
-(registered with no work in flight), or no state (never registered or canceled with
-no replacement). Promotions are read in one extra batch call
-(`PromotionTaskRepository.ActivePromotions`), because the search row does not
-distinguish the two task kinds. It reads the job list once and looks each identity
-up by its indexed `(provider, external_id)`, so a 50-row page costs two small
-queue/promotion reads plus 50 index hits. `CatalogRowStates` is also exposed to the
-UI as `CatalogService.GetCatalogRowStates`: after `download:done` the remote row is
+call, from the identity's **media request**: `in_library` (audio on disk, or a `done`
+request whose merge failed), `downloading` (wanted/queued/running, or a failed request
+with a retry scheduled), `failed` (a permanent failure, where the UI offers a retry),
+`saved` (registered with no request in flight, or canceled), or no state (never
+registered). It looks each identity up by its indexed `(provider, external_id)`, so a
+50-row page costs 50 index hits and no table scan. `CatalogRowStates` is also exposed to
+the UI as `CatalogService.GetCatalogRowStates`: after `download:done` the remote row is
 already merged away, so the page re-reads the badge by identity instead of by the
 track id the event carries.
 
@@ -297,7 +297,7 @@ Last.fm worker and `EnsureStreamableTrack` call before touching the network.
 | `download_dir` | absolute target directory; empty means "resolve the default (`<Music>/Airmedy`) at read time" |
 | `download_quality` | `128k` / `320k` / `flac`; copied onto the job so a later preference change does not alter a queued job |
 | `download_naming_order` | `title-artist` (default) or `artist-title`; only affects newly finalized files, existing files keep their names |
-| `auto_download_on_playlist_add` | when on, adding a remote track to a playlist hands it to `OnRemoteTrackSaved` (default on). When off, the row is saved as `saved` without work; a cached stream copy is still promoted, and a favorite is always an explicit save (promotion or download) |
+| `auto_download_on_playlist_add` | when on, adding a remote track to a playlist upserts a media request (default on). When off, the row is saved as `saved` without work; a cached stream copy is still promoted, and a favorite is always an explicit request |
 | `download_with_lyrics` | fetch and store lyrics for the downloaded track (off by default: an extra request per track) |
 | `download_with_lyric_translation` | keep the translated lyric line; meaningless without `download_with_lyrics`, which `ResolveDownloadContent` enforces |
 | `download_with_cover` | embed the cover image into the file's tags (on by default: it is what makes a downloaded file look right, and a missing cover is already tolerated) |
@@ -308,36 +308,77 @@ Last.fm worker and `EnsureStreamableTrack` call before touching the network.
 `track_id`, `playlist_id`, `state`, `bytes_done`, `bytes_total`, `percent`, `error`.
 The frontend keys its per-track state by `track_id` so a playlist row can ask "is this
 still downloading?" while rendering. A download reaching `done` or a permanent
-`failed`, like every promotion history write, also emits `task:updated` so the tasks
-page reloads.
+`failed` also emits `task:updated` so the tasks page reloads.
 
 ## Tasks page
 
-`DownloadService.ListTasks()` merges `download_jobs` and `promotion_tasks` into one
-`domain.TaskRun` list: `kind` (`download`/`promote`), `state`
-(`active`/`done`/`failed`/`canceled`), track, title/artist, quality, error and
-timestamps, newest first. Download rows resolve titles with one batched track lookup;
-when the merge has already deleted that row, the title and artist are recovered from
-the finished file name using the current `download_naming_order` (`<title> - <artist>`
-or the reverse; a name without the separator is the title). If nothing resolves, the
-row falls back to its track id. Promotions use their request-time snapshot. The page
-groups rows into in-progress / completed / errors and labels the kind.
+`DownloadService.ListTasks()` returns one `domain.TaskRun` per **media request**, plus
+one per `stream_cache_tasks` session: `kind` (`request`/`cache`), `state`
+(`active`/`done`/`failed`/`canceled`), `phase` (resolving/downloading/promoting/
+verifying while a request runs), track, title/artist, quality, error and timestamps,
+newest first. A request within its retry backoff reads as `active`, not `failed`.
+A cache session stopped on purpose (track switch, shutdown, user stop) is
+`canceled` with an empty `error`; only a real transport/parse/disk failure is
+`failed`. Migration 000108 rewrote historical `failed`/`error='interrupted'`
+rows to `canceled`. The page puts canceled cache rows under "completed" (grey
+"canceled"), while a canceled request stays under "errors" because it still
+needs attention.
+The row carries the stable `request_id` (equal to the request row's `id`) plus
+`provider`/`external_id`; the page keys and merges rows by the request id, so a
+merge that replaces `track_id` cannot leave a second row behind. Titles prefer the
+title/artist snapshot written when the request was created, then one batched track
+lookup; a row a merge already deleted falls back to its external id, never to the
+invalidated track id. Cache rows carry the title and artist the entry was created
+with. The worker emits `task:updated` after every running/done/failed transition,
+so the page reloads instead of keeping a merge-time snapshot; the page also
+re-reads on mount, KeepAlive activation and window focus.
 
-`ClearTaskHistory()` deletes terminal rows from both tables; queued/active work is
-never touched. Each table keeps at most 500 finished rows (trimmed after every
-completion), and clearing does not rewrite `tracks`: a cleared failed job simply stops
-producing the search row's `failed` chip, while an `in_library` row is unaffected.
+The page groups rows into in-progress / completed / errors, labels the kind and shows
+the phase as the row's status text. A request offers cancel while it runs and retry
+after it failed; `CancelTask`/`RetryTask` operate on the request, and retry reopens it
+as `wanted` with the same intent. A cache row has no actions.
+
+`ClearTaskHistory()` deletes terminal requests, the retired job history and finished
+cache sessions; queued/active work is never touched. Requests keep at most 500 finished
+rows (trimmed by the worker after a terminal transition), and clearing does not rewrite
+`tracks`.
+
+## Media requests
+
+`media_requests` (000103) is the authoritative record of "the user wants this
+online track in the library". Every save entry point — favorites, single and batch
+playlist adds, and catalog/search/Last.fm saves — goes through
+`mediarequest.Saver.OnRemoteTrackSaved`, which upserts one row by
+`(provider, external_id)` and wakes the worker. Re-saving the same intent returns the
+existing row, while a finished/canceled/failed row is reopened as `wanted` when the
+intent changes. A non-explicit playlist add still honours
+`auto_download_on_playlist_add`. `media_request_events` is append-only history.
+
+`mediarequest.Worker` sweeps serially (no two passes over one identity), assigns the
+shared retry backoff (1m/5m/30m/2h/6h, 20 attempts) and delegates execution through
+`domain.MediaRequestExecutor`, implemented by the download service. `Execute` applies
+the cache/quality rule: an active job wins; a complete cache meeting the wanted tier is
+promoted in place; anything else enqueues a download. It returns
+`domain.ErrMediaRequestDeferred` while playback owns the cached file, and the request
+stays `wanted` for the session-close wake. `Status` reports the newest job failure
+created after the run started, so a permanent failure fails the request and a newer
+success clears an older failure. A local row closes the request as `done`. An explicit
+re-download (`DownloadService.RedownloadTrack`) deletes the damaged file when needed and
+upserts `desired=download`, which reopens a finished request; the worker performs the
+download. The tasks page and the search/Last.fm chips read only requests, and the retired
+table/flags are gone — see `docs/specs/library/media-request-state-machine.md`.
 
 ## Duplicate-cache cleanup
 
 `ScanDuplicateCache` / `CleanDuplicateCache` (exposed on `DownloadService`) share one
-plan, so the report and the deletion cannot disagree. It covers four kinds: duplicate
+plan, so the report and the deletion cannot disagree. It covers three kinds: duplicate
 groups (normalized title + artist equal, duration within 5 s when both report one),
-entries whose identity already maps to a local track, promoted/discard-flagged
-leftovers, and `.audio` files with no row. A group keeps the best copy by quality
-(`flac > 320k > 128k`), then `complete`, then `last_used`; if the top two tie on all
-three, the group is skipped rather than guessed. `pending_promote` entries and busy
-sessions are skipped too.
+entries whose identity already maps to a local track, and `.audio` files with no row. A
+group keeps the best copy by quality (`flac > 320k > 128k`), then `complete`, then
+`last_used`; if the top two tie on all three, the group is skipped rather than guessed.
+An entry whose identity has an **active media request** (wanted/queued/running, or
+failed with a retry scheduled) is skipped, because the request still needs it; so is an
+entry a playback session owns.
 
 `CleanDuplicateCache` pauses playback only when the loaded track owns one of the
 candidates (`CacheCleanupPlayer`), releases the stream session, deletes entry by entry

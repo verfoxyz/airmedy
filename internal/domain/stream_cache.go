@@ -25,16 +25,8 @@ type StreamCacheEntry struct {
 	ReceivedBytes    int64   `json:"received_bytes" db:"received_bytes"`
 	Complete         bool    `json:"complete" db:"complete"`
 	PlaybackProgress float64 `json:"playback_progress" db:"playback_progress"`
-	PendingPromote   bool    `json:"pending_promote" db:"pending_promote"`
-	// Promoted means the audio was moved into the library. Only the cache row
-	// and file are left to clean up; the entry must not be completed again.
-	Promoted bool `json:"promoted" db:"promoted"`
-	// DiscardPending means the cache is no longer needed and must be deleted
-	// once no session owns it. It is independent of Promoted: a finished
-	// download sets it without moving anything.
-	DiscardPending bool  `json:"discard_pending" db:"discard_pending"`
-	CreatedAt      int64 `json:"created_at" db:"created_at"`
-	LastUsed       int64 `json:"last_used" db:"last_used"`
+	CreatedAt        int64   `json:"created_at" db:"created_at"`
+	LastUsed         int64   `json:"last_used" db:"last_used"`
 }
 
 // StreamCacheRepository persists stream-cache metadata.
@@ -58,14 +50,5 @@ type StreamCacheRepository interface {
 	// UpdateQuality records the tier actually resolved, which is lower than the
 	// requested one after a fallback. Promotion and eviction read this value.
 	UpdateQuality(ctx context.Context, cacheKey, quality string) error
-	SetPendingPromote(ctx context.Context, cacheKey string, pending bool) error
-	// SetPromoted records that the entry's audio was moved into the library.
-	SetPromoted(ctx context.Context, cacheKey string, promoted bool) error
-	// SetDiscardPending flags the cache for deletion once it goes idle.
-	SetDiscardPending(ctx context.Context, cacheKey string, pending bool) error
-	// ListPendingPromote returns every entry the promotion worker must handle.
-	ListPendingPromote(ctx context.Context) ([]*StreamCacheEntry, error)
-	// ListPendingDiscard returns every entry whose cache must be deleted.
-	ListPendingDiscard(ctx context.Context) ([]*StreamCacheEntry, error)
 	Delete(ctx context.Context, cacheKey string) error
 }
