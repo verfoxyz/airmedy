@@ -1,6 +1,6 @@
 # 重构：远端流播放改由 FFmpeg 直读本地缓存文件（去掉 HTTP 解码路径）
 
-> 状态：✅ 已完成（FFmpeg 通过自定义 `AVIOContext` 直读缓存文件、缺字节时阻塞等待；miniaudio 新增 `ma_player_load_cache`；`Session` 返回 `Path/TotalBytes`，`WaitHead` 等 2MiB 并临时解除预取水位；远端 seek 改为本地 `avformat_seek_file`；HTTP 代理保留仅供调试）
+> 状态：⚠️ 部分完成（HTTP 解码路径已移除，FFmpeg 直读缓存文件；但「文件增长时的 read/EOF 语义」仍有缺陷：播放会在已下载数据范围内卡住并被看门狗反复重载，见 §3.1.1、§3.6）
 > 目的：彻底消除 `ma_player_load failed: -10` —— 根因是 FFmpeg 通过 HTTP 打开远端流时的大范围探测/超时
 > 关联：`fix-stream-seek.md`、`fix-seek-reload-failure.md`、`fix-cached-range-502.md`、`half-played-complete-cache.md`
 > 退出/取消语义见 `docs/specs/player/fix-exit-hang.md`：阻塞 read 必须响应 abort，`Stop` 有短超时
@@ -59,6 +59,22 @@ typedef struct {
 - `size()`：`expected_size > 0 ? expected_size : 当前文件大小`；
 - 与现有 `ffmpeg_probe_mu` 锁、`interrupt_callback` 保持一致。
 
+#### 3.1.1 read / size 的精确语义（关键，易错）
+
+缓存文件是**持续增长**的，read 必须区分“暂时没数据”和“真的结束”：
+
+1. **只有** `expected_size > 0 && offset >= expected_size` 时返回 `AVERROR_EOF`；
+2. 当前文件大小 < `offset + 请求长度` 时：
+   - 轮询 `stat`（5–10ms）；
+   - 每轮检查 `aborted`；
+   - **绝不返回 0 / 短读 0**（否则 FFmpeg 认为流结束，解码器停止前进）；
+   - 等待超过上限（默认 30s）才返回 `AVERROR(EIO)`；
+3. `expected_size == 0`（未知总长）时，只有在“下载已失败/结束”的情况下才返回 EOF，否则一直等到 `aborted` 或超时；
+4. `size()` 必须**实时**读取文件大小（或 `expected_size`），不能缓存打开时的值；
+5. 每次 read 成功后刷新内部 `written`，供 stall 检测与日志使用。
+
+**已知故障（当前版本）**：read 在文件增长时返回了 0/短读，FFmpeg 认为 EOF，解码停止 → 位置不动 → 看门狗每 2 秒重载一次，声音断续。
+
 ### 3.2 解码器
 
 `ffmpeg_decoder.h` 的 open：
@@ -76,6 +92,17 @@ typedef struct {
 - 播放前确保头部可用：等待 `min(2MB, total)` 已落盘（本地读，不再用 HTTP 语义），最多 15s；
 - `Stop`/切歌 → 置 `aborted`，阻塞中的 read 立刻退出。
 
+### 3.6 卡住判定与看门狗（与缓冲区分）
+
+- **下载仍在进行**（`received_bytes` 在增长）：这是“缓冲中”，**不重载**；
+  - UI 显示缓冲状态；播放线程继续阻塞在 read 上；
+  - 位置不前进是正常的。
+- **下载已停滞**（`received_bytes` 超过 N 秒不变、且未完成）：
+  - 先尝试恢复下载（重新解析/续传）一次；
+  - 仍无进展才允许重载解码器；
+- **只有真正失败**（session failed、上游无链接、磁盘错误）才显示播放失败；
+- 看门狗不得把“等待缓冲”当成“卡住”，否则每次缓冲都重载，表现为一声一停。
+
 ### 3.4 seek
 
 - seek 仍由“重开解码器到目标位置”实现（或直接 `av_seek_frame`，本地文件可靠）；
@@ -91,6 +118,11 @@ typedef struct {
 
 **Go / C**
 
+- 缓存文件增长中：读到的位置始终跟上下载，**不出现 EOF**（关键回归）；
+- 文件大小在 read 等待期间增长：read 返回新数据而不是 0；
+- `expected_size > 0` 且读到末尾：返回 EOF；
+- 未知总长 + 下载结束：返回 EOF；
+- 下载停滞：看门狗只在“停滞”时重载，缓冲期间不重载；
 - 缓存文件完整：正常播放；
 - 缓存文件只到一半：从头播放，读到一半阻塞，下载继续后恢复；
 - 下载失败 / session failed：阻塞 read 在超时后返回错误，播放器显示失败；
