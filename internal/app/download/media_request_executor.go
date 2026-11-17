@@ -16,18 +16,43 @@ import (
 // stale row whose file was removed outside the app, reports false so a finished
 // request can be re-opened.
 func (s *Service) HasLocalTrack(ctx context.Context, provider, externalID string) (bool, error) {
+	track, err := s.ResolveLocalTrack(ctx, provider, externalID)
+	if err != nil {
+		return false, err
+	}
+	return track != nil, nil
+}
+
+// ResolveLocalTrack implements mediarequest.LocalTrackChecker: the identity's
+// row only counts when it is on disk and the file is still there.
+func (s *Service) ResolveLocalTrack(
+	ctx context.Context, provider, externalID string,
+) (*domain.TrackDTO, error) {
 	if s.merger == nil {
-		return false, nil
+		return nil, nil
 	}
 	track, err := s.merger.FindByRemoteIdentity(ctx, domain.NormalizeProvider(provider), strings.TrimSpace(externalID))
 	if err != nil || track == nil || track.IsRemote() {
-		return false, err
+		return nil, err
 	}
 	info, statErr := os.Stat(track.Path)
 	if statErr != nil || info.IsDir() {
-		return false, nil
+		return nil, nil
 	}
-	return true, nil
+	return track, nil
+}
+
+// FindLocalMatch implements mediarequest.LocalTrackChecker: the fallback for a
+// request whose track row was merged away. Title + artist are the only identity
+// it has left, and no duration is known, so the matcher scans the whole range.
+func (s *Service) FindLocalMatch(
+	ctx context.Context, title, artist string,
+) (*domain.TrackDTO, error) {
+	match, err := s.MatchLocalTrack(ctx, title, []string{artist}, 0)
+	if err != nil || match == nil {
+		return nil, err
+	}
+	return match.Track, nil
 }
 
 // LocateTrack implements domain.MediaRequestExecutor: the row currently

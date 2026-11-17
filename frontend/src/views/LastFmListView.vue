@@ -3,13 +3,16 @@ import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } f
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Events } from '@wailsio/runtime'
-import { ArrowLeft, ChevronLeft, ChevronRight, MoreVertical, Music, Play, RadioTower, RefreshCw, Shuffle, Clock, Search, ThumbsDown, UserX } from '@lucide/vue'
+import { ArrowLeft, ChevronLeft, ChevronRight, MoreVertical, Music, Play, RadioTower, RefreshCw, Shuffle, Clock, Search } from '@lucide/vue'
 import { DetailsButton, IconButton, Input } from '@airmedy/ui'
 import ContextMenu from '@/components/ContextMenu.vue'
 import DetailPageLayout from '@/components/DetailPageLayout.vue'
+import StickyDetailBar from '@/components/StickyDetailBar.vue'
 import LazyImg from '@/components/LazyImg.vue'
 import TopTrackRow from '@/components/lastfm/TopTrackRow.vue'
 import { useContextMenu } from '@/composables/useContextMenu'
+import { LASTFM_ROW_GRID } from '@/lib/lastfmRowColumns'
+import { useLastFmRowMenu } from '@/composables/useLastFmRowMenu'
 import { foldUnicode } from '@airmedy/utils'
 import {
   formatLastFmDuration,
@@ -22,8 +25,9 @@ import {
   planLastFmPlayback,
 } from '@/lib/lastfmTracks'
 import { useCatalogStore } from '@/stores/catalog'
+import { useFavoritesStore } from '@/stores/favorites'
 import { useLastFmRadioStore } from '@/stores/lastfmRadio'
-import { useDislikeStore } from '@/stores/dislike'
+import { DISLIKE_KIND_ARTIST, DISLIKE_KIND_TRACK, useDislikeStore } from '@/stores/dislike'
 import { usePlayerStore } from '@/stores/player'
 import * as LastFmService from '../../bindings/airmedy/internal/infra/wails/lastfmservice'
 import type {
@@ -41,6 +45,7 @@ const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const catalogStore = useCatalogStore()
+const favoritesStore = useFavoritesStore()
 const lastfmRadioStore = useLastFmRadioStore()
 const dislikeStore = useDislikeStore()
 const playerStore = usePlayerStore()
@@ -259,31 +264,36 @@ function belongsToThisList(updateKind?: string): boolean {
   return updateKind === kind.value || updateKind.startsWith(`${kind.value}:`)
 }
 
+const { buildMenuItems: buildRowMenu, resolveTrack } = useLastFmRowMenu({
+  onRefresh: (item) => {
+    void refreshItem(item)
+  },
+  onDislikeTrack: (item) => {
+    void dislikeRow(item)
+  },
+  onDislikeArtist: (item) => {
+    void dislikeArtistRow(item)
+  },
+})
+
 function onRowContextMenu(event: MouseEvent, item: TopTrackItemDTO) {
-  rowMenu.open(event, [
-    {
-      label: t('lastfm.refresh_item'),
-      icon: RefreshCw,
-      disabled: item.matching === true,
-      action: () => {
-        void refreshItem(item)
-      },
-    },
-    {
-      label: t('lastfm.dislike_track'),
-      icon: ThumbsDown,
-      action: () => {
-        void dislikeRow(item)
-      },
-    },
-    {
-      label: t('lastfm.dislike_artist'),
-      icon: UserX,
-      action: () => {
-        void dislikeArtistRow(item)
-      },
-    },
-  ])
+  rowMenu.open(event, buildRowMenu(item))
+}
+
+/** The artist column links once the row resolves to a local row. */
+async function openArtist(item: TopTrackItemDTO) {
+  const track = await resolveTrack(item)
+  const artist = track?.artists?.find((entry) => !!entry?.id)
+  if (artist?.id) router.push(`/artists/${artist.id}`)
+}
+
+async function favoriteTrack(item: TopTrackItemDTO) {
+  if (!item.local_track_id) return
+  try {
+    await favoritesStore.toggle(item.local_track_id)
+  } catch (error) {
+    console.error('Failed to toggle the favorite of a Last.fm recommendation', error)
+  }
 }
 
 /** rowArtist is the credit a dislike is stored under. */
@@ -296,7 +306,8 @@ async function dislikeRow(item: TopTrackItemDTO) {
   const artist = rowArtist(item)
   if (!artist) return
   try {
-    await dislikeStore.dislikeTrack({
+    await dislikeStore.requestDislike({
+      kind: DISLIKE_KIND_TRACK,
       matchKey: item.match_key,
       title: item.title,
       artist,
@@ -312,7 +323,12 @@ async function dislikeArtistRow(item: TopTrackItemDTO) {
   const artist = rowArtist(item)
   if (!artist) return
   try {
-    await dislikeStore.dislikeArtist(artist)
+    await dislikeStore.requestDislike({
+      kind: DISLIKE_KIND_ARTIST,
+      matchKey: '',
+      title: '',
+      artist,
+    })
   } catch (error) {
     console.error('Failed to dislike a Last.fm artist', error)
     loadError.value = 'load_failed'
@@ -471,76 +487,35 @@ async function refreshAllLists() {
 }
 
 /** openHeaderMore offers the list-level refresh actions from the detail header. */
+const headerMoreItems = [
+  {
+    label: t('lastfm.refresh_list'),
+    icon: RefreshCw,
+    action: () => {
+      void refresh()
+    },
+  },
+  {
+    label: t('lastfm.refresh_all'),
+    icon: RefreshCw,
+    action: () => {
+      void refreshAllLists()
+    },
+  },
+]
+
 function openHeaderMore(event: MouseEvent) {
-  rowMenu.open(event, [
-    {
-      label: t('lastfm.refresh_list'),
-      icon: RefreshCw,
-      action: () => {
-        void refresh()
-      },
-    },
-    {
-      label: t('lastfm.refresh_all'),
-      icon: RefreshCw,
-      action: () => {
-        void refreshAllLists()
-      },
-    },
-  ])
+  rowMenu.open(event, headerMoreItems)
 }
 
 const layout = ref<{ scrollContainerRef: HTMLElement | null } | null>(null)
-// The sentinel sits under the hero title; once it leaves the page's scroll
-// container the title is no longer readable, so the sticky bar takes over.
+// The sentinel sits under the hero title; StickyDetailBar observes it against
+// the page scroller and takes over once the title scrolls away.
 const titleSentinel = ref<HTMLElement | null>(null)
 const showStickyBar = ref(false)
-const stickySearchOpen = ref(false)
-const stickySearchInput = ref<{ focus: () => void } | null>(null)
-let titleObserver: IntersectionObserver | null = null
 
 function goBack() {
   router.back()
-}
-
-/**
- * observeTitleSentinel watches the title inside the page's own scroller. The
- * hero only exists once loading finished, and the scroller is recreated for
- * each list, so the observer is rebuilt whenever either side changes.
- */
-function observeTitleSentinel() {
-  titleObserver?.disconnect()
-  titleObserver = null
-  const sentinel = titleSentinel.value
-  const root = layout.value?.scrollContainerRef ?? null
-  if (!sentinel || !root) {
-    showStickyBar.value = false
-    return
-  }
-  titleObserver = new IntersectionObserver(
-    ([entry]) => {
-      showStickyBar.value = !entry.isIntersecting
-    },
-    { root, rootMargin: '-8px 0px 0px 0px', threshold: 0 },
-  )
-  titleObserver.observe(sentinel)
-}
-
-watch(
-  [titleSentinel, () => layout.value?.scrollContainerRef],
-  observeTitleSentinel,
-  { flush: 'post' },
-)
-
-// A hidden bar must not reopen with the search input already expanded.
-watch(showStickyBar, (visible) => {
-  if (!visible) stickySearchOpen.value = false
-})
-
-async function openStickySearch() {
-  stickySearchOpen.value = true
-  await nextTick()
-  stickySearchInput.value?.focus()
 }
 
 async function playTrack(item: TopTrackItemDTO) {
@@ -554,23 +529,14 @@ async function playTrack(item: TopTrackItemDTO) {
 }
 
 function saveTrack(item: TopTrackItemDTO) {
-  void catalogStore.save(lastFmRowToCatalogRow(item), { favorite: true })
+  // Saving is "put it in the library"; favoriting is a separate action.
+  void catalogStore.save(lastFmRowToCatalogRow(item))
 }
 
 onMounted(() => {
   offMatch = Events.On('lastfm:recommendations-matched', onRecommendationsMatched)
   offAdded = Events.On('lastfm:recommendation-items-added', onItemsAdded)
-  observeTitleSentinel()
   void load()
-})
-
-// KeepAlive detaches the scroller, so the observer's last result no longer
-// describes the page. Rebuild it once the subtree is attached again and let the
-// fresh interaction decide whether the bar belongs on screen.
-onActivated(() => {
-  showStickyBar.value = false
-  stickySearchOpen.value = false
-  observeTitleSentinel()
 })
 
 // The same route name is reused for every list, so a card-to-card navigation
@@ -599,8 +565,6 @@ onUnmounted(() => {
   offMatch = null
   offAdded?.()
   offAdded = null
-  titleObserver?.disconnect()
-  titleObserver = null
 })
 </script>
 
@@ -771,13 +735,29 @@ onUnmounted(() => {
         </button>
       </div>
 
-      <div v-else class="mt-4">
+      <div v-else class="@container mt-4">
+        <div
+          class="sticky z-10 grid h-10 items-center gap-2 border-b border-foreground/[0.06] bg-background px-2 text-[10px] font-semibold uppercase tracking-widest text-foreground opacity-80"
+          :class="[LASTFM_ROW_GRID, showStickyBar ? 'top-14' : 'top-0']"
+          data-test="lastfm-list-header"
+        >
+          <span class="text-center">#</span>
+          <span>{{ $t('lastfm.column_title') }}</span>
+          <span class="hidden @md:block">{{ $t('lastfm.column_artist') }}</span>
+          <span>{{ $t('lastfm.column_status') }}</span>
+          <span class="text-right">{{ $t('lastfm.column_actions') }}</span>
+        </div>
         <TopTrackRow
-          v-for="item in filteredItems"
+          v-for="(item, index) in filteredItems"
           :key="item.match_key"
           :item="item"
+          :index="index"
+          :current="!!item.local_track_id && playerStore.currentTrack?.id === item.local_track_id"
           @play="playTrack"
           @save="saveTrack"
+          @favorite="favoriteTrack"
+          @artist="openArtist"
+          @menu="onRowContextMenu"
           @contextmenu.prevent="onRowContextMenu($event, item)"
         />
 
@@ -796,72 +776,20 @@ onUnmounted(() => {
     </template>
   </DetailPageLayout>
 
-    <!-- Sticky toolbar, revealed once the hero title scrolls out of the page -->
-    <div
-      class="absolute inset-x-0 top-0 z-30 h-14 transition-all duration-200 ease-out"
-      :class="showStickyBar ? 'translate-y-0 opacity-100' : 'pointer-events-none -translate-y-full opacity-0'"
-      data-test="lastfm-sticky-bar"
-      :data-visible="showStickyBar"
-    >
-      <div
-        role="toolbar"
-        :aria-label="title"
-        class="flex h-full items-center gap-2 bg-glass px-4 ring-1 ring-border-glass backdrop-blur-xl"
-      >
-        <IconButton
-          data-test="lastfm-sticky-back"
-          :aria-label="$t('common.back')"
-          :title="$t('common.back')"
-          @click="goBack"
-        >
-          <ArrowLeft class="h-4 w-4" aria-hidden="true" />
-        </IconButton>
-
-        <h2 class="min-w-0 flex-1 truncate text-sm font-medium text-foreground" :title="title">
-          {{ title }}
-        </h2>
-
-        <DetailsButton
-          :icon="Play"
-          :label="$t('common.play')"
-          :filled-icon="true"
-          data-test="lastfm-sticky-play"
-          :disabled="playing || filteredItems.length === 0"
-          @click="playAll(false)"
-        />
-        <DetailsButton
-          :icon="MoreVertical"
-          variant="outline"
-          data-test="lastfm-sticky-more"
-          :aria-label="$t('lastfm.more_actions')"
-          :title="$t('lastfm.more_actions')"
-          @click="openHeaderMore"
-        />
-
-        <Input
-          v-if="stickySearchOpen"
-          ref="stickySearchInput"
-          v-model="searchQuery"
-          type="text"
-          :placeholder="$t('sidebar.search')"
-          class="w-[220px]"
-          clearable
-          data-test="lastfm-sticky-search-input"
-          @keydown.esc="stickySearchOpen = false"
-          @blur="stickySearchOpen = false"
-        />
-        <IconButton
-          v-else
-          data-test="lastfm-sticky-search"
-          :active="!!searchQuery"
-          :aria-label="$t('sidebar.search')"
-          :title="$t('sidebar.search')"
-          @click="openStickySearch"
-        >
-          <Search class="h-4 w-4" aria-hidden="true" />
-        </IconButton>
-      </div>
-    </div>
+    <StickyDetailBar
+      v-model:visible="showStickyBar"
+      v-model="searchQuery"
+      :title="title"
+      :sentinel="titleSentinel"
+      :root="layout?.scrollContainerRef ?? null"
+      :can-play="!playing && filteredItems.length > 0"
+      :can-shuffle="!playing && filteredItems.length > 0"
+      :more-items="headerMoreItems"
+      test-prefix="lastfm"
+      @back="goBack"
+      @play="playAll(false)"
+      @shuffle="playAll(true)"
+    />
 
     <ContextMenu
       :visible="rowMenu.visible.value"

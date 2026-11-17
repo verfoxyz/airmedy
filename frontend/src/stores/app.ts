@@ -72,6 +72,8 @@ export const useAppStore = defineStore('app', () => {
   const normalizationPreventClip = ref(true)
   const showPlayerIndicator = ref(true)
   const showPlayerFavoriteButton = ref(false)
+  /** When on, a dislike also deletes local audio, artwork, cache and lyrics. */
+  const dislikePurgeFiles = ref(false)
   const autoAdvanceNotificationsEnabled = ref(true)
   const librarySyncInterval = ref<SyncInterval>(DEFAULT_SYNC_INTERVAL)
   const maxQueueSize = ref<MaxQueueSize>(DEFAULT_MAX_QUEUE_SIZE)
@@ -179,6 +181,7 @@ export const useAppStore = defineStore('app', () => {
         preventSleepWhilePlaying.value = !!settings.prevent_sleep_while_playing
         showPlayerIndicator.value = settings.show_player_indicator !== false
         showPlayerFavoriteButton.value = settings.show_player_favorite_button === true
+        dislikePurgeFiles.value = settings.dislike_purge_files === true
         autoAdvanceNotificationsEnabled.value = settings.auto_advance_notifications_enabled !== false
         if (isSyncInterval(settings.library_sync_interval)) {
           librarySyncInterval.value = settings.library_sync_interval
@@ -306,6 +309,7 @@ export const useAppStore = defineStore('app', () => {
         prevent_sleep_while_playing: preventSleepWhilePlaying.value,
         show_player_indicator: showPlayerIndicator.value,
         show_player_favorite_button: showPlayerFavoriteButton.value,
+        dislike_purge_files: dislikePurgeFiles.value,
         auto_advance_notifications_enabled: autoAdvanceNotificationsEnabled.value,
         library_sync_interval: librarySyncInterval.value,
         max_queue_size: maxQueueSize.value,
@@ -477,6 +481,19 @@ export const useAppStore = defineStore('app', () => {
   const updateShowPlayerFavoriteButton = async (enabled: boolean) => {
     showPlayerFavoriteButton.value = enabled
     await saveSettings()
+  }
+
+  /** updateDislikePurgeFiles persists the destructive dislike toggle. */
+  const updateDislikePurgeFiles = async (enabled: boolean) => {
+    const previous = dislikePurgeFiles.value
+    dislikePurgeFiles.value = enabled
+    try {
+      await saveSettings()
+    } catch (error) {
+      // A failed save must not leave the UI claiming files will be deleted.
+      dislikePurgeFiles.value = previous
+      throw error
+    }
   }
 
   const updateShowPlayerIndicator = async (enabled: boolean) => {
@@ -731,6 +748,7 @@ export const useAppStore = defineStore('app', () => {
     preventSleepWhilePlaying,
     showPlayerIndicator,
     showPlayerFavoriteButton,
+    dislikePurgeFiles,
     autoAdvanceNotificationsEnabled,
     librarySyncInterval,
     maxQueueSize,
@@ -779,6 +797,7 @@ export const useAppStore = defineStore('app', () => {
     updatePreventSleepWhilePlaying,
     updateShowPlayerIndicator,
     updateShowPlayerFavoriteButton,
+    updateDislikePurgeFiles,
     updateAutoAdvanceNotificationsEnabled,
     updateLibrarySyncInterval,
     updateMaxQueueSize,

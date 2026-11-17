@@ -1,6 +1,6 @@
 # 任务：不喜欢页「彻底删除」开关（删本地音频与封面）
 
-> 状态：待开工
+> 状态：✅ 已完成（`dislike_purge_files` 迁移 000113；开启后 Dislike 经 `library.PurgeDislikeTargets` 复用 `DeleteTrackFile` 删除音频/无引用封面/流缓存/歌词并推进播放；确认弹窗区分「删除并标记」与「仅标记」，艺人级需勾选确认；推荐数据清理沿用 dislike-purge 的事务实现；Go/Vue 测试覆盖）
 > 目的：不喜欢时可以选择连本地音频、封面、缓存一起删除，只保留过滤用的名称/歌手信息
 > 关联：`dislike-purge.md`、`dislike-tag.md`、`library`（删除文件）
 

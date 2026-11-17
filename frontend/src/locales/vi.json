@@ -484,7 +484,18 @@
     "source_disabled": "Tắt",
     "source_drag_hint": "Kéo tay cầm để sắp xếp. Nếu không kéo được, dùng nút mũi tên.",
     "all_sources_disabled": "Tất cả nguồn tìm kiếm đang tắt. Bật một nguồn trong Cài đặt → Nguồn tìm kiếm.",
-    "source_save_failed": "Không lưu được thay đổi. Đã khôi phục cài đặt trước đó."
+    "source_save_failed": "Không lưu được thay đổi. Đã khôi phục cài đặt trước đó.",
+    "dislike_purge_files": "Xóa tệp cục bộ khi không thích",
+    "dislike_purge_files_hint": "Âm thanh, bìa, bộ nhớ đệm phát trực tuyến và lời đã lưu sẽ bị xóa khỏi ổ đĩa. Không thể hoàn tác.",
+    "dislike_purge_confirm": "Xóa và không thích",
+    "dislike_purge_confirm_artist": "Tôi hiểu rằng {count} bài hát cục bộ sẽ bị xóa",
+    "dislike_purge_count": "{count} bài hát cục bộ sẽ bị xóa.",
+    "dislike_mark_confirm_title": "Đánh dấu là không thích?",
+    "dislike_mark_confirm_body": "Chỉ ẩn khỏi gợi ý. Không có tệp nào bị xóa.",
+    "dislike_purge_confirm_title": "Xóa và đánh dấu không thích?",
+    "dislike_purge_confirm_body": "Âm thanh cục bộ, bìa, bộ nhớ đệm phát trực tuyến và lời đã lưu sẽ bị xóa. Không thể hoàn tác.",
+    "dislike_enable_purge_title": "Bật xóa tệp khi không thích?",
+    "dislike_enable_purge_body": "Khi bật, đánh dấu không thích cũng sẽ xóa âm thanh cục bộ, bìa, bộ nhớ đệm phát trực tuyến và lời. Không thể hoàn tác."
   },
   "sidebar": {
     "download": "Tải xuống & tác vụ",
@@ -552,7 +563,8 @@
     "secondary_romanization": "Phiên âm",
     "romanization_hint": "Phiên âm offline: tiếng Trung và Hàn.",
     "romanization_mandarin": "Lời chỉ có chữ Hán mặc định dùng Mandarin. Tên riêng có thể có cách đọc khác.",
-    "dislike_track": "Không thích và bỏ qua"
+    "dislike_track": "Không thích và bỏ qua",
+    "more_info": "Thêm thông tin"
   },
   "home": {
     "title": "Trang chủ",
@@ -892,7 +904,8 @@
     "clear_message": "Mọi bản ghi đã hoàn thành và lỗi sẽ bị xóa. Tác vụ đang thực hiện không bị ảnh hưởng.",
     "clear_confirm": "Xóa",
     "clear_cancel": "Hủy",
-    "clear_done": "Đã xóa lịch sử"
+    "clear_done": "Đã xóa lịch sử",
+    "waiting_retry": "Đang chờ thử lại"
   },
   "download": {
     "downloading": "Đang tải…",
@@ -989,6 +1002,12 @@
     "load_more": "Tải thêm",
     "no_more": "Không còn gợi ý nào",
     "dislike_track": "Không thích bài này",
-    "dislike_artist": "Không thích nghệ sĩ này"
+    "dislike_artist": "Không thích nghệ sĩ này",
+    "save_to_library": "Lưu vào thư viện",
+    "copy_row": "Sao chép nghệ sĩ và tiêu đề",
+    "column_title": "Tiêu đề",
+    "column_artist": "Nghệ sĩ",
+    "column_status": "Trạng thái",
+    "column_actions": "Thao tác"
   }
 }

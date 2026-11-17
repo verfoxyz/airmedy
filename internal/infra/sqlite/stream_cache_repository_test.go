@@ -312,8 +312,8 @@ func TestUpgradeFromVersion95RetiresThePromotionSchema(t *testing.T) {
 	if dirty {
 		t.Fatal("the upgrade left the schema dirty")
 	}
-	if version != 112 {
-		t.Fatalf("version = %d, want the newest migration (112)", version)
+	if version != 113 {
+		t.Fatalf("version = %d, want the newest migration (113)", version)
 	}
 	if hasColumn("promoted") || hasColumn("discard_pending") || hasTable("promotion_tasks") {
 		t.Fatal("the upgrade kept the retired promotion schema")

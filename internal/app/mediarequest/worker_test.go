@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"airmedy/internal/domain"
+	"airmedy/internal/infra/sqlite"
 )
 
 type stubExecutor struct {
@@ -296,4 +297,173 @@ func TestWorkerBacksOffAfterAFailure(t *testing.T) {
 	waitFor(t, "the retry", func() bool {
 		return readRequest(t, repo, request.ID).Attempts == 2
 	})
+}
+
+func TestWorkerResolvesAMissingTrackRowThroughTheLocalMatch(t *testing.T) {
+	db := newTestDB(t)
+	repo := sqlite.NewMediaRequestRepository(db)
+	svc := NewService(repo, testLogger())
+	request, err := svc.Upsert(context.Background(), UpsertInput{
+		Provider: "kg", ExternalID: "91a6ce", TrackID: "track-remote",
+		Title: "新·与天齐", Artist: "指尖笑",
+		Desired: domain.MediaRequestDesiredPromote, Quality: "320k",
+	})
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	executor := &stubExecutor{track: nil}
+	worker := NewWorker(repo, executor, testLogger())
+	worker.SetLocalTrackChecker(stubLocalTrack{match: localTrack()})
+
+	worker.sweep(context.Background())
+
+	got := readRequest(t, repo, request.ID)
+	if got.State != domain.MediaRequestStateDone {
+		t.Fatalf("state = %s, want done", got.State)
+	}
+	if got.TrackID != "track-local" {
+		t.Fatalf("track id = %q, want the local row the match found", got.TrackID)
+	}
+	if executor.callCount() != 0 {
+		t.Fatalf("executor calls = %d, want the missing row resolved locally", executor.callCount())
+	}
+	var details []string
+	if err := db.Select(&details,
+		`SELECT detail FROM media_request_events WHERE request_id = ? AND state = ?`,
+		request.ID, domain.MediaRequestStateDone,
+	); err != nil {
+		t.Fatalf("query events: %v", err)
+	}
+	if len(details) != 1 || details[0] != "resolved: local row" {
+		t.Fatalf("done details = %v, want the auto-done record", details)
+	}
+}
+
+func TestWorkerCancelsAMissingTrackRowWithoutALocalCopy(t *testing.T) {
+	repo := newTestRepo(t)
+	svc := NewService(repo, testLogger())
+	request, err := svc.Upsert(context.Background(), UpsertInput{
+		Provider: "kg", ExternalID: "91a6ce", TrackID: "track-remote",
+		Title: "新·与天齐", Artist: "指尖笑",
+		Desired: domain.MediaRequestDesiredPromote, Quality: "320k",
+	})
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	executor := &stubExecutor{track: nil}
+	worker := NewWorker(repo, executor, testLogger())
+	worker.SetLocalTrackChecker(stubLocalTrack{})
+
+	worker.sweep(context.Background())
+
+	got := readRequest(t, repo, request.ID)
+	if got.State != domain.MediaRequestStateCanceled {
+		t.Fatalf("state = %s, want canceled because the row is gone", got.State)
+	}
+	if got.Attempts != 0 || got.NextAttemptAt != nil {
+		t.Fatalf("attempts = %d, next = %v, want no retry", got.Attempts, got.NextAttemptAt)
+	}
+	if executor.callCount() != 0 {
+		t.Fatalf("executor calls = %d, want none", executor.callCount())
+	}
+}
+
+func TestWorkerStopsRetryingAtTheAttemptLimit(t *testing.T) {
+	repo := newTestRepo(t)
+	request := seedRequest(t, repo)
+	now := time.Now()
+	if err := repo.MarkFailed(context.Background(), request.ID, "source down", maxAttempts-1, &now, now); err != nil {
+		t.Fatalf("MarkFailed: %v", err)
+	}
+	executor := &stubExecutor{track: remoteTrack(), executeErr: errors.New("source down")}
+	worker := NewWorker(repo, executor, testLogger())
+	worker.SetClock(func() time.Time { return now.Add(time.Minute) })
+
+	worker.sweep(context.Background())
+
+	got := readRequest(t, repo, request.ID)
+	if got.Attempts != maxAttempts {
+		t.Fatalf("attempts = %d, want %d", got.Attempts, maxAttempts)
+	}
+	if got.NextAttemptAt != nil {
+		t.Fatalf("next attempt = %v, want nil at the limit", got.NextAttemptAt)
+	}
+	if got.State != domain.MediaRequestStateFailed {
+		t.Fatalf("state = %s, want failed", got.State)
+	}
+}
+
+func TestWorkerStartupSettlesAnOrphanFailedRowWithoutWaitingForBackoff(t *testing.T) {
+	repo := newTestRepo(t)
+	svc := NewService(repo, testLogger())
+	ctx := context.Background()
+	request, err := svc.Upsert(ctx, UpsertInput{
+		Provider: "kg", ExternalID: "91a6ce", TrackID: "track-gone",
+		Title: "新·与天齐", Artist: "指尖笑",
+		Desired: domain.MediaRequestDesiredPromote, Quality: "320k",
+	})
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	next := time.Now().Add(6 * time.Hour)
+	if err := repo.MarkFailed(ctx, request.ID, "track row removed", 5, &next, time.Now()); err != nil {
+		t.Fatalf("MarkFailed: %v", err)
+	}
+
+	executor := &stubExecutor{}
+	worker := NewWorker(repo, executor, testLogger())
+	worker.SetSweepInterval(time.Hour)
+	worker.SetLocalTrackChecker(stubLocalTrack{match: localTrack()})
+	if err := worker.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = worker.Stop(stopCtx)
+	})
+
+	waitFor(t, "the orphan row to settle at startup", func() bool {
+		return readRequest(t, repo, request.ID).State == domain.MediaRequestStateDone
+	})
+	if executor.callCount() != 0 {
+		t.Fatalf("executor calls = %d, want none", executor.callCount())
+	}
+}
+
+func TestWorkerStartupCancelsAnOrphanFailedRowWithoutALocalRow(t *testing.T) {
+	repo := newTestRepo(t)
+	svc := NewService(repo, testLogger())
+	ctx := context.Background()
+	request, err := svc.Upsert(ctx, UpsertInput{
+		Provider: "kg", ExternalID: "91a6ce", TrackID: "track-gone",
+		Title: "新·与天齐", Artist: "指尖笑",
+		Desired: domain.MediaRequestDesiredPromote, Quality: "320k",
+	})
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	next := time.Now().Add(6 * time.Hour)
+	if err := repo.MarkFailed(ctx, request.ID, "track row removed", 5, &next, time.Now()); err != nil {
+		t.Fatalf("MarkFailed: %v", err)
+	}
+
+	worker := NewWorker(repo, &stubExecutor{}, testLogger())
+	worker.SetSweepInterval(time.Hour)
+	worker.SetLocalTrackChecker(stubLocalTrack{})
+	if err := worker.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = worker.Stop(stopCtx)
+	})
+
+	waitFor(t, "the orphan row to be canceled at startup", func() bool {
+		return readRequest(t, repo, request.ID).State == domain.MediaRequestStateCanceled
+	})
+	if got := readRequest(t, repo, request.ID); got.NextAttemptAt != nil {
+		t.Fatalf("next attempt = %v, want none", got.NextAttemptAt)
+	}
 }

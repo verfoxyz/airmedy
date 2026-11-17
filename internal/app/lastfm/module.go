@@ -80,6 +80,31 @@ var Module = fx.Module("lastfm",
 		},
 		fx.ParamTags(``, `optional:"true"`),
 	)),
+	// A dislike also drops the recommendation rows, candidate entries and match
+	// cache of the identity. Optional: without the purger the dislike still
+	// filters future rows.
+	fx.Invoke(fx.Annotate(
+		func(recommender *Recommender, purger domain.LastFmDislikeTracePurger) {
+			recommender.SetDislikeTracePurger(purger)
+		},
+		fx.ParamTags(``, `optional:"true"`),
+	)),
+	// With the purge setting on, a dislike also deletes the local audio. The
+	// library owns that path; the port keeps app/lastfm out of it.
+	fx.Invoke(fx.Annotate(
+		func(recommender *Recommender, purger DislikeLocalPurger) {
+			recommender.SetDislikeLocalPurger(purger)
+		},
+		fx.ParamTags(``, `optional:"true"`),
+	)),
+	// The purge toggle lives in app settings. Optional: without it purging is
+	// off.
+	fx.Invoke(fx.Annotate(
+		func(recommender *Recommender, settings DislikeSettingsReader) {
+			recommender.SetDislikeSettings(settings)
+		},
+		fx.ParamTags(``, `optional:"true"`),
+	)),
 	// A merge moves the remote identity onto the local survivor, so the
 	// recommender needs the survivor row to refresh rows that still say "from
 	// <provider>". Optional: without it the lists refresh on their next load.

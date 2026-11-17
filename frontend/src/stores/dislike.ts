@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import { Events } from '@wailsio/runtime'
 import { foldUnicode } from '@airmedy/utils'
 import * as LastFmService from '../../bindings/airmedy/internal/infra/wails/lastfmservice'
+import { useAppStore } from './app'
 
 /**
  * One local recommendation exclusion.
@@ -38,10 +39,32 @@ function artistParts(value: string): string[] {
   return parts
 }
 
+/** A dislike the UI asked for; the dialog confirms a purge before it runs. */
+export interface DislikeRequest {
+  kind: string
+  matchKey: string
+  title: string
+  artist: string
+  /** Runs after the dislike is handled, whether or not a purge followed. */
+  onConfirmed?: () => void
+}
+
+interface DislikeResult {
+  entry?: DislikeEntry
+  deleted_tracks?: number
+  purge_error?: string
+}
+
 export const useDislikeStore = defineStore('dislike', () => {
   const items = ref<DislikeEntry[]>([])
   const loading = ref(false)
   const saving = ref(false)
+  // The confirm dialog: set when the purge setting is on and the user asked to
+  // dislike something. PreviewDislike fills in how many files are at stake.
+  const pending = ref<DislikeRequest | null>(null)
+  const pendingCount = ref(0)
+  const pendingLoading = ref(false)
+  const purgeError = ref('')
 
   const trackKeys = computed(() => {
     const keys = new Set<string>()
@@ -93,36 +116,92 @@ export const useDislikeStore = defineStore('dislike', () => {
     }
   }
 
-  async function dislikeTrack(input: { matchKey?: string; title: string; artist: string }) {
+  /** submit writes one dislike and records a partial purge failure. */
+  async function submit(request: DislikeRequest, purge: boolean): Promise<DislikeResult> {
     saving.value = true
+    purgeError.value = ''
     try {
-      const entry = (await LastFmService.Dislike(
-        DISLIKE_KIND_TRACK,
-        input.matchKey ?? '',
-        input.title,
-        input.artist,
-      )) as DislikeEntry
-      upsert(entry)
-      return entry
+      const result = (await LastFmService.Dislike(
+        request.kind,
+        request.matchKey,
+        request.title,
+        request.artist,
+        purge,
+      )) as DislikeResult
+      if (result?.entry) upsert(result.entry)
+      if (result?.purge_error) purgeError.value = result.purge_error
+      return result ?? {}
     } finally {
       saving.value = false
     }
   }
 
+  async function dislikeTrack(input: { matchKey?: string; title: string; artist: string }) {
+    const result = await submit(
+      {
+        kind: DISLIKE_KIND_TRACK,
+        matchKey: input.matchKey ?? '',
+        title: input.title,
+        artist: input.artist,
+      },
+      false,
+    )
+    return result.entry ?? null
+  }
+
   async function dislikeArtist(artist: string) {
-    saving.value = true
+    const result = await submit(
+      { kind: DISLIKE_KIND_ARTIST, matchKey: '', title: '', artist },
+      false,
+    )
+    return result.entry ?? null
+  }
+
+  /**
+   * requestDislike is the UI entry point. With the purge setting off it writes
+   * the mark immediately; with it on it opens the confirm dialog and previews
+   * how many local files the purge would delete.
+   */
+  async function requestDislike(request: DislikeRequest) {
+    // Every dislike is confirmed first. With the purge setting off the dialog
+    // simply has no destructive choice; with it on it previews the files.
+    pending.value = request
+    pendingCount.value = 0
+    purgeError.value = ''
+    if (!useAppStore().dislikePurgeFiles) return
+    pendingLoading.value = true
     try {
-      const entry = (await LastFmService.Dislike(
-        DISLIKE_KIND_ARTIST,
-        '',
-        '',
-        artist,
-      )) as DislikeEntry
-      upsert(entry)
-      return entry
+      const count = await LastFmService.PreviewDislike(
+        request.kind,
+        request.matchKey,
+        request.title,
+        request.artist,
+      )
+      pendingCount.value = Number(count) || 0
+    } catch (error) {
+      // A failed preview must not block the dialog; the purge itself reports.
+      console.error('Failed to preview a dislike purge', error)
     } finally {
-      saving.value = false
+      pendingLoading.value = false
     }
+  }
+
+  /** confirmPending runs the dialog's choice: purge files or mark only. */
+  async function confirmPending(purge: boolean) {
+    const request = pending.value
+    if (!request) return
+    pending.value = null
+    try {
+      await submit(request, purge)
+    } finally {
+      request.onConfirmed?.()
+    }
+  }
+
+  function dismissPending() {
+    pending.value = null
+    pendingCount.value = 0
+    purgeError.value = ''
   }
 
   async function remove(id: string) {
@@ -159,6 +238,10 @@ export const useDislikeStore = defineStore('dislike', () => {
     items,
     loading,
     saving,
+    pending,
+    pendingCount,
+    pendingLoading,
+    purgeError,
     init,
     load,
     dispose,
@@ -166,6 +249,9 @@ export const useDislikeStore = defineStore('dislike', () => {
     isArtistDisliked,
     dislikeTrack,
     dislikeArtist,
+    requestDislike,
+    confirmPending,
+    dismissPending,
     remove,
   }
 })

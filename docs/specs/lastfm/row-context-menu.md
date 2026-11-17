@@ -1,6 +1,6 @@
 # 任务：Last.fm 列表行补齐常用右键菜单
 
-> 状态：待开工
+> 状态：✅ 已完成（新增 `useLastFmRowMenu`：播放/下一首/队列/电台/歌单▸/保存或收藏/艺人/专辑/复制/刷新/不喜欢，未匹配项置灰；动作复用 `preparePlayback`、播放器、歌单、收藏与 catalog 保存入口；列表与详情共用同一视图；Vue 测试覆盖顺序、禁用与动作）
 > 目的：Last.fm 推荐行现在只有“刷新此曲的源 / 不喜欢”，缺少播放、队列、歌单、保存等常用操作
 > 关联：`recommendation-lists.md`、`dislike-tag.md`、`recommendation-quality.md`（电台）
 

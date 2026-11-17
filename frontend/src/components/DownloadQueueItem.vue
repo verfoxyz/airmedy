@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AlertCircle, Ban, Check, LoaderCircle, RotateCcw, X } from '@lucide/vue'
+import { AlertCircle, Ban, Check, Clock, LoaderCircle, RotateCcw, X } from '@lucide/vue'
 import type { DownloadJobView } from '@/stores/download'
 
 /**
@@ -35,11 +35,15 @@ const isFailed = computed(() => props.job.state === 'failed')
 const isCanceled = computed(() => props.job.state === 'canceled')
 const isDone = computed(() => props.job.state === 'done')
 const isActive = computed(() => props.job.state === 'active')
+// Failed with a scheduled retry: the row is neither downloading nor finished.
+const isWaiting = computed(() => props.job.state === 'waiting')
 const isQueued = computed(() => props.job.state === 'queued')
 // A cache session has no user-facing cancel or retry: it belongs to playback,
 // and finishing (or failing) it is the stream cache's decision. A request can
 // be canceled while it runs and retried after it failed.
-const canCancel = computed(() => isRequest.value && (isActive.value || isQueued.value))
+const canCancel = computed(
+  () => isRequest.value && (isActive.value || isQueued.value || isWaiting.value),
+)
 const canRetry = computed(() => isRequest.value && (isFailed.value || isCanceled.value))
 
 /** Title, then the id, then a fallback: a deleted track must not blank the row. */
@@ -64,6 +68,7 @@ const phaseText = computed(() => {
 })
 
 const statusText = computed(() => {
+  if (isWaiting.value) return t('tasks.waiting_retry')
   if (isFailed.value) return props.job.error || t('download.failed')
   if (isCanceled.value) return t('download.canceled')
   if (isDone.value) return props.job.quality || t('tasks.tab_done')
@@ -74,7 +79,7 @@ const statusText = computed(() => {
 
 const attemptText = computed(() => {
   const { attempts, maxAttempts } = props.job
-  if (!isFailed.value || maxAttempts <= 0) return ''
+  if (!(isFailed.value || isWaiting.value) || maxAttempts <= 0) return ''
   return t('download.attempt', { attempt: attempts, total: maxAttempts })
 })
 
@@ -92,6 +97,7 @@ const kindLabel = computed(() => {
     <div class="mt-0.5 shrink-0">
       <AlertCircle v-if="isFailed" class="h-4 w-4 text-primary" />
       <Ban v-else-if="isCanceled" class="h-4 w-4 text-dimmer" />
+      <Clock v-else-if="isWaiting" class="h-4 w-4 text-dim" />
       <Check v-else-if="isDone" class="h-4 w-4 text-dim" />
       <LoaderCircle v-else-if="isActive" class="h-4 w-4 animate-spin text-primary" />
       <LoaderCircle v-else class="h-4 w-4 text-dimmer" />

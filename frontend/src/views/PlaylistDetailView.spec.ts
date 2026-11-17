@@ -6,6 +6,8 @@ import { createI18n } from 'vue-i18n'
 import { useFavoritesStore } from '@/stores/favorites'
 import * as LibraryService from '../../bindings/airmedy/internal/infra/wails/libraryservice'
 import PlaylistDetailView from './PlaylistDetailView.vue'
+import StickyDetailBar from '@/components/StickyDetailBar.vue'
+import TrackTable from '@/components/TrackTable.vue'
 import * as PlaylistService from '../../bindings/airmedy/internal/infra/wails/playlistservice'
 import type { Playlist, TrackDTO } from '../../bindings/airmedy/internal/domain/models'
 import { CancellablePromise, Events } from '@wailsio/runtime'
@@ -138,7 +140,7 @@ describe('PlaylistDetailView background refresh', () => {
     })
     await flushPromises()
 
-    const list = wrapper.get('.track-table-virtual-list').element as HTMLElement
+    const list = wrapper.get('[data-test="detail-scroll-container"]').element as HTMLElement
     list.scrollTop = 560
     const updated = { ...track, is_favorite: true }
     for (const [name, handler] of vi.mocked(Events.On).mock.calls) {
@@ -149,7 +151,7 @@ describe('PlaylistDetailView background refresh', () => {
 
     try {
       expect(finishRefresh).toBeTypeOf('function')
-      expect(wrapper.get('.track-table-virtual-list').element).toBe(list)
+      expect(wrapper.get('[data-test="detail-scroll-container"]').element).toBe(list)
       expect(list.scrollTop).toBe(560)
       expect(wrapper.text()).not.toContain('--')
     } finally {
@@ -157,7 +159,7 @@ describe('PlaylistDetailView background refresh', () => {
       await flushPromises()
       vi.unstubAllGlobals()
     }
-    expect(wrapper.get('.track-table-virtual-list').element).toBe(list)
+    expect(wrapper.get('[data-test="detail-scroll-container"]').element).toBe(list)
   })
 })
 
@@ -172,7 +174,7 @@ describe('favorite-only playlist invalidation', () => {
     const wrapper = mount(PlaylistDetailView, { global: {
       plugins: [router, pinia, createI18n({ legacy: false, locale: 'en', messages: { en: {} } })],
       stubs: { TrackTable: true, ContextMenu: true, PlaylistArtwork: true, ConfirmDialog: true,
-        CreatePlaylistDialog: true, SmartPlaylistDialog: true },
+        CreatePlaylistDialog: true, SmartPlaylistDialog: true, StickyDetailBar: true },
     } })
     await flushPromises()
     vi.mocked(PlaylistService.GetPlaylistByID).mockClear()
@@ -222,5 +224,22 @@ describe('favorite-only playlist invalidation', () => {
     await flushPromises()
     expect(LibraryService.GetFavoriteTracks).toHaveBeenCalledTimes(2)
     expect(wrapper.getComponent({ name: 'TrackTable' }).props('tracks')).toEqual([latest])
+  })
+
+  it('wires the sticky bar and whole-page scrolling', async () => {
+    const { wrapper } = await mountPlaylist('sticky', { name: 'Sticky Playlist' })
+    const bar = wrapper.findComponent(StickyDetailBar)
+
+    expect(bar.exists()).toBe(true)
+    expect(bar.props('title')).toBe('Sticky Playlist')
+    expect(bar.props('testPrefix')).toBe('playlist')
+    expect(bar.props('sentinel')).toBeInstanceOf(HTMLElement)
+    expect(bar.props('canPlay')).toBe(false)
+
+    const table = wrapper.findComponent(TrackTable)
+    expect(table.props('virtualScroll')).toBe(false)
+    expect(table.props('autoHeight')).toBe(true)
+    expect(table.props('headerOffset')).toBe(0)
+    expect(wrapper.find('[data-test="detail-scroll-container"]').classes()).toContain('overflow-y-auto')
   })
 })

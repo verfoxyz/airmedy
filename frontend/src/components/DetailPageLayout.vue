@@ -32,7 +32,13 @@ defineExpose({ scrollContainerRef })
       <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
     </div>
 
-    <div v-else ref="scrollContainerRef" class="flex-1 overflow-y-auto" @scroll.passive="handleScroll">
+    <div
+      v-else
+      ref="scrollContainerRef"
+      class="flex-1 overflow-y-auto"
+      data-test="detail-scroll-container"
+      @scroll.passive="handleScroll"
+    >
       <DetailHero :theme="theme" :title="title" @contextmenu.prevent="$emit('hero-contextmenu', $event)">
         <template v-if="$slots['top-right']" #top-right>
           <slot name="top-right" />

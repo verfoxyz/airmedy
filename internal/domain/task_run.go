@@ -11,7 +11,11 @@ const (
 
 	// TaskStateActive covers every state that still has work in flight:
 	// wanted/queued/running requests and active cache sessions.
-	TaskStateActive   = "active"
+	TaskStateActive = "active"
+	// TaskStateWaiting is a failed request with a scheduled retry. It is not
+	// finished, but it is not downloading either; the page says "waiting to
+	// retry" instead of leaving the row looking stuck.
+	TaskStateWaiting  = "waiting"
 	TaskStateDone     = "done"
 	TaskStateFailed   = "failed"
 	TaskStateCanceled = "canceled"

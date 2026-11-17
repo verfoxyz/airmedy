@@ -1,6 +1,6 @@
 # 任务：标记「不喜欢」时清除该曲的推荐源数据
 
-> 状态：待开工
+> 状态：✅ 已完成（`Dislike` 写入 dislikes 后按 match_key/艺人 key 收集推荐行与候选池 key，由 `LastFmDislikeTracePurger` 在一个事务内清理 items、候选池与 match_cache；dislikes 的 title/artist 保留，取消不喜欢不恢复已删数据）
 > 目的：不喜欢后，该曲不再占用推荐列表/封面/匹配缓存；设置页仍能看到它的名称与歌手
 > 关联：`dislike-tag.md`、`fix-dislike-covers.md`
 

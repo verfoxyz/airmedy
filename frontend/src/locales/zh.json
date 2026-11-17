@@ -484,7 +484,18 @@
     "source_disabled": "已停用",
     "source_drag_hint": "拖动手柄调整顺序；无法拖拽时使用上下按钮。",
     "all_sources_disabled": "所有搜索源均已停用，请在 设置 → 搜索源 中启用一个。",
-    "source_save_failed": "保存失败，已恢复之前的设置。"
+    "source_save_failed": "保存失败，已恢复之前的设置。",
+    "dislike_purge_files": "不喜欢时同时删除本地文件",
+    "dislike_purge_files_hint": "磁盘上的音频、封面、流缓存和已保存歌词会被删除，且不可恢复。",
+    "dislike_purge_confirm": "删除并标记不喜欢",
+    "dislike_purge_confirm_artist": "我了解将删除 {count} 首本地曲目",
+    "dislike_purge_count": "将删除 {count} 首本地曲目。",
+    "dislike_mark_confirm_title": "标记为不喜欢？",
+    "dislike_mark_confirm_body": "只会从推荐中隐藏，不会删除任何文件。",
+    "dislike_purge_confirm_title": "删除并标记不喜欢？",
+    "dislike_purge_confirm_body": "将删除本地音频、封面、流缓存与歌词，且不可恢复。",
+    "dislike_enable_purge_title": "开启「不喜欢时删除文件」？",
+    "dislike_enable_purge_body": "开启后，标记不喜欢会删除本地音频、封面、流缓存和歌词，且不可恢复。"
   },
   "sidebar": {
     "download": "下载/任务",
@@ -552,7 +563,8 @@
     "secondary_romanization": "罗马化",
     "romanization_hint": "离线罗马化：中文和韩语。",
     "romanization_mandarin": "仅含汉字的歌词默认按普通话处理。姓名的读音可能不同。",
-    "dislike_track": "不喜欢并跳过"
+    "dislike_track": "不喜欢并跳过",
+    "more_info": "更多信息"
   },
   "home": {
     "title": "首页",
@@ -892,7 +904,8 @@
     "clear_message": "将删除所有已完成和出错的记录，正在进行的任务不受影响。",
     "clear_confirm": "清空",
     "clear_cancel": "取消",
-    "clear_done": "已清空记录"
+    "clear_done": "已清空记录",
+    "waiting_retry": "等待重试"
   },
   "download": {
     "downloading": "下载中…",
@@ -989,6 +1002,12 @@
     "load_more": "加载更多",
     "no_more": "没有更多推荐",
     "dislike_track": "不喜欢此曲",
-    "dislike_artist": "不喜欢此艺人"
+    "dislike_artist": "不喜欢此艺人",
+    "save_to_library": "保存到资料库",
+    "copy_row": "复制「艺人 - 标题」",
+    "column_title": "标题",
+    "column_artist": "艺人",
+    "column_status": "状态",
+    "column_actions": "操作"
   }
 }

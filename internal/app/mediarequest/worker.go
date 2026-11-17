@@ -170,6 +170,32 @@ func (w *Worker) reconcileDoneRequests(ctx context.Context) {
 	}
 }
 
+// reconcileOrphanRequests settles failed rows whose track row was deleted
+// while the app was closed. Their retry backoff is irrelevant: the work can
+// never succeed, so waiting hours under "waiting to retry" would only look
+// like a stuck task. A local match closes the request as done, otherwise it is
+// canceled for good.
+func (w *Worker) reconcileOrphanRequests(ctx context.Context) {
+	requests, err := w.repo.ListOrphans(ctx)
+	if err != nil {
+		w.logger.Warn("media request: cannot list orphan rows", "error", err)
+		return
+	}
+	for _, request := range requests {
+		if request == nil {
+			continue
+		}
+		if local := w.matchLocal(ctx, request); local != nil {
+			w.finish(ctx, request, local.ID, "resolved: local row")
+		} else {
+			w.cancel(ctx, request, "canceled: track row removed")
+		}
+	}
+	if len(requests) > 0 {
+		w.logger.Info("media request: settled orphan rows at startup", "count", len(requests))
+	}
+}
+
 // Start sweeps, then waits for wakes and ticks. The old tables are migrated by
 // the SQL migration, so there is no startup mirror to run.
 func (w *Worker) Start(ctx context.Context) error {
@@ -185,6 +211,7 @@ func (w *Worker) Start(ctx context.Context) error {
 	w.mu.Unlock()
 
 	w.reconcileDoneRequests(ctx)
+	w.reconcileOrphanRequests(ctx)
 	go w.loop(stop, done)
 	w.Wake()
 	return nil
@@ -259,20 +286,26 @@ func (w *Worker) process(ctx context.Context, request *domain.MediaRequest) {
 	}
 	// Step 1: the identity already owns a local file, so the request is done.
 	if track != nil && !track.IsRemote() {
-		w.finish(ctx, request, track.ID)
+		w.finish(ctx, request, track.ID, "")
 		return
 	}
 	if !w.execute {
 		return
 	}
+	// Step 2: the identity's row is gone. A merge or a delete invalidated the
+	// id the request was created against; retrying cannot bring it back, so
+	// resolve the song locally and finish, or close the request for good.
+	if track == nil {
+		if local := w.matchLocal(ctx, request); local != nil {
+			w.finish(ctx, request, local.ID, "resolved: local row")
+			return
+		}
+		w.cancel(ctx, request, "canceled: track row removed")
+		return
+	}
 	// A running request is owned by the executor (a download job). A local row
 	// means success; a permanent failure is reported by the executor's status.
 	if request.State == domain.MediaRequestStateRunning {
-		if track == nil {
-			w.fail(ctx, request, fmt.Errorf("track row for %s/%s no longer exists",
-				request.Provider, request.ExternalID))
-			return
-		}
 		failure, statusErr := w.executor.Status(ctx, track, request.UpdatedAt)
 		if statusErr != nil {
 			w.logger.Warn("media request worker: cannot inspect delegated work",
@@ -282,11 +315,6 @@ func (w *Worker) process(ctx context.Context, request *domain.MediaRequest) {
 		if failure != "" {
 			w.fail(ctx, request, errors.New(failure))
 		}
-		return
-	}
-	if track == nil {
-		w.fail(ctx, request, fmt.Errorf("track row for %s/%s no longer exists",
-			request.Provider, request.ExternalID))
 		return
 	}
 	// Capture the start before Execute creates a job: Status compares against
@@ -321,13 +349,15 @@ func (w *Worker) markRunning(
 	w.notifyUpdate()
 }
 
-func (w *Worker) finish(ctx context.Context, request *domain.MediaRequest, trackID string) {
+func (w *Worker) finish(
+	ctx context.Context, request *domain.MediaRequest, trackID, detail string,
+) {
 	if err := w.repo.MarkDone(ctx, request.ID, trackID, w.now()); err != nil {
 		w.logger.Warn("media request worker: cannot mark done",
 			"request_id", request.ID, "error", err)
 		return
 	}
-	w.record(ctx, request.ID, domain.MediaRequestStateDone, "", "")
+	w.record(ctx, request.ID, domain.MediaRequestStateDone, "", detail)
 	// track_id may now name the merged local row; the page must not keep the old
 	// id it was showing.
 	w.notifyUpdate()
@@ -354,6 +384,35 @@ func (w *Worker) fail(ctx context.Context, request *domain.MediaRequest, cause e
 	if next == nil {
 		w.trimHistory(ctx)
 	}
+}
+
+// matchLocal finds a playable row for the request's song after its identity
+// row disappeared. The snapshot on the request is the only identity left, so
+// the lookup is title + artist, the same rule the local matcher uses.
+func (w *Worker) matchLocal(ctx context.Context, request *domain.MediaRequest) *domain.TrackDTO {
+	if w.localTrack == nil {
+		return nil
+	}
+	track, err := w.localTrack.FindLocalMatch(ctx, request.Title, request.Artist)
+	if err != nil {
+		w.logger.Warn("media request worker: cannot match the song locally",
+			"request_id", request.ID, "error", err)
+		return nil
+	}
+	return track
+}
+
+// cancel closes a request that can never succeed. It is terminal until a new
+// save, and it must not schedule a retry: the row the work needed is gone.
+func (w *Worker) cancel(ctx context.Context, request *domain.MediaRequest, detail string) {
+	if err := w.repo.MarkCanceled(ctx, request.ID, w.now()); err != nil {
+		w.logger.Warn("media request worker: cannot cancel",
+			"request_id", request.ID, "error", err)
+		return
+	}
+	w.record(ctx, request.ID, domain.MediaRequestStateCanceled, "", detail)
+	w.notifyUpdate()
+	w.trimHistory(ctx)
 }
 
 // trimHistory caps the finished rows the tasks page keeps. A failure only leaves

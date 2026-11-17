@@ -484,7 +484,18 @@
     "source_disabled": "Disattivata",
     "source_drag_hint": "Trascina la maniglia per riordinare. Senza trascinamento usa le frecce.",
     "all_sources_disabled": "Tutte le fonti di ricerca sono disattivate. Attivane una in Impostazioni → Fonti di ricerca.",
-    "source_save_failed": "Impossibile salvare la modifica. È stata ripristinata l'impostazione precedente."
+    "source_save_failed": "Impossibile salvare la modifica. È stata ripristinata l'impostazione precedente.",
+    "dislike_purge_files": "Elimina i file locali quando non mi piace",
+    "dislike_purge_files_hint": "Audio, copertina, cache di streaming e testi salvati verranno eliminati dal disco. L'operazione è irreversibile.",
+    "dislike_purge_confirm": "Elimina e non mi piace",
+    "dislike_purge_confirm_artist": "Ho capito che verranno eliminati {count} brani locali",
+    "dislike_purge_count": "Verranno eliminati {count} brani locali.",
+    "dislike_mark_confirm_title": "Contrassegnare come non gradito?",
+    "dislike_mark_confirm_body": "Il brano verrà solo nascosto dai consigli. Nessun file viene eliminato.",
+    "dislike_purge_confirm_title": "Eliminare e contrassegnare?",
+    "dislike_purge_confirm_body": "Audio locale, copertina, cache di streaming e testi salvati verranno eliminati. L'operazione è irreversibile.",
+    "dislike_enable_purge_title": "Attivare l'eliminazione dei file quando non mi piace?",
+    "dislike_enable_purge_body": "Se attivo, contrassegnare un brano o un artista elimina anche audio locale, copertina, cache di streaming e testi. L'operazione è irreversibile."
   },
   "sidebar": {
     "download": "Download e attività",
@@ -552,7 +563,8 @@
     "secondary_romanization": "Romanizzazione",
     "romanization_hint": "Romanizzazione offline: cinese e coreano.",
     "romanization_mandarin": "I testi solo in caratteri Han usano il mandarino per impostazione predefinita. La lettura dei nomi può variare.",
-    "dislike_track": "Non mi piace e salta"
+    "dislike_track": "Non mi piace e salta",
+    "more_info": "Altre informazioni"
   },
   "home": {
     "title": "Home",
@@ -892,7 +904,8 @@
     "clear_message": "Verranno eliminati tutti i record completati e non riusciti. Le attività in corso non saranno modificate.",
     "clear_confirm": "Cancella",
     "clear_cancel": "Annulla",
-    "clear_done": "Cronologia cancellata"
+    "clear_done": "Cronologia cancellata",
+    "waiting_retry": "In attesa di un nuovo tentativo"
   },
   "download": {
     "downloading": "Download in corso…",
@@ -989,6 +1002,12 @@
     "load_more": "Carica altro",
     "no_more": "Nessun altro consiglio",
     "dislike_track": "Non mi piace questo brano",
-    "dislike_artist": "Non mi piace questo artista"
+    "dislike_artist": "Non mi piace questo artista",
+    "save_to_library": "Salva nella libreria",
+    "copy_row": "Copia artista e titolo",
+    "column_title": "Titolo",
+    "column_artist": "Artista",
+    "column_status": "Stato",
+    "column_actions": "Azioni"
   }
 }

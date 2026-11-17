@@ -91,6 +91,19 @@ type RecommendationListSummary struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// LastFmDislikeTracePurger removes a disliked identity from the persisted
+// recommendation data.
+//
+// One transaction covers the list rows, every discover candidate pool and the
+// shared match cache, so a failure cannot leave a list that still shows the
+// song while its cache entry is gone. The dislike row itself is not touched: it
+// is the record that keeps filtering the song out later.
+type LastFmDislikeTracePurger interface {
+	// PurgeDislikeTraces deletes rows, candidate-pool entries and match-cache
+	// entries whose match_key is in keys.
+	PurgeDislikeTraces(ctx context.Context, matchKeys []string) error
+}
+
 // LastFmRecommendationRepository persists the two recommendation lists.
 //
 // Saving a list replaces every row of that kind in one transaction; matching

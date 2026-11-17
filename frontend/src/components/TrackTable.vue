@@ -37,6 +37,7 @@ const props = withDefaults(defineProps<{
   allowDnd?: boolean
   virtualScroll?: boolean
   autoHeight?: boolean
+  headerOffset?: number
   storageKey?: string
 }>(), {
   allowDnd: false,
@@ -387,7 +388,7 @@ defineExpose({ scrollToCurrentTrack, optionalColumns, sortColumn, sortDir, cycle
           <div :style="{ minWidth: totalMinWidth }">
             <TrackTableHeader v-if="!hideHeader" :ordered-visible-columns="orderedVisibleColumns"
               :simple-mode="simpleMode" :sort-column="sortColumn" :sort-dir="sortDir"
-              :grid-template-columns="gridTemplateColumns" :header-height="effectiveHeaderHeight" :variant="variant"
+              :grid-template-columns="gridTemplateColumns" :header-height="effectiveHeaderHeight" :header-offset="headerOffset" :variant="variant"
               @cycle-sort="cycleSort" />
           </div>
         </div>

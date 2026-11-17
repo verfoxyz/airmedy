@@ -144,6 +144,9 @@ func TestListTasks_MapsEveryRequestState(t *testing.T) {
 	seedMediaRequest(t, h, "wanted", "wy", "wanted", track.ID, domain.MediaRequestStateWanted)
 	seedMediaRequest(t, h, "running", "wy", "running", track.ID, domain.MediaRequestStateRunning)
 	seedMediaRequest(t, h, "canceled", "wy", "canceled", track.ID, domain.MediaRequestStateCanceled)
+	waiting := seedMediaRequest(t, h, "waiting", "wy", "waiting", track.ID, domain.MediaRequestStateWanted)
+	next := time.Now().Add(time.Hour)
+	require.NoError(t, h.requests.MarkFailed(ctx, waiting.ID, "403 forbidden", 4, &next, time.Now()))
 
 	runs, err := h.svc.ListTasks(ctx)
 	require.NoError(t, err)
@@ -154,6 +157,7 @@ func TestListTasks_MapsEveryRequestState(t *testing.T) {
 	assert.Equal(t, domain.TaskStateActive, states["wanted"])
 	assert.Equal(t, domain.TaskStateActive, states["running"])
 	assert.Equal(t, domain.TaskStateCanceled, states["canceled"])
+	assert.Equal(t, domain.TaskStateWaiting, states["waiting"])
 }
 
 func TestClearTaskHistory_KeepsActiveRequests(t *testing.T) {

@@ -186,11 +186,23 @@ func TestServiceCancelIsTerminalUntilTheNextSave(t *testing.T) {
 	}
 }
 
-// stubLocalTrack is a LocalTrackChecker with a fixed answer.
-type stubLocalTrack struct{ local bool }
+// stubLocalTrack is a LocalTrackChecker with fixed answers.
+type stubLocalTrack struct {
+	local    bool
+	resolved *domain.TrackDTO
+	match    *domain.TrackDTO
+}
 
 func (s stubLocalTrack) HasLocalTrack(context.Context, string, string) (bool, error) {
 	return s.local, nil
+}
+
+func (s stubLocalTrack) ResolveLocalTrack(context.Context, string, string) (*domain.TrackDTO, error) {
+	return s.resolved, nil
+}
+
+func (s stubLocalTrack) FindLocalMatch(context.Context, string, string) (*domain.TrackDTO, error) {
+	return s.match, nil
 }
 
 // TestServiceUpsertReopensDoneWhenTheLocalFileIsGone is the delete/re-save
@@ -319,5 +331,121 @@ func TestWorkerReconcileDoneRequestsReopensMissingFiles(t *testing.T) {
 	}
 	if got == nil || got.State != domain.MediaRequestStateWanted {
 		t.Fatalf("reconciled row = %+v, want wanted", got)
+	}
+}
+
+func seedOrphanSong(t *testing.T, svc *Service, provider, externalID string) *domain.MediaRequest {
+	t.Helper()
+	request, err := svc.Upsert(context.Background(), UpsertInput{
+		Provider: provider, ExternalID: externalID, TrackID: "track-" + provider,
+		Title: "新·与天齐", Artist: "指尖笑",
+		Desired: domain.MediaRequestDesiredPromote, Quality: "320k",
+	})
+	if err != nil {
+		t.Fatalf("Upsert %s: %v", provider, err)
+	}
+	return request
+}
+
+func TestServiceConvergesDuplicateIdentitiesAfterAMerge(t *testing.T) {
+	repo := newTestRepo(t)
+	svc := NewService(repo, testLogger())
+	svc.SetLocalTrackChecker(stubLocalTrack{resolved: localTrack()})
+	ctx := context.Background()
+
+	kg := seedOrphanSong(t, svc, "kg", "91a6ce")
+	tx := seedOrphanSong(t, svc, "tx", "004Kao")
+	survivor := &domain.TrackDTO{
+		Track:   domain.Track{ID: "track-local", Title: "新·与天齐"},
+		Artists: []*domain.Artist{{Name: "指尖笑"}},
+	}
+
+	changed, err := svc.ConvergeForTrack(ctx, survivor)
+	if err != nil {
+		t.Fatalf("ConvergeForTrack: %v", err)
+	}
+	if changed != 2 {
+		t.Fatalf("changed = %d, want both identities", changed)
+	}
+	for _, id := range []string{kg.ID, tx.ID} {
+		got, err := repo.GetByID(ctx, id)
+		if err != nil {
+			t.Fatalf("GetByID: %v", err)
+		}
+		if got.State != domain.MediaRequestStateDone {
+			t.Fatalf("%s state = %s, want done", id, got.State)
+		}
+		if got.TrackID != "track-local" {
+			t.Fatalf("%s track id = %q, want the local row", id, got.TrackID)
+		}
+	}
+}
+
+func TestServiceCancelsDuplicateIdentitiesWithoutALocalCopy(t *testing.T) {
+	repo := newTestRepo(t)
+	svc := NewService(repo, testLogger())
+	svc.SetLocalTrackChecker(stubLocalTrack{})
+	ctx := context.Background()
+
+	kg := seedOrphanSong(t, svc, "kg", "91a6ce")
+	tx := seedOrphanSong(t, svc, "tx", "004Kao")
+
+	changed, err := svc.ConvergeForTrack(ctx, &domain.TrackDTO{
+		Track:   domain.Track{Title: "新·与天齐"},
+		Artists: []*domain.Artist{{Name: "指尖笑"}},
+	})
+	if err != nil {
+		t.Fatalf("ConvergeForTrack: %v", err)
+	}
+	if changed != 2 {
+		t.Fatalf("changed = %d, want both identities", changed)
+	}
+	for _, id := range []string{kg.ID, tx.ID} {
+		got, err := repo.GetByID(ctx, id)
+		if err != nil {
+			t.Fatalf("GetByID: %v", err)
+		}
+		if got.State != domain.MediaRequestStateCanceled {
+			t.Fatalf("%s state = %s, want canceled", id, got.State)
+		}
+		if got.NextAttemptAt != nil {
+			t.Fatalf("%s next attempt = %v, want none", id, got.NextAttemptAt)
+		}
+	}
+}
+
+func TestServiceInvalidateLocalFileConvergesTheOtherIdentities(t *testing.T) {
+	repo := newTestRepo(t)
+	svc := NewService(repo, testLogger())
+	svc.SetLocalTrackChecker(stubLocalTrack{})
+	ctx := context.Background()
+
+	wy := seedOrphanSong(t, svc, "wy", "42")
+	if err := repo.MarkDone(ctx, wy.ID, "track-local", time.Now()); err != nil {
+		t.Fatalf("MarkDone: %v", err)
+	}
+	kg := seedOrphanSong(t, svc, "kg", "91a6ce")
+
+	changed, err := svc.InvalidateLocalFile(ctx, "wy", "42")
+	if err != nil {
+		t.Fatalf("InvalidateLocalFile: %v", err)
+	}
+	if !changed {
+		t.Fatal("InvalidateLocalFile = false, want the finished row reopened")
+	}
+
+	reopened, err := repo.GetByID(ctx, wy.ID)
+	if err != nil {
+		t.Fatalf("GetByID wy: %v", err)
+	}
+	if reopened.State != domain.MediaRequestStateWanted {
+		t.Fatalf("wy state = %s, want wanted", reopened.State)
+	}
+	other, err := repo.GetByID(ctx, kg.ID)
+	if err != nil {
+		t.Fatalf("GetByID kg: %v", err)
+	}
+	if other.State != domain.MediaRequestStateCanceled {
+		t.Fatalf("kg state = %s, want canceled", other.State)
 	}
 }

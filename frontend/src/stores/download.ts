@@ -5,7 +5,7 @@ import * as DownloadService from '../../bindings/airmedy/internal/infra/wails/do
 import * as LibraryService from '../../bindings/airmedy/internal/infra/wails/libraryservice'
 import type { DownloadJob } from '../../bindings/airmedy/internal/domain/models'
 
-export type DownloadJobState = 'queued' | 'active' | 'done' | 'failed' | 'canceled'
+export type DownloadJobState = 'queued' | 'active' | 'waiting' | 'done' | 'failed' | 'canceled'
 
 /**
  * One download in flight or recently finished, as reported by the backend's

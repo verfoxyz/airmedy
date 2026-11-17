@@ -18,6 +18,7 @@ func TestDispatchTrackMergedReturnsImmediately(t *testing.T) {
 		map[string]string{"from_track_id": "remote-1", "to_track_id": "local-1"},
 		func(context.Context, string, string) { <-release },
 		func(_ context.Context, toTrackID string) { refreshed <- toTrackID },
+		nil,
 	)
 
 	select {
@@ -45,6 +46,7 @@ func TestDispatchTrackMergedIgnoresIncompletePayload(t *testing.T) {
 	dispatchTrackMerged(
 		map[string]string{"from_track_id": "remote-1"},
 		func(context.Context, string, string) { mu.Lock(); calls++; mu.Unlock() },
+		func(context.Context, string) { mu.Lock(); calls++; mu.Unlock() },
 		func(context.Context, string) { mu.Lock(); calls++; mu.Unlock() },
 	)
 	time.Sleep(50 * time.Millisecond)

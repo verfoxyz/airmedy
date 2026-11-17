@@ -484,7 +484,18 @@
     "source_disabled": "無効",
     "source_drag_hint": "ハンドルをドラッグして並べ替えます。ドラッグできない場合は矢印ボタンを使います。",
     "all_sources_disabled": "すべての検索ソースが無効です。設定 → 検索ソースで有効にしてください。",
-    "source_save_failed": "変更を保存できませんでした。以前の設定に戻しました。"
+    "source_save_failed": "変更を保存できませんでした。以前の設定に戻しました。",
+    "dislike_purge_files": "低評価時にローカルファイルを削除",
+    "dislike_purge_files_hint": "音声・カバー・ストリームキャッシュ・保存済み歌詞をディスクから削除します。元に戻せません。",
+    "dislike_purge_confirm": "削除して低評価",
+    "dislike_purge_confirm_artist": "{count} 曲のローカルファイルが削除されることを理解しました",
+    "dislike_purge_count": "{count} 曲のローカルファイルが削除されます。",
+    "dislike_mark_confirm_title": "低評価としてマークしますか？",
+    "dislike_mark_confirm_body": "おすすめから非表示になるだけで、ファイルは削除されません。",
+    "dislike_purge_confirm_title": "削除して低評価にしますか？",
+    "dislike_purge_confirm_body": "ローカル音声・カバー・ストリームキャッシュ・保存済み歌詞を削除します。元に戻せません。",
+    "dislike_enable_purge_title": "低評価時のファイル削除を有効にしますか？",
+    "dislike_enable_purge_body": "有効にすると、低評価時にローカル音声・カバー・ストリームキャッシュ・歌詞も削除されます。元に戻せません。"
   },
   "sidebar": {
     "download": "ダウンロードとタスク",
@@ -552,7 +563,8 @@
     "secondary_romanization": "ローマ字",
     "romanization_hint": "オフラインのローマ字表記: 中国語と韓国語。",
     "romanization_mandarin": "漢字のみの歌詞は既定で中国語（標準語）として扱います。名前の読み方は異なる場合があります。",
-    "dislike_track": "低評価してスキップ"
+    "dislike_track": "低評価してスキップ",
+    "more_info": "詳細情報"
   },
   "home": {
     "title": "ホーム",
@@ -892,7 +904,8 @@
     "clear_message": "完了済みとエラーの記録をすべて削除します。進行中のタスクは影響を受けません。",
     "clear_confirm": "消去",
     "clear_cancel": "キャンセル",
-    "clear_done": "履歴を消去しました"
+    "clear_done": "履歴を消去しました",
+    "waiting_retry": "再試行待ち"
   },
   "download": {
     "downloading": "ダウンロード中…",
@@ -989,6 +1002,12 @@
     "load_more": "さらに読み込む",
     "no_more": "これ以上のおすすめはありません",
     "dislike_track": "この曲を低評価",
-    "dislike_artist": "このアーティストを低評価"
+    "dislike_artist": "このアーティストを低評価",
+    "save_to_library": "ライブラリに保存",
+    "copy_row": "アーティストとタイトルをコピー",
+    "column_title": "タイトル",
+    "column_artist": "アーティスト",
+    "column_status": "状態",
+    "column_actions": "操作"
   }
 }

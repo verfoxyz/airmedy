@@ -628,6 +628,26 @@ func (s *PlayerService) RemoveFromPlayback(_ context.Context, trackID string) er
 	return nil
 }
 
+// RemoveFromPlaybackAndAdvance stops the row if it is playing and then starts
+// the next queued track. Deleting the current song through a dislike uses this
+// path: playback continues instead of stopping on the deleted row.
+func (s *PlayerService) RemoveFromPlaybackAndAdvance(ctx context.Context, trackID string) error {
+	if strings.TrimSpace(trackID) == "" {
+		return nil
+	}
+	s.mu.RLock()
+	current := s.currentTrack
+	s.mu.RUnlock()
+	wasCurrent := current != nil && current.ID == trackID
+	if err := s.RemoveFromPlayback(ctx, trackID); err != nil {
+		return err
+	}
+	if !wasCurrent {
+		return nil
+	}
+	return s.Next()
+}
+
 // Next plays the next track in the queue.
 func (s *PlayerService) Next() error {
 	status := s.player.GetStatus()

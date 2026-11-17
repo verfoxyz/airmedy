@@ -484,7 +484,18 @@
     "source_disabled": "Desactivada",
     "source_drag_hint": "Arrastra el tirador para reordenar. Si no puedes arrastrar, usa las flechas.",
     "all_sources_disabled": "Todas las fuentes de búsqueda están desactivadas. Activa una en Ajustes → Fuentes de búsqueda.",
-    "source_save_failed": "No se pudo guardar el cambio. Se restauró la configuración anterior."
+    "source_save_failed": "No se pudo guardar el cambio. Se restauró la configuración anterior.",
+    "dislike_purge_files": "Eliminar archivos locales al no gustar",
+    "dislike_purge_files_hint": "Se eliminarán del disco el audio, la portada, la caché de streaming y las letras guardadas. No se puede deshacer.",
+    "dislike_purge_confirm": "Eliminar y no me gusta",
+    "dislike_purge_confirm_artist": "Entiendo que se eliminarán {count} pistas locales",
+    "dislike_purge_count": "Se eliminarán {count} pistas locales.",
+    "dislike_mark_confirm_title": "¿Marcar como no me gusta?",
+    "dislike_mark_confirm_body": "Solo se ocultará de las recomendaciones. No se elimina ningún archivo.",
+    "dislike_purge_confirm_title": "¿Eliminar y marcar como no me gusta?",
+    "dislike_purge_confirm_body": "Se eliminarán el audio local, la portada, la caché de streaming y las letras guardadas. No se puede deshacer.",
+    "dislike_enable_purge_title": "¿Activar la eliminación de archivos al no gustar?",
+    "dislike_enable_purge_body": "Al activarla, marcar como no me gusta también elimina audio local, portada, caché de streaming y letras. No se puede deshacer."
   },
   "sidebar": {
     "download": "Descargas y tareas",
@@ -552,7 +563,8 @@
     "secondary_romanization": "Romanización",
     "romanization_hint": "Romanización sin conexión: chino y coreano.",
     "romanization_mandarin": "Las letras solo con caracteres Han usan mandarín de forma predeterminada. La lectura de los nombres puede variar.",
-    "dislike_track": "No me gusta y saltar"
+    "dislike_track": "No me gusta y saltar",
+    "more_info": "Más información"
   },
   "home": {
     "title": "Inicio",
@@ -892,7 +904,8 @@
     "clear_message": "Se eliminarán todos los registros completados y fallidos. Las tareas en curso no se ven afectadas.",
     "clear_confirm": "Borrar",
     "clear_cancel": "Cancelar",
-    "clear_done": "Historial borrado"
+    "clear_done": "Historial borrado",
+    "waiting_retry": "Esperando para reintentar"
   },
   "download": {
     "downloading": "Descargando…",
@@ -989,6 +1002,12 @@
     "load_more": "Cargar más",
     "no_more": "No hay más recomendaciones",
     "dislike_track": "No me gusta esta canción",
-    "dislike_artist": "No me gusta este artista"
+    "dislike_artist": "No me gusta este artista",
+    "save_to_library": "Guardar en la biblioteca",
+    "copy_row": "Copiar artista y título",
+    "column_title": "Título",
+    "column_artist": "Artista",
+    "column_status": "Estado",
+    "column_actions": "Acciones"
   }
 }

@@ -158,6 +158,10 @@ var Module = fx.Module("app",
 		func(saver *mediarequest.Saver) catalog.SavedTracks { return saver },
 		func(cache *stream.Cache) download.CachedAudio { return cache },
 		func(lib *library.LibraryService) download.LocalFileRemover { return lib },
+		// A dislike with the purge setting on deletes local files through the same
+		// library path the delete dialog uses; the toggle is read from settings.
+		func(lib *library.LibraryService) lastfm.DislikeLocalPurger { return lib },
+		func(st *appsettings.SettingsService) lastfm.DislikeSettingsReader { return st },
 		func(st *appsettings.SettingsService) catalog.SettingsReader { return st },
 		// The Last.fm recommendation page matches its tracks through the same
 		// search pipeline the cloud search uses, so local files, stream cache and
@@ -198,7 +202,7 @@ var Module = fx.Module("app",
 		},
 		fx.ParamTags(``, `optional:"true"`),
 	)),
-	fx.Invoke(func(lc fx.Lifecycle, db *sqlite.DB, search domain.SearchService, lib *library.LibraryService, playerSvc *player.PlayerService, eqSvc *eq.EQService, lastfmSvc *lastfm.LastFmService, recommender *lastfm.Recommender, analysisSvc *analysis.AnalysisService, settingsSvc *appsettings.SettingsService, playlistSvc *playlist.PlaylistService, pairingSvc *pairing.Service, mobileSyncSvc *mobilesync.Service, downloadSvc *download.Service, mediaSaver *mediarequest.Saver, mediaWorker *mediarequest.Worker, cache *stream.Cache, logger *slog.Logger) {
+	fx.Invoke(func(lc fx.Lifecycle, db *sqlite.DB, search domain.SearchService, lib *library.LibraryService, playerSvc *player.PlayerService, eqSvc *eq.EQService, lastfmSvc *lastfm.LastFmService, recommender *lastfm.Recommender, analysisSvc *analysis.AnalysisService, settingsSvc *appsettings.SettingsService, playlistSvc *playlist.PlaylistService, pairingSvc *pairing.Service, mobileSyncSvc *mobilesync.Service, downloadSvc *download.Service, mediaSaver *mediarequest.Saver, mediaWorker *mediarequest.Worker, cache *stream.Cache, tracks domain.TrackRepository, mediaSvc *mediarequest.Service, logger *slog.Logger) {
 		// Deleting a streamed row must also drop its cached audio and release the
 		// decoder that holds the loopback URL. Wired here so app/library imports
 		// neither app/stream nor app/player.
@@ -253,9 +257,24 @@ var Module = fx.Module("app",
 						if !ok {
 							return
 						}
-						// The listener runs on the event loop: dispatch both the
-						// player remap and the recommendation refresh off it.
-						dispatchTrackMerged(payload, playerSvc.RemapTrack, recommender.RefreshAfterMerge)
+						// The listener runs on the event loop: dispatch the player remap,
+						// the recommendation refresh and the request convergence off it.
+						dispatchTrackMerged(payload, playerSvc.RemapTrack, recommender.RefreshAfterMerge,
+							func(ctx context.Context, toTrackID string) {
+								track, err := tracks.GetByID(ctx, toTrackID)
+								if err != nil || track == nil {
+									return
+								}
+								changed, err := mediaSvc.ConvergeForTrack(ctx, track)
+								if err != nil {
+									logger.Warn("converge media requests after merge", "track_id", toTrackID, "error", err)
+									return
+								}
+								if changed > 0 {
+									logger.Info("converged duplicate media requests after merge",
+										"track_id", toTrackID, "count", changed)
+								}
+							})
 					})
 				}
 				// Wire metadata changes to player state; favorites use their own listener.
@@ -406,6 +425,7 @@ func dispatchTrackMerged(
 	payload map[string]string,
 	remap func(context.Context, string, string),
 	refresh func(context.Context, string),
+	converge func(context.Context, string),
 ) {
 	fromTrackID := payload["from_track_id"]
 	toTrackID := payload["to_track_id"]
@@ -417,5 +437,8 @@ func dispatchTrackMerged(
 		defer cancel()
 		remap(ctx, fromTrackID, toTrackID)
 		refresh(ctx, toTrackID)
+		if converge != nil {
+			converge(ctx, toTrackID)
+		}
 	}()
 }

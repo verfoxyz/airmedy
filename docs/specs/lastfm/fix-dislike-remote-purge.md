@@ -1,6 +1,6 @@
 # Bug：不喜欢「彻底删除」未清理远程行、流缓存与残留列表项
 
-> 状态：待开工
+> 状态：✅ 已完成（`PurgeDislikeTargets` 现在覆盖 remote 行：走 `RemoveTrackFromLibrary` 删除行、该 identity 的流缓存行与音频文件、级联歌词，并先移出播放队列；本地行仍走 `DeleteTrackFile`；推荐 items/候选池/match_cache 仍由 dislike 事务清理；Go 测试覆盖 remote/local 同时命中与仅 remote）
 > 现象：打开「不喜欢时同时删除本地文件」后标记不喜欢，流缓存音频仍在、remote 行仍在、推荐列表项残留
 > 关联：`dislike-purge-files.md`、`dislike-purge.md`、`fix-dislike-covers.md`
 

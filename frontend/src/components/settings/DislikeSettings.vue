@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Loader2, ThumbsDown, UserX, X } from '@lucide/vue'
+import { Switch } from '@airmedy/ui'
 import { DISLIKE_KIND_ARTIST, useDislikeStore } from '@/stores/dislike'
+import { useAppStore } from '@/stores/app'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import SettingSection from './SettingSection.vue'
 
 /**
@@ -14,8 +17,42 @@ import SettingSection from './SettingSection.vue'
  */
 const { t } = useI18n()
 const dislikeStore = useDislikeStore()
+const appStore = useAppStore()
+const togglingPurge = ref(false)
+// Turning the destructive setting on is confirmed first; the switch stays off
+// until the user accepts, so a cancel writes nothing.
+const enableConfirmOpen = ref(false)
 
 const items = computed(() => dislikeStore.items)
+
+async function applyPurge(enabled: boolean) {
+  togglingPurge.value = true
+  try {
+    await appStore.updateDislikePurgeFiles(enabled)
+  } catch (error) {
+    console.error('Failed to save the dislike purge setting', error)
+  } finally {
+    togglingPurge.value = false
+  }
+}
+
+/** Enabling asks first; disabling is immediate. */
+function setPurge(enabled: boolean) {
+  if (enabled) {
+    enableConfirmOpen.value = true
+    return
+  }
+  void applyPurge(false)
+}
+
+function cancelEnablePurge() {
+  enableConfirmOpen.value = false
+}
+
+async function confirmEnablePurge() {
+  enableConfirmOpen.value = false
+  await applyPurge(true)
+}
 
 onMounted(() => dislikeStore.init())
 
@@ -38,7 +75,34 @@ async function remove(id: string) {
 
 <template>
   <SettingSection :icon="ThumbsDown" :label="$t('settings.dislikes.title')" variant="panel">
+    <template #header-extra>
+      <label class="flex items-center gap-2 text-xs font-medium text-dim">
+        <span>{{ $t('settings.dislike_purge_files') }}</span>
+        <Switch
+          :model-value="appStore.dislikePurgeFiles"
+          :disabled="togglingPurge"
+          data-test="dislike-purge-toggle"
+          @update:model-value="(value) => setPurge(Boolean(value))"
+        />
+      </label>
+    </template>
+
     <p class="mb-4 text-sm text-dim">{{ $t('settings.dislikes.description') }}</p>
+    <p
+      v-if="appStore.dislikePurgeFiles"
+      class="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+      data-test="dislike-purge-hint"
+    >
+      {{ $t('settings.dislike_purge_files_hint') }}
+    </p>
+    <p
+      v-if="dislikeStore.purgeError"
+      class="mb-4 text-xs text-destructive"
+      role="alert"
+      data-test="dislike-purge-error"
+    >
+      {{ dislikeStore.purgeError }}
+    </p>
 
     <div
       v-if="dislikeStore.loading && items.length === 0"
@@ -89,5 +153,17 @@ async function remove(id: string) {
         </button>
       </div>
     </div>
+    <ConfirmDialog
+      :open="enableConfirmOpen"
+      :title="$t('settings.dislike_enable_purge_title')"
+      :message="$t('settings.dislike_enable_purge_body')"
+      :confirm-label="$t('common.confirm')"
+      :cancel-label="$t('common.cancel')"
+      danger
+      data-test="dislike-enable-confirm"
+      @confirm="confirmEnablePurge"
+      @cancel="cancelEnablePurge"
+    />
   </SettingSection>
+
 </template>

@@ -2,8 +2,11 @@ package lastfm
 
 import (
 	"context"
+	"errors"
+	"sort"
 	"sync"
 	"testing"
+	"time"
 
 	"airmedy/internal/domain"
 )
@@ -88,7 +91,7 @@ func TestDislikeHidesDiscoverRowsAndUndislikeRestores(t *testing.T) {
 	recommender, store, _, _ := dislikeDiscoverFixture(t)
 
 	if _, err := recommender.Dislike(
-		ctx, domain.LastFmDislikeTrack, candidateKey("Drop", "Dropped"), "Dropped", "Drop",
+		ctx, domain.LastFmDislikeTrack, candidateKey("Drop", "Dropped"), "Dropped", "Drop", false,
 	); err != nil {
 		t.Fatalf("Dislike: %v", err)
 	}
@@ -128,7 +131,7 @@ func TestDislikeArtistHidesEveryTrackOfThatArtist(t *testing.T) {
 	}
 
 	if _, err := recommender.Dislike(
-		ctx, domain.LastFmDislikeArtist, "", "", "Drop",
+		ctx, domain.LastFmDislikeArtist, "", "", "Drop", false,
 	); err != nil {
 		t.Fatalf("Dislike artist: %v", err)
 	}
@@ -150,18 +153,19 @@ func TestDislikeIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	recommender, _, dislikes, _ := dislikeDiscoverFixture(t)
 
-	first, err := recommender.Dislike(
-		ctx, domain.LastFmDislikeTrack, "", "Dropped", "Drop",
+	firstResult, err := recommender.Dislike(
+		ctx, domain.LastFmDislikeTrack, "", "Dropped", "Drop", false,
 	)
 	if err != nil {
 		t.Fatalf("first Dislike: %v", err)
 	}
-	second, err := recommender.Dislike(
-		ctx, domain.LastFmDislikeTrack, "", "Dropped", "Drop",
+	secondResult, err := recommender.Dislike(
+		ctx, domain.LastFmDislikeTrack, "", "Dropped", "Drop", false,
 	)
 	if err != nil {
 		t.Fatalf("second Dislike: %v", err)
 	}
+	first, second := firstResult.Entry, secondResult.Entry
 	if first.ID != second.ID || dislikes.count() != 1 {
 		t.Fatalf("rows = %d, ids = %q/%q, want one stable row", dislikes.count(), first.ID, second.ID)
 	}
@@ -224,6 +228,173 @@ func TestRadioSkipsDislikedCandidates(t *testing.T) {
 	for _, track := range result.Tracks {
 		if track.ExternalID == "0" {
 			t.Fatalf("track %+v is the disliked candidate", track)
+		}
+	}
+}
+
+// fakePurgeSettings answers the purge toggle.
+type fakePurgeSettings struct{ enabled bool }
+
+func (f fakePurgeSettings) GetSettings(context.Context) (*domain.AppSettings, error) {
+	return &domain.AppSettings{DislikePurgeFiles: f.enabled}, nil
+}
+
+// fakeTracePurger records the keys a dislike invalidates.
+type fakeTracePurger struct {
+	keys []string
+	err  error
+}
+
+func (f *fakeTracePurger) PurgeDislikeTraces(_ context.Context, keys []string) error {
+	f.keys = append([]string{}, keys...)
+	return f.err
+}
+
+// fakeLocalPurger records the local purge call.
+type fakeLocalPurger struct {
+	calls   int
+	deleted int
+	err     error
+	kind    string
+	artist  string
+}
+
+func (f *fakeLocalPurger) CountDislikeTargets(
+	context.Context, string, string, string, string,
+) (int, error) {
+	return f.deleted, nil
+}
+
+func (f *fakeLocalPurger) PurgeDislikeTargets(
+	_ context.Context, kind, _, _, artist string,
+) (int, error) {
+	f.calls++
+	f.kind = kind
+	f.artist = artist
+	return f.deleted, f.err
+}
+
+func TestDislikePurgesRecommendationTracesWithoutTouchingFiles(t *testing.T) {
+	ctx := context.Background()
+	recommender, _, _, _ := dislikeDiscoverFixture(t)
+	purger := &fakeTracePurger{}
+	recommender.SetDislikeTracePurger(purger)
+	local := &fakeLocalPurger{deleted: 1}
+	recommender.SetDislikeLocalPurger(local)
+
+	key := candidateKey("Drop", "Dropped")
+	result, err := recommender.Dislike(
+		ctx, domain.LastFmDislikeTrack, key, "Dropped", "Drop", false)
+	if err != nil {
+		t.Fatalf("Dislike: %v", err)
+	}
+	if len(purger.keys) != 1 || purger.keys[0] != key {
+		t.Fatalf("trace keys = %v, want [%s]", purger.keys, key)
+	}
+	if local.calls != 0 {
+		t.Fatal("the local files were touched with the purge setting off")
+	}
+	if result.DeletedTracks != 0 || result.PurgeError != "" {
+		t.Fatalf("result = %+v, want no file purge", result)
+	}
+}
+
+func TestDislikeWithPurgeDeletesLocalFiles(t *testing.T) {
+	ctx := context.Background()
+	recommender, _, _, _ := dislikeDiscoverFixture(t)
+	recommender.SetDislikeLocalPurger(&fakeLocalPurger{deleted: 2})
+	recommender.SetDislikeSettings(fakePurgeSettings{enabled: true})
+
+	result, err := recommender.Dislike(
+		ctx, domain.LastFmDislikeTrack, candidateKey("Drop", "Dropped"), "Dropped", "Drop", true)
+	if err != nil {
+		t.Fatalf("Dislike: %v", err)
+	}
+	if result.DeletedTracks != 2 {
+		t.Fatalf("deleted = %d, want 2", result.DeletedTracks)
+	}
+	if result.Entry.ID == "" {
+		t.Fatal("the dislike row was not saved")
+	}
+}
+
+func TestDislikePurgeFailureStillKeepsTheMark(t *testing.T) {
+	ctx := context.Background()
+	recommender, _, dislikes, _ := dislikeDiscoverFixture(t)
+	local := &fakeLocalPurger{deleted: 1, err: errors.New("file is locked")}
+	recommender.SetDislikeLocalPurger(local)
+	recommender.SetDislikeSettings(fakePurgeSettings{enabled: true})
+
+	result, err := recommender.Dislike(
+		ctx, domain.LastFmDislikeTrack, "", "Dropped", "Drop", true)
+	if err != nil {
+		t.Fatalf("Dislike: %v", err)
+	}
+	if result.PurgeError != "file is locked" {
+		t.Fatalf("purge error = %q, want the delete failure", result.PurgeError)
+	}
+	if dislikes.count() != 1 {
+		t.Fatalf("dislikes = %d, want the mark kept", dislikes.count())
+	}
+}
+
+func TestDislikeRejectsPurgeWhenTheSettingIsOff(t *testing.T) {
+	ctx := context.Background()
+	recommender, _, dislikes, _ := dislikeDiscoverFixture(t)
+	recommender.SetDislikeLocalPurger(&fakeLocalPurger{})
+	recommender.SetDislikeSettings(fakePurgeSettings{enabled: false})
+
+	if _, err := recommender.Dislike(
+		ctx, domain.LastFmDislikeTrack, "", "Dropped", "Drop", true); err == nil {
+		t.Fatal("Dislike accepted a purge with the setting off")
+	}
+	if dislikes.count() != 0 {
+		t.Fatalf("dislikes = %d, want nothing written", dislikes.count())
+	}
+}
+
+func TestArtistDislikeCollectsEveryStoredTraceKey(t *testing.T) {
+	ctx := context.Background()
+	recommender, store, _, _ := dislikeDiscoverFixture(t)
+	purger := &fakeTracePurger{}
+	recommender.SetDislikeTracePurger(purger)
+
+	one := candidateKey("Drop", "One")
+	two := candidateKey("Drop", "Two")
+	other := candidateKey("Keep", "Three")
+	list := &domain.RecommendationList{
+		Kind:  domain.LastFmRecommendationDiscover,
+		Title: "lastfm.discover",
+		Items: []domain.RecommendationItem{
+			{Kind: domain.LastFmRecommendationDiscover, MatchKey: one, Title: "One", Artist: "Drop"},
+			{Kind: domain.LastFmRecommendationDiscover, MatchKey: two, Title: "Two", Artist: "Drop"},
+			{Kind: domain.LastFmRecommendationDiscover, MatchKey: other, Title: "Three", Artist: "Keep"},
+		},
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := store.SaveRecommendationList(ctx, list); err != nil {
+		t.Fatalf("SaveRecommendationList: %v", err)
+	}
+	pool := []domain.RecommendationItem{
+		{Kind: domain.LastFmRecommendationDiscover, MatchKey: candidateKey("Drop", "Four"), Title: "Four", Artist: "Drop"},
+	}
+	if err := store.SaveRecommendationCandidates(
+		ctx, domain.LastFmRecommendationDiscover, pool); err != nil {
+		t.Fatalf("SaveRecommendationCandidates: %v", err)
+	}
+
+	if _, err := recommender.Dislike(
+		ctx, domain.LastFmDislikeArtist, "", "", "Drop", false); err != nil {
+		t.Fatalf("Dislike artist: %v", err)
+	}
+	want := []string{one, two, candidateKey("Drop", "Four")}
+	sort.Strings(want)
+	if len(purger.keys) != len(want) {
+		t.Fatalf("trace keys = %v, want %v", purger.keys, want)
+	}
+	for index, key := range want {
+		if purger.keys[index] != key {
+			t.Fatalf("trace keys = %v, want %v", purger.keys, want)
 		}
 	}
 }

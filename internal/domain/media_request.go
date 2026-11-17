@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -69,6 +70,19 @@ type MediaRequest struct {
 	FinishedAt    *time.Time `db:"finished_at" json:"finished_at,omitempty"`
 }
 
+// MediaRequestMatchKey is the song identity two requests share across
+// providers: normalised artist + NUL + normalised title, the same shape the
+// recommendation match cache uses. Empty when either half is unknown, so an
+// old row without a snapshot never matches the whole table.
+func MediaRequestMatchKey(title, artist string) string {
+	titleKey := NormalizationKey(strings.TrimSpace(title))
+	artistKey := NormalizationKey(strings.TrimSpace(artist))
+	if titleKey == "" || artistKey == "" {
+		return ""
+	}
+	return artistKey + "\x00" + titleKey
+}
+
 // MediaRequestEvent is one state/phase transition, kept for the tasks page's
 // history detail. It is append-only and never drives behaviour.
 type MediaRequestEvent struct {
@@ -91,6 +105,10 @@ type MediaRequestRepository interface {
 	// ListActive returns rows the worker must look at: wanted/queued/running,
 	// plus failed rows whose retry is due (next_attempt_at <= now).
 	ListActive(ctx context.Context, now time.Time) ([]*MediaRequest, error)
+	// ListOrphans returns failed rows whose track_id no longer exists. A merge
+	// or delete made them permanently unresolvable, so the startup scan settles
+	// them without waiting for their retry backoff.
+	ListOrphans(ctx context.Context) ([]*MediaRequest, error)
 	// UpdateIntent records a new save without touching a live run. reset moves
 	// a terminal row back to wanted (attempts and error cleared).
 	UpdateIntent(ctx context.Context, id, desired, quality, trackID string, reset bool, at time.Time) error

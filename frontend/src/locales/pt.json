@@ -484,7 +484,18 @@
     "source_disabled": "Desativada",
     "source_drag_hint": "Arrasta a pega para reordenar. Sem arrastar, usa as setas.",
     "all_sources_disabled": "Todas as fontes de pesquisa estão desativadas. Ativa uma em Definições → Fontes de pesquisa.",
-    "source_save_failed": "Não foi possível guardar a alteração. A definição anterior foi reposta."
+    "source_save_failed": "Não foi possível guardar a alteração. A definição anterior foi reposta.",
+    "dislike_purge_files": "Eliminar ficheiros locais ao não gostar",
+    "dislike_purge_files_hint": "O áudio, a capa, a cache de streaming e as letras guardadas serão eliminados do disco. Não pode ser desfeito.",
+    "dislike_purge_confirm": "Eliminar e não gosto",
+    "dislike_purge_confirm_artist": "Compreendo que {count} faixas locais serão eliminadas",
+    "dislike_purge_count": "{count} faixas locais serão eliminadas.",
+    "dislike_mark_confirm_title": "Marcar como não gosto?",
+    "dislike_mark_confirm_body": "Apenas será ocultado das recomendações. Nenhum ficheiro é eliminado.",
+    "dislike_purge_confirm_title": "Eliminar e marcar como não gosto?",
+    "dislike_purge_confirm_body": "O áudio local, a capa, a cache de streaming e as letras guardadas serão eliminados. Não pode ser desfeito.",
+    "dislike_enable_purge_title": "Ativar a eliminação de ficheiros ao não gostar?",
+    "dislike_enable_purge_body": "Quando ativado, marcar como não gosto também elimina áudio local, capa, cache de streaming e letras. Não pode ser desfeito."
   },
   "sidebar": {
     "download": "Downloads e tarefas",
@@ -552,7 +563,8 @@
     "secondary_romanization": "Romanização",
     "romanization_hint": "Romanização offline: chinês e coreano.",
     "romanization_mandarin": "Letras apenas com caracteres Han usam mandarim por padrão. A leitura de nomes pode variar.",
-    "dislike_track": "Não gosto e avançar"
+    "dislike_track": "Não gosto e avançar",
+    "more_info": "Mais informações"
   },
   "home": {
     "title": "Início",
@@ -892,7 +904,8 @@
     "clear_message": "Todos os registros concluídos e com falha serão excluídos. As tarefas em andamento não são afetadas.",
     "clear_confirm": "Limpar",
     "clear_cancel": "Cancelar",
-    "clear_done": "Histórico limpo"
+    "clear_done": "Histórico limpo",
+    "waiting_retry": "À espera de nova tentativa"
   },
   "download": {
     "downloading": "Baixando…",
@@ -989,6 +1002,12 @@
     "load_more": "Carregar mais",
     "no_more": "Não há mais recomendações",
     "dislike_track": "Não gosto desta faixa",
-    "dislike_artist": "Não gosto deste artista"
+    "dislike_artist": "Não gosto deste artista",
+    "save_to_library": "Guardar na biblioteca",
+    "copy_row": "Copiar artista e título",
+    "column_title": "Título",
+    "column_artist": "Artista",
+    "column_status": "Estado",
+    "column_actions": "Ações"
   }
 }

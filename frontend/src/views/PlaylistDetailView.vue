@@ -15,6 +15,7 @@ import { useContextMenu } from '@/composables/useContextMenu'
 import { usePlaylistContextMenu } from '@/composables/usePlaylistContextMenu'
 import ContextMenu from '@/components/ContextMenu.vue'
 import DetailPageLayout from '@/components/DetailPageLayout.vue'
+import StickyDetailBar from '@/components/StickyDetailBar.vue'
 import PlaylistArtwork from '@/components/PlaylistArtwork.vue'
 import CreatePlaylistDialog from '@/components/CreatePlaylistDialog.vue'
 import SmartPlaylistDialog from '@/components/SmartPlaylistDialog.vue'
@@ -39,6 +40,30 @@ const tracks = shallowRef<TrackDTO[]>([])
 const isLoading = ref(true)
 const tracksLoading = ref(false)
 const searchQuery = ref('')
+const layout = ref<{ scrollContainerRef: HTMLElement | null } | null>(null)
+const titleSentinel = ref<HTMLElement | null>(null)
+const showStickyBar = ref(false)
+
+function goBack() {
+  router.back()
+}
+
+// The sticky bar's more menu reuses the playlist's existing context actions.
+const stickyMoreItems = computed(() =>
+  playlist.value
+    ? buildPlaylistMenuItems(playlist.value, {
+        includePlaylistMenu: false,
+        includeExport: true,
+        onRename: () => openRenameDialog(),
+        onEditSmartRules: () => {
+          smartEditDialogOpen.value = true
+        },
+        onDelete: () => {
+          deleteConfirmOpen.value = true
+        },
+      })
+    : [],
+)
 
 const filteredTracks = computed(() => {
   if (!searchQuery.value) return tracks.value
@@ -366,12 +391,22 @@ async function handleReorder(newTracks: TrackDTO[]) {
 </script>
 
 <template>
+  <div class="relative h-full">
   <DetailPageLayout
     v-if="playlist"
+    ref="layout"
     :loading="isLoading"
     :theme="playlistTheme"
     :title="playlist.name"
+    :body-fill-height="false"
   >
+    <template #title>
+      <h1 class="text-2xl @sm:text-3xl @md:text-4xl @lg:text-5xl font-bold tracking-tight line-clamp-2 leading-snug text-foreground">
+        {{ playlist.name }}
+      </h1>
+      <span ref="titleSentinel" class="block h-px -mt-2" aria-hidden="true" />
+    </template>
+
     <template #top-right>
       <div class="relative w-64">
         <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dim" />
@@ -440,6 +475,9 @@ async function handleReorder(newTracks: TrackDTO[]) {
         :is-loading="tracksLoading"
         :show-artwork="true"
         :simple-mode="true"
+        :virtual-scroll="false"
+        auto-height
+        :header-offset="showStickyBar ? 56 : 0"
         :allow-dnd="playlist.id !== 'favorites' && !playlist.is_smart"
         :context-menu-options="{ playlistId: playlist.id, isSmartPlaylist: playlist.is_smart }"
         @play-track="(_, index, queue) => playerStore.playTracks(queue, index)"
@@ -449,6 +487,22 @@ async function handleReorder(newTracks: TrackDTO[]) {
       />
     </template>
   </DetailPageLayout>
+
+  <StickyDetailBar
+    v-if="playlist"
+    v-model:visible="showStickyBar"
+    v-model="searchQuery"
+    :title="playlist.name"
+    :sentinel="titleSentinel"
+    :root="layout?.scrollContainerRef ?? null"
+    :can-play="filteredTracks.length > 0"
+    :can-shuffle="filteredTracks.length > 0"
+    :more-items="stickyMoreItems"
+    test-prefix="playlist"
+    @back="goBack"
+    @play="playPlaylist"
+    @shuffle="shufflePlaylist"
+  />
   <div v-else-if="isLoading" class="h-full flex items-center justify-center">
     <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
   </div>
@@ -483,4 +537,5 @@ async function handleReorder(newTracks: TrackDTO[]) {
     danger
     @confirm="handleDelete"
   />
+  </div>
 </template>

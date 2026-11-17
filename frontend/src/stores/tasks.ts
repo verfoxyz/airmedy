@@ -33,8 +33,10 @@ export function taskInTab(task: TaskRunView, tab: TaskTab): boolean {
   switch (tab) {
     case 'all':
       return true
-    case 'active':
-      return task.state === 'active'
+	case 'active':
+		// A request waiting for its next retry is unfinished: it belongs with
+		// the active work, worded separately by the row.
+		return task.state === 'active' || task.state === 'waiting'
     case 'done':
       return task.state === 'done' || (task.kind === 'cache' && task.state === 'canceled')
     case 'failed':

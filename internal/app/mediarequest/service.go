@@ -47,6 +47,12 @@ type UpsertInput struct {
 // package out of the download pipeline.
 type LocalTrackChecker interface {
 	HasLocalTrack(ctx context.Context, provider, externalID string) (bool, error)
+	// ResolveLocalTrack returns the playable row an identity currently maps to,
+	// or nil. Used when converging the other identities of one song.
+	ResolveLocalTrack(ctx context.Context, provider, externalID string) (*domain.TrackDTO, error)
+	// FindLocalMatch finds a playable row for a song snapshot, which is all a
+	// request has left after a merge deleted its track row.
+	FindLocalMatch(ctx context.Context, title, artist string) (*domain.TrackDTO, error)
 }
 
 // SetLocalTrackChecker installs the checker used to re-open a finished request
@@ -178,7 +184,15 @@ func (s *Service) InvalidateLocalFile(ctx context.Context, provider, externalID 
 	if err != nil || existing == nil {
 		return false, err
 	}
+	// The deleted file may be the only local copy of a song other identities
+	// also requested. Converge those too; the deleted identity itself is left
+	// alone so an explicit re-save can still run it.
+	exclude := map[string]struct{}{existing.ID: {}}
+	matchKey := domain.MediaRequestMatchKey(existing.Title, existing.Artist)
 	if existing.State != domain.MediaRequestStateDone {
+		if _, convergeErr := s.convergeMatchKey(ctx, matchKey, exclude); convergeErr != nil {
+			s.logger.Warn("media request: cannot converge duplicate requests", "error", convergeErr)
+		}
 		return false, nil
 	}
 	if err := s.repo.ReopenDone(ctx, existing.ID, time.Now()); err != nil {
@@ -187,7 +201,99 @@ func (s *Service) InvalidateLocalFile(ctx context.Context, provider, externalID 
 	if updated, getErr := s.repo.GetByID(ctx, existing.ID); getErr == nil && updated != nil {
 		s.record(ctx, updated, updated.State, "reopened: local file deleted")
 	}
+	if _, convergeErr := s.convergeMatchKey(ctx, matchKey, exclude); convergeErr != nil {
+		s.logger.Warn("media request: cannot converge duplicate requests", "error", convergeErr)
+	}
 	return true, nil
+}
+
+// ConvergeForTrack closes every other request of the same song after a merge.
+//
+// A merge folds one identity into a local row; other providers' requests for
+// the same song keep a track id that no longer exists and would retry forever.
+// Each is marked done when its own identity has a playable row, otherwise
+// canceled. History rows are kept, and a later explicit save still reopens a
+// canceled request.
+func (s *Service) ConvergeForTrack(ctx context.Context, track *domain.TrackDTO) (int, error) {
+	if track == nil {
+		return 0, nil
+	}
+	artist := ""
+	if len(track.Artists) > 0 && track.Artists[0] != nil {
+		artist = track.Artists[0].Name
+	}
+	if strings.TrimSpace(artist) == "" {
+		artist = track.RawArtistNames
+	}
+	matchKey := domain.MediaRequestMatchKey(track.Title, artist)
+	if matchKey == "" {
+		return 0, nil
+	}
+	return s.convergeMatchKey(ctx, matchKey, nil)
+}
+
+// convergeMatchKey closes the non-terminal requests of one song except the
+// excluded ids. Failures are logged, not returned: convergence is a cleanup on
+// top of a transition that already succeeded.
+func (s *Service) convergeMatchKey(
+	ctx context.Context, matchKey string, exclude map[string]struct{},
+) (int, error) {
+	if matchKey == "" {
+		return 0, nil
+	}
+	requests, err := s.repo.List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now()
+	changed := 0
+	for _, request := range requests {
+		if request == nil {
+			continue
+		}
+		if _, skip := exclude[request.ID]; skip {
+			continue
+		}
+		switch request.State {
+		case domain.MediaRequestStateDone, domain.MediaRequestStateCanceled:
+			continue
+		}
+		if domain.MediaRequestMatchKey(request.Title, request.Artist) != matchKey {
+			continue
+		}
+		if local := s.resolveLocal(ctx, request); local != nil {
+			if markErr := s.repo.MarkDone(ctx, request.ID, local.ID, now); markErr != nil {
+				s.logger.Warn("media request: cannot converge a duplicate request",
+					"request_id", request.ID, "error", markErr)
+				continue
+			}
+			s.record(ctx, request, domain.MediaRequestStateDone, "resolved: local row")
+		} else {
+			if markErr := s.repo.MarkCanceled(ctx, request.ID, now); markErr != nil {
+				s.logger.Warn("media request: cannot cancel a duplicate request",
+					"request_id", request.ID, "error", markErr)
+				continue
+			}
+			s.record(ctx, request, domain.MediaRequestStateCanceled, "canceled: duplicate identity")
+		}
+		changed++
+	}
+	return changed, nil
+}
+
+// resolveLocal asks the checker for a playable row, treating an error as "no
+// local copy" so a failed lookup cannot keep a request alive.
+func (s *Service) resolveLocal(ctx context.Context, request *domain.MediaRequest) *domain.TrackDTO {
+	if s.localTrack == nil {
+		return nil
+	}
+	track, err := s.localTrack.ResolveLocalTrack(ctx, request.Provider, request.ExternalID)
+	if err != nil {
+		s.logger.Warn("media request: cannot resolve the local row",
+			"request_id", request.ID, "error", err)
+		return nil
+	}
+	return track
 }
 
 func (s *Service) List(ctx context.Context) ([]*domain.MediaRequest, error) {

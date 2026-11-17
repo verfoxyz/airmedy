@@ -115,6 +115,17 @@ Hash history mode (`createWebHashHistory`). All views lazy-loaded except HomeVie
 
 The `/mini-player` route bypasses the MainLayout wrapper and renders directly.
 
+Detail pages (`/lastfm/lists/:kind`, `/playlists/:id` including the virtual
+Favorites playlist) share `StickyDetailBar.vue`: the whole content area is the
+one scroller, the hero scrolls with it, and an `IntersectionObserver` on a
+sentinel after the title reveals a 56px glass `role="toolbar"` with
+back / title / play / shuffle / more / search. The bar's search is v-model'd to
+the page's filter and its more menu reuses the page's existing actions.
+`PlaylistDetailView` keeps the hero visuals but sets `body-fill-height=false`
+and renders `TrackTable` with `virtual-scroll=false auto-height`, so the list no
+longer owns a separate scrollbar. Pages without a hero (for example Recently
+Added) do not use the bar.
+
 ## Search Page (`/search`)
 
 `SearchView` owns the local/cloud switch (a `TabSwitcher`, default local). The two
@@ -322,20 +333,36 @@ artist. The weekly detail adds `ChevronLeft` / `ChevronRight` week navigation
 (`GetWeeklyEchoWeek(from)`, `prev_from` / `next_from` disabled at the ends) and
 each row shows its `lastfm.plays_count`; the discover detail ends in a
 **load more** button (`LoadMoreRecommendationItems`, disabled at `has_more=false`).
-The rows reuse `TopTrackRow` (match status, play, save, suspicious-duration
-chip) at `TrackTable` density (56px rows, `px-2`, no per-row rounding). Cover,
-duration and playable-row parsing come from the shared `lib/lastfmTracks.ts`.
+The rows are a table (`TopTrackRow`): a sticky header with `# / Title / Artist /
+Status / Actions`, 56px rows, `px-2`, no per-row rounding. The title column
+starts with a 40×40 `rounded-md` cover (placeholder icon when Last.fm has none
+or the image fails), so artwork does not need its own column.
+Columns come from one shared constant (`lib/lastfmRowColumns.ts`):
+`48px / minmax(180px,1.2fr) / minmax(140px,1fr) / 120px / 96px` at `@md`; below that
+the artist column is hidden and its name renders as a subtitle under the title.
+The status column shows one chip: matching / no match / suspicious / in library /
+matched from a source. Row number becomes a playing icon for the current local
+row; hover reveals play, save-or-favorite and more (the more button opens the
+same `useLastFmRowMenu` menu as right-click). Title click and double-click play;
+the artist opens its page once the row resolves. Weekly play counts stay beside
+the title. Playable-row parsing comes from the shared `lib/lastfmTracks.ts`.
 Once the hero title scrolls out of the page's scroller, a 56px glass toolbar
 slides in at the top of the content area (back, truncated title, play, more, and
 a search icon that expands to a 220px `Input`); visibility comes from an
 `IntersectionObserver` on a sentinel under the title, rooted at the page's scroll
 container — no scroll listener. The sticky search shares `searchQuery` with the
 hero search. Because the route name is shared, the view watches the parameter and
-reloads when the user moves between cards. A row's context menu offers **refresh
-this track's source** (`RefreshRecommendationItem(kind, match_key)`): it deletes
-the shared match cache entry, clears that row's cached source results and failed
-providers, resets it to `matching`, persists it and re-queues it through the same
-workers. Other rows keep their caches and no Last.fm content request is made. A
+reloads when the user moves between cards. A row's context menu (`useLastFmRowMenu`) mirrors a library row: **play**, **play
+next**, **add to queue**, **start radio**, **add to playlist ▸**, **save to
+library** (or **favorite** once in library), **go to artist/album**, **copy
+artist and title**, then **refresh this track's source**
+(`RefreshRecommendationItem(kind, match_key)`), **dislike this track** and
+**dislike this artist**. Unavailable actions stay in place and are disabled
+(play actions while the row is `matching`); the play/queue/playlist/favorite
+paths resolve the row through the same `preparePlayback` registration as the
+play button. Refresh deletes the shared match cache entry, clears that row's
+cached source results and failed providers, resets it to `matching`, persists it
+and re-queues it through the same workers. Other rows keep their caches and no Last.fm content request is made. A
 row already `matching` disables the action.
 
 Cover priority is fixed: a real Last.fm image (`LastFmTrack.ImageURL`, placeholder
@@ -381,8 +408,19 @@ added" notice. The session is in-memory: ordinary playback replacing the queue o
 an emptied queue ends it, while next/previous inside the queue keeps it on.
 
 **Dislikes.** A local exclusion list (`dislikes`, kind `track` / `artist`) hides
-an identity from Discover, the recommendation lists and radio without touching
-the library or the Last.fm account. `Dislike(kind, match_key, title, artist)`,
+an identity from Discover, the recommendation lists and radio. By default it
+touches neither the library nor the Last.fm account; with Settings → Dislikes →
+"delete local files on dislike" on, the mark also deletes the matching local
+audio through `DeleteTrackFile` or the matching remote row through
+`RemoveTrackFromLibrary` (row, stream cache and cached audio, saved lyrics;
+a local row also removes the file and unreferenced artwork), advances playback
+when the current track is removed, and the UI
+always confirms first, even with the toggle off (`DislikeConfirmDialog.vue`: plain
+mark confirmation off, delete-and-mark with the file count on; artist-level needs
+the acknowledgement). Enabling the toggle asks for its own confirmation. A partial delete failure is reported without dropping the
+mark. The dislike always purges its recommendation rows, candidate-pool entries
+and match-cache keys in one transaction, while the `dislikes` snapshot keeps the
+name visible in Settings. `Dislike(kind, match_key, title, artist)`,
 `Undislike(id)` and `ListDislikes()` back `stores/dislike.ts`, which caches the
 sets for instant filtering; `dislike:updated` carries the full list and refreshes
 that cache. The detail-row menu offers **don't like this track** and **don't
@@ -645,6 +683,10 @@ Measured from source — quote these from here, not from memory:
 - Sidebar: resizable 180–260px, 250px default (above). The resizer handle is `w-px
   bg-foreground/[0.06]`.
 - `PlayerFooter`: `h-[72px]`, `bg-background`, top border `border-foreground/[0.06]`.
+  The left slot keeps the 48×48 cover thumbnail: its left click is the single
+  fullscreen entry (`player.fullscreen`) and its right-click track menu is kept.
+  The right control group ends with an `Info` button (`player.more_info`) that
+  opens the track info drawer; there is no separate Maximize button.
 - Headings are Tailwind scale, not fixed px: view hero `text-4xl font-bold
   tracking-tight` (subtitle `text-xl`), section headers `text-xl font-semibold
   tracking-tight`.

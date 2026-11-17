@@ -8,6 +8,7 @@ import ExportLyricsDialog from './components/ExportLyricsDialog.vue'
 import CreatePlaylistWithTracksDialog from './components/CreatePlaylistWithTracksDialog.vue'
 import MobilePairingDialog from './components/MobilePairingDialog.vue'
 import SyncProgressDialog from './components/settings/SyncProgressDialog.vue'
+import DislikeConfirmDialog from './components/DislikeConfirmDialog.vue'
 import DevToolsOverlay from './components/DevToolsOverlay.vue'
 import { hexToRgba } from '@airmedy/utils'
 import { usePlayerStore } from './stores/player'
@@ -246,6 +247,7 @@ watch(() => playerStore.playerMode, (newMode) => {
     :progress="librarySyncStore.progress"
     :complete="librarySyncStore.complete"
   />
+  <DislikeConfirmDialog />
 </template>
 
 <style>

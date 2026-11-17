@@ -290,6 +290,10 @@ type MediaRequestInvalidator interface {
 // queue, so nothing keeps pointing at a row that no longer exists.
 type PlaybackRemover interface {
 	RemoveFromPlayback(ctx context.Context, trackID string) error
+	// RemoveFromPlaybackAndAdvance also starts the next queued track when the
+	// removed row was the one playing. A dislike purge uses it so deleting the
+	// current song does not leave playback stopped.
+	RemoveFromPlaybackAndAdvance(ctx context.Context, trackID string) error
 }
 
 // SetStreamCacheDiscarder wires the stream cache a remote row's deletion must

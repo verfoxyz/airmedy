@@ -544,6 +544,10 @@ type AppSettings struct {
 	PreferLocalArtistArtwork bool   `json:"prefer_local_artist_artwork"`
 	LastScanVersion          string `json:"last_scan_version"`
 	PreventSleepWhilePlaying bool   `json:"prevent_sleep_while_playing"`
+	// DislikePurgeFiles makes a dislike also delete the local audio, artwork,
+	// stream cache and saved lyrics of the song or artist. Off by default: the
+	// filter itself never touches the library.
+	DislikePurgeFiles        bool   `json:"dislike_purge_files"`
 	RemoteServerEnabled      bool   `json:"remote_server_enabled"`
 	RemoteServerPort         int    `json:"remote_server_port"`
 	RemoteServerPassword     string `json:"remote_server_password"`

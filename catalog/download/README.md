@@ -314,9 +314,11 @@ still downloading?" while rendering. A download reaching `done` or a permanent
 
 `DownloadService.ListTasks()` returns one `domain.TaskRun` per **media request**, plus
 one per `stream_cache_tasks` session: `kind` (`request`/`cache`), `state`
-(`active`/`done`/`failed`/`canceled`), `phase` (resolving/downloading/promoting/
-verifying while a request runs), track, title/artist, quality, error and timestamps,
-newest first. A request within its retry backoff reads as `active`, not `failed`.
+(`active`/`waiting`/`done`/`failed`/`canceled`), `phase` (resolving/downloading/
+promoting/verifying while a request runs), track, title/artist, quality, error and
+timestamps, newest first. A request within its retry backoff reads as `waiting`
+("waiting to retry"), not `active`/"downloading" and not `failed`; once the
+20-attempt limit is reached there is no next attempt and it reads `failed`.
 A cache session stopped on purpose (track switch, shutdown, user stop) is
 `canceled` with an empty `error`; only a real transport/parse/disk failure is
 `failed`. Migration 000108 rewrote historical `failed`/`error='interrupted'`
@@ -365,7 +367,26 @@ created after the run started, so a permanent failure fails the request and a ne
 success clears an older failure. A local row closes the request as `done`. An explicit
 re-download (`DownloadService.RedownloadTrack`) deletes the damaged file when needed and
 upserts `desired=download`, which reopens a finished request; the worker performs the
-download. The tasks page and the search/Last.fm chips read only requests, and the retired
+download.
+
+A request whose track row disappeared (a merge or delete invalidated the id) no longer
+retries: the worker first re-resolves the identity by `(provider, external_id)` — the id
+may have changed — then matches the stored title/artist snapshot against the local
+library. A hit closes the request as `done` with event detail `resolved: local row`;
+otherwise it is `canceled` with `canceled: track row removed`, which is terminal until
+the next explicit save. A merge (`track:merged`) and a file deletion additionally
+converge the other requests of the same normalised artist+title (`MediaRequestMatchKey`,
+the recommendation match-cache rule): each becomes `done` when its own identity has a
+playable row, else `canceled` (`canceled: duplicate identity`). This is why one song
+promoted through one provider no longer leaves another provider's request "downloading"
+forever; see `docs/specs/library/fix-orphan-request.md`.
+
+At startup the worker also runs `ListOrphans` (`state = failed` and a non-empty
+`track_id` with no `tracks` row) and settles those rows immediately, ignoring
+`next_attempt_at`: a deleted row is unrecoverable, so waiting out a six-hour
+backoff would only show a stuck "waiting to retry" row. The same local-match
+rule decides done vs canceled. Requests with an empty `track_id` are not orphans —
+they resolve their identity on the next run. The tasks page and the search/Last.fm chips read only requests, and the retired
 table/flags are gone — see `docs/specs/library/media-request-state-machine.md`.
 
 ## Duplicate-cache cleanup

@@ -21,6 +21,13 @@ vi.mock('../../../bindings/airmedy/internal/infra/wails/lastfmservice', () => ({
 
 vi.mock('@wailsio/runtime', () => ({
   Events: { On: mocks.on },
+  Create: {
+    Nullable: (fn: any) => (v: any) => (v == null ? null : fn(v)),
+    Array: (fn: any) => (arr: any[]) => (arr ?? []).map(fn),
+    Struct: (ctor: any) => (v: any) => (v == null ? null : new ctor(v)),
+    Map: () => (val: any) => val,
+    Any: (val: any) => val,
+  },
 }))
 
 import DislikeSettings from './DislikeSettings.vue'
@@ -44,6 +51,17 @@ async function mountSection() {
     global: {
       plugins: [pinia],
       mocks: { $t: (key: string) => key },
+      stubs: {
+        Switch: {
+          props: ['modelValue'],
+          emits: ['update:modelValue'],
+          template: '<button data-test="stub-switch" @click="$emit(\'update:modelValue\', !modelValue)"></button>',
+        },
+        Modal: {
+          props: ['open'],
+          template: '<div v-if="open" data-test="stub-modal"><slot /><slot name="footer" /></div>',
+        },
+      },
     },
   })
   await flushPromises()
@@ -87,5 +105,30 @@ describe('DislikeSettings', () => {
     expect(mocks.undislike).toHaveBeenCalledWith('d1')
     expect(wrapper.findAll('[data-test="dislike-row"]')).toHaveLength(1)
     expect(useDislikeStore().items).toHaveLength(1)
+  })
+
+  it('asks before enabling the purge toggle and writes nothing on cancel', async () => {
+    const { useAppStore } = await import('@/stores/app')
+    const ConfirmDialog = (await import('@/components/ConfirmDialog.vue')).default
+    const wrapper = await mountSection()
+    const app = useAppStore()
+    app.updateDislikePurgeFiles = vi.fn(async (enabled: boolean) => {
+      app.dislikePurgeFiles = enabled
+    })
+
+    await wrapper.find('[data-test="dislike-purge-toggle"]').trigger('click')
+    await flushPromises()
+    expect(app.updateDislikePurgeFiles).not.toHaveBeenCalled()
+    expect(wrapper.findComponent(ConfirmDialog).props('open')).toBe(true)
+
+    wrapper.findComponent(ConfirmDialog).vm.$emit('cancel')
+    await flushPromises()
+    expect(app.updateDislikePurgeFiles).not.toHaveBeenCalled()
+    expect(app.dislikePurgeFiles).toBe(false)
+
+    await wrapper.find('[data-test="dislike-purge-toggle"]').trigger('click')
+    wrapper.findComponent(ConfirmDialog).vm.$emit('confirm')
+    await flushPromises()
+    expect(app.updateDislikePurgeFiles).toHaveBeenCalledWith(true)
   })
 })

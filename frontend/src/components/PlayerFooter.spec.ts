@@ -9,6 +9,7 @@ import { useAppStore } from '../stores/app'
 import { PlaybackState, RepeatMode, TrackDTO } from '../../bindings/airmedy/internal/domain/models'
 import { useFavoritesStore } from '../stores/favorites'
 import { useLastFmRadioStore } from '../stores/lastfmRadio'
+import { useDislikeStore } from '../stores/dislike'
 import * as LibraryService from '../../bindings/airmedy/internal/infra/wails/libraryservice'
 import { Events } from '@wailsio/runtime'
 
@@ -62,6 +63,7 @@ vi.mock('../../bindings/airmedy/internal/infra/wails/lastfmservice', () => ({
   Dislike: mocks.dislike,
   Undislike: vi.fn().mockResolvedValue(undefined),
   ListDislikes: vi.fn().mockResolvedValue([]),
+  PreviewDislike: vi.fn().mockResolvedValue(0),
 }))
 
 // The footer hosts the download queue panel, which lists the queue when it opens.
@@ -88,8 +90,12 @@ describe('PlayerFooter', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.dislike.mockResolvedValue({
-      id: 'd1', kind: 'track', match_key: '', title: 'Hit', artist: 'Artist',
-      created_at: '2026-11-17T00:00:00Z',
+      entry: {
+        id: 'd1', kind: 'track', match_key: '', title: 'Hit', artist: 'Artist',
+        created_at: '2026-11-17T00:00:00Z',
+      },
+      deleted_tracks: 0,
+      purge_error: '',
     })
   })
 
@@ -142,7 +148,7 @@ describe('PlayerFooter', () => {
     const wrapper = mountFooter()
     document.body.appendChild(wrapper.element)
     try {
-      const artwork = wrapper.get('[data-player-footer-interactive="true"]')
+      const artwork = wrapper.get('[data-test="player-footer-artwork"]')
       for (const track of [null, new TrackDTO({ id: 't1', artwork_key: 'cover' })]) {
         usePlayerStore().currentTrack = track
         await wrapper.vm.$nextTick()
@@ -400,8 +406,53 @@ describe('PlayerFooter', () => {
     await button.trigger('click')
     await flushPromises()
 
-    expect(mocks.dislike).toHaveBeenCalledWith('track', '', 'Hit', 'Artist')
+    // The dislike is confirmed first; the global dialog owns the submit, so the
+    // row is not skipped until the confirmation lands.
+    expect(mocks.dislike).not.toHaveBeenCalled()
+    expect(next).not.toHaveBeenCalled()
+
+    await useDislikeStore().confirmPending(false)
+    await flushPromises()
+
+    expect(mocks.dislike).toHaveBeenCalledWith('track', '', 'Hit', 'Artist', false)
     expect(next).toHaveBeenCalledOnce()
     wrapper.unmount()
+  })
+
+  it('opens track info from the right information icon', async () => {
+    const wrapper = mountFooter()
+    const store = usePlayerStore()
+    const open = vi.spyOn(store, 'openTrackInfo').mockImplementation(() => {})
+    const track = new TrackDTO({ id: 't1' })
+    store.currentTrack = track
+    await flushPromises()
+
+    await wrapper.find('[data-test="player-more-info"]').trigger('click')
+    expect(open).toHaveBeenCalledWith(track)
+  })
+
+  it('enters fullscreen from the left artwork, with a clickable placeholder', async () => {
+    const wrapper = mountFooter()
+    const store = usePlayerStore()
+    const setMode = vi.spyOn(store, 'setPlayerMode')
+    store.currentTrack = new TrackDTO({ id: 't1' })
+    store.artworkUrlSm = ''
+    await flushPromises()
+
+    const cover = wrapper.find('[data-test="player-footer-artwork"]')
+    expect(cover.attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-test="player-footer-artwork-placeholder"]').exists()).toBe(true)
+
+    await cover.trigger('click')
+    expect(setMode).toHaveBeenCalledWith('fullscreen')
+  })
+
+  it('disables both entries when no track is loaded', async () => {
+    const wrapper = mountFooter()
+    usePlayerStore().currentTrack = null
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="player-more-info"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="player-footer-artwork"]').attributes('disabled')).toBeDefined()
   })
 })

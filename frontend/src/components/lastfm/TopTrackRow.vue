@@ -1,23 +1,31 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { AlertTriangle, Heart, Music, Play } from '@lucide/vue'
+import { AlertTriangle, Heart, MoreVertical, Music, Play, Star, Volume2 } from '@lucide/vue'
 import { useI18n } from 'vue-i18n'
 import LazyImg from '@/components/LazyImg.vue'
+import { LASTFM_ROW_GRID } from '@/lib/lastfmRowColumns'
 import type { TopTrackItemDTO } from '../../../bindings/airmedy/internal/infra/wails/models'
 
 /**
- * One row of the MVP Last.fm top-tracks page.
+ * One row of the Last.fm recommendation table.
  *
- * The row owns only rendering: the page passes the item and receives play/save
- * requests. Its state chip is one of matching / matched+source / no match.
+ * The row renders the columns (#, title, artist, status, actions) and emits
+ * what the page should do; it never resolves a source itself. Rows keep a fixed
+ * 56px height so the header and every column stay aligned while the page
+ * scrolls; the artist column collapses into a subtitle on narrow containers.
  */
 const props = defineProps<{
   item: TopTrackItemDTO
+  index: number
+  current?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'play', item: TopTrackItemDTO): void
   (e: 'save', item: TopTrackItemDTO): void
+  (e: 'favorite', item: TopTrackItemDTO): void
+  (e: 'artist', item: TopTrackItemDTO): void
+  (e: 'menu', event: MouseEvent, item: TopTrackItemDTO): void
 }>()
 
 const { t } = useI18n()
@@ -31,112 +39,185 @@ const coverSrc = computed(() => {
   const url = (props.item.cover_url ?? '').trim()
   return url === '' || url.includes(LASTFM_PLACEHOLDER_IMAGE) ? '' : url
 })
-
-const imageFailed = ref(false)
+const coverFailed = ref(false)
 watch(coverSrc, () => {
-  imageFailed.value = false
+  coverFailed.value = false
 })
 
 const artistLine = computed(
-  () => (props.item.artists ?? []).filter(Boolean).join(' · ') || props.item.artist,
+  () => (props.item.artists ?? []).filter(Boolean).join('、') || props.item.artist,
 )
 const matching = computed(() => props.item.matching === true)
-const noMatch = computed(() => !matching.value && props.item.no_source === true)
+const noSource = computed(() => !matching.value && props.item.no_source === true)
 const matched = computed(
-  () => !matching.value && !noMatch.value && (!!props.item.provider || !!props.item.local_track_id),
+  () => !matching.value && !noSource.value && (!!props.item.provider || !!props.item.local_track_id),
 )
-// A promoted row keeps its remote identity, so "already in library" must win
-// over "from {source}": the song is on disk and there is nothing to download.
+// A promoted row keeps its remote identity; "already on disk" always wins.
 const inLibrary = computed(
   () => props.item.state === 'in_library' || !!props.item.local_track_id,
 )
-const matchedLabel = computed(() =>
-  inLibrary.value
-    ? t('lastfm.in_library')
-    : t('lastfm.matched_from', { source: props.item.provider }),
-)
+const suspicious = computed(() => props.item.suspicious === true)
 const canPlay = computed(() => matched.value)
 const canSave = computed(
   () => matched.value && !inLibrary.value && props.item.downloadable && !!props.item.provider,
 )
+const canOpenArtist = computed(() => !!props.item.local_track_id)
+
+const statusKey = computed(() => {
+  if (matching.value) return 'matching'
+  if (noSource.value) return 'no-match'
+  if (suspicious.value) return 'suspicious'
+  if (inLibrary.value) return 'in_library'
+  return 'matched'
+})
+
+const statusLabel = computed(() => {
+  switch (statusKey.value) {
+    case 'matching':
+      return t('lastfm.matching')
+    case 'no-match':
+      return t('lastfm.no_match')
+    case 'suspicious':
+      return t('common.suspicious_match')
+    case 'in_library':
+      return t('lastfm.in_library')
+    default:
+      return t('lastfm.matched_from', { source: props.item.provider })
+  }
+})
+
+const statusClass = computed(() => {
+  switch (statusKey.value) {
+    case 'matching':
+    case 'no-match':
+      return 'bg-foreground/[0.06] text-dim'
+    case 'suspicious':
+      return 'bg-foreground/[0.06] text-dim ring-1 ring-foreground/[0.10]'
+    default:
+      return 'bg-primary/10 text-primary'
+  }
+})
+
+function play() {
+  if (!canPlay.value) return
+  emit('play', props.item)
+}
+
+function onDoubleClick() {
+  play()
+}
+
+function onMenu(event: MouseEvent) {
+  emit('menu', event, props.item)
+}
 </script>
 
 <template>
   <div
-    class="group flex h-14 items-center gap-3 px-2 transition-colors hover:bg-foreground/[0.04]"
+    class="group grid h-14 items-center gap-2 px-2 text-sm transition-colors hover:bg-foreground/[0.04]"
+    :class="LASTFM_ROW_GRID"
     data-test="top-track-row"
+    :data-state="statusKey"
+    @dblclick="onDoubleClick"
   >
-    <div class="h-8 w-8 flex-shrink-0 overflow-hidden rounded bg-foreground/[0.06] ring-1 ring-foreground/[0.06]">
-      <LazyImg
-        v-if="coverSrc && !imageFailed"
-        :src="coverSrc"
-        :alt="item.title"
-        class="h-full w-full object-cover"
-        @error="imageFailed = true"
-      />
-      <div v-else class="flex h-full w-full items-center justify-center text-dimmer">
-        <Music class="h-4 w-4" aria-hidden="true" />
+    <!-- # / playing state -->
+    <div class="flex items-center justify-center text-xs tabular-nums text-dim" data-test="top-track-index">
+      <Volume2 v-if="current" class="h-4 w-4 text-primary" aria-hidden="true" />
+      <span v-else>{{ index + 1 }}</span>
+    </div>
+
+    <!-- Title (+ cover, artist subtitle when the artist column is hidden) -->
+    <div class="flex min-w-0 items-center gap-2">
+      <div
+        class="h-10 w-10 shrink-0 overflow-hidden rounded-md bg-foreground/[0.06] ring-1 ring-foreground/[0.06]"
+      >
+        <LazyImg
+          v-if="coverSrc && !coverFailed"
+          :src="coverSrc"
+          :alt="item.title"
+          class="h-full w-full object-cover"
+          data-test="top-track-cover"
+          @error="coverFailed = true"
+        />
+        <div
+          v-else
+          class="flex h-full w-full items-center justify-center text-dimmer"
+          data-test="top-track-cover-placeholder"
+        >
+          <Music class="h-4 w-4" aria-hidden="true" />
+        </div>
+      </div>
+
+      <div class="min-w-0 flex-1">
+      <div class="flex min-w-0 items-baseline gap-2">
+        <button
+          v-if="canPlay"
+          type="button"
+          class="block min-w-0 max-w-full truncate text-left font-medium text-foreground transition-colors hover:text-primary"
+          :title="item.title"
+          data-test="top-track-title"
+          @click="play"
+        >
+          {{ item.title }}
+        </button>
+        <p v-else class="min-w-0 truncate font-medium text-foreground" :title="item.title" data-test="top-track-title">
+          {{ item.title }}
+        </p>
+        <span
+          v-if="item.play_count > 0"
+          class="shrink-0 text-[11px] tabular-nums text-dim"
+          data-test="top-track-plays"
+        >
+          {{ t('lastfm.plays_count', { count: item.play_count }) }}
+        </span>
+      </div>
+      <p class="truncate text-xs text-dim @md:hidden" data-test="top-track-artist-mobile">
+        {{ artistLine }}
+      </p>
       </div>
     </div>
 
-    <div class="min-w-0 flex-1">
-      <p class="truncate text-sm font-medium text-foreground" :title="item.title">{{ item.title }}</p>
-      <p class="truncate text-xs text-dim" :title="artistLine">{{ artistLine }}</p>
-      <p v-if="item.album" class="truncate text-[11px] text-dimmer">{{ item.album }}</p>
+    <!-- Artist -->
+    <div class="hidden min-w-0 @md:block">
+      <button
+        v-if="canOpenArtist"
+        type="button"
+        class="block max-w-full truncate text-left text-dim transition-colors hover:text-foreground"
+        :title="artistLine"
+        data-test="top-track-artist"
+        @click="emit('artist', item)"
+      >
+        {{ artistLine }}
+      </button>
+      <span v-else class="block truncate text-dim" :title="artistLine" data-test="top-track-artist">
+        {{ artistLine }}
+      </span>
     </div>
 
-    <span
-      v-if="item.play_count > 0"
-      class="shrink-0 text-xs tabular-nums text-dim"
-      data-test="top-track-plays"
-    >
-      {{ t('lastfm.plays_count', { count: item.play_count }) }}
-    </span>
+    <!-- Match status -->
+    <div class="min-w-0">
+      <span
+        class="inline-flex max-w-full truncate rounded-full px-2 py-0.5 text-[11px] font-medium"
+        :class="statusClass"
+        :title="suspicious ? t('common.suspicious_match_hint') : undefined"
+        data-test="top-track-status"
+        :data-state="statusKey"
+      >
+        <AlertTriangle v-if="statusKey === 'suspicious'" class="mr-1 h-3 w-3 shrink-0" aria-hidden="true" />
+        {{ statusLabel }}
+      </span>
+    </div>
 
-    <span
-      v-if="matching"
-      class="shrink-0 rounded-full bg-foreground/[0.06] px-2.5 py-1 text-xs text-dim"
-      data-test="top-track-status"
-      data-state="matching"
-    >
-      {{ t('lastfm.matching') }}
-    </span>
-    <span
-      v-else-if="noMatch"
-      class="shrink-0 rounded-full bg-foreground/[0.06] px-2.5 py-1 text-xs text-dim"
-      data-test="top-track-status"
-      data-state="no-match"
-    >
-      {{ t('lastfm.no_match') }}
-    </span>
-    <span
-      v-else
-      class="shrink-0 rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary"
-      data-test="top-track-status"
-      data-state="matched"
-    >
-      {{ matchedLabel }}
-    </span>
-
-    <span
-      v-if="item.suspicious"
-      class="inline-flex shrink-0 items-center gap-1 rounded-full bg-foreground/[0.06] px-2.5 py-1 text-xs text-dim"
-      :title="t('common.suspicious_match_hint')"
-      data-test="top-track-suspicious"
-    >
-      <AlertTriangle class="h-3.5 w-3.5" aria-hidden="true" />
-      {{ t('common.suspicious_match') }}
-    </span>
-
-    <div v-if="canPlay || canSave" class="flex shrink-0 items-center gap-1">
+    <!-- Actions -->
+    <div class="flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
       <button
-        v-if="canPlay"
         type="button"
-        class="flex h-8 w-8 items-center justify-center rounded-full text-foreground/60 transition-colors hover:bg-foreground/[0.06] hover:text-foreground/80"
+        class="flex h-8 w-8 items-center justify-center rounded-full text-foreground/60 transition-colors hover:bg-foreground/[0.06] hover:text-foreground/80 disabled:pointer-events-none disabled:opacity-30"
         data-test="top-track-play"
         :aria-label="t('lastfm.play')"
-        :title="t('lastfm.play')"
-        @click.stop="emit('play', item)"
+        :title="canPlay ? t('lastfm.play') : t('lastfm.matching')"
+        :disabled="!canPlay"
+        @click.stop="play"
       >
         <Play class="h-4 w-4" />
       </button>
@@ -150,6 +231,27 @@ const canSave = computed(
         @click.stop="emit('save', item)"
       >
         <Heart class="h-4 w-4" />
+      </button>
+      <button
+        v-else-if="inLibrary"
+        type="button"
+        class="flex h-8 w-8 items-center justify-center rounded-full text-foreground/60 transition-colors hover:bg-foreground/[0.06] hover:text-foreground/80"
+        data-test="top-track-favorite"
+        :aria-label="t('context_menu.add_to_favorites')"
+        :title="t('context_menu.add_to_favorites')"
+        @click.stop="emit('favorite', item)"
+      >
+        <Star class="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        class="flex h-8 w-8 items-center justify-center rounded-full text-foreground/60 transition-colors hover:bg-foreground/[0.06] hover:text-foreground/80"
+        data-test="top-track-more"
+        :aria-label="t('lastfm.more_actions')"
+        :title="t('lastfm.more_actions')"
+        @click.stop="onMenu"
+      >
+        <MoreVertical class="h-4 w-4" />
       </button>
     </div>
   </div>

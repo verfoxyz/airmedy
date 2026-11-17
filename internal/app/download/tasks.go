@@ -201,8 +201,10 @@ func taskStateFromRequest(request *domain.MediaRequest) string {
 		return domain.TaskStateDone
 	case domain.MediaRequestStateFailed:
 		if request.NextAttemptAt != nil {
-			// A retry is scheduled: the row is waiting, not finished.
-			return domain.TaskStateActive
+			// A retry is scheduled: the row is waiting, not downloading and not
+			// finished. The page words that state separately so it never looks
+			// like a download that is stuck.
+			return domain.TaskStateWaiting
 		}
 		return domain.TaskStateFailed
 	case domain.MediaRequestStateCanceled:

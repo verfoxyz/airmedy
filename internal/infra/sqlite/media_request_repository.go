@@ -106,6 +106,27 @@ func (r *mediaRequestRepository) ListActive(
 	return requests, nil
 }
 
+// ListOrphans returns failed requests whose track_id no longer names a row.
+// Empty track ids are excluded: those requests resolve their identity, they are
+// not pointing at a deleted row.
+func (r *mediaRequestRepository) ListOrphans(
+	ctx context.Context,
+) ([]*domain.MediaRequest, error) {
+	var requests []*domain.MediaRequest
+	if err := r.db.SelectContext(ctx, &requests,
+		`SELECT `+mediaRequestColumns+`
+		 FROM media_requests
+		 WHERE state = ?
+		   AND track_id IS NOT NULL AND track_id <> ''
+		   AND NOT EXISTS (SELECT 1 FROM tracks WHERE tracks.id = media_requests.track_id)
+		 ORDER BY updated_at`,
+		domain.MediaRequestStateFailed,
+	); err != nil {
+		return nil, fmt.Errorf("media request: list orphans: %w", err)
+	}
+	return requests, nil
+}
+
 func (r *mediaRequestRepository) UpdateIntent(
 	ctx context.Context, id, desired, quality, trackID string, reset bool, at time.Time,
 ) error {

@@ -34,6 +34,10 @@ type fakePlaybackRemover struct {
 	note func()
 }
 
+func (f *fakePlaybackRemover) RemoveFromPlaybackAndAdvance(_ context.Context, trackID string) error {
+	return f.RemoveFromPlayback(context.Background(), trackID)
+}
+
 func (f *fakePlaybackRemover) RemoveFromPlayback(_ context.Context, trackID string) error {
 	f.ids = append(f.ids, trackID)
 	if f.note != nil {

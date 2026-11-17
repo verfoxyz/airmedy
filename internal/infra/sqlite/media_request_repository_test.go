@@ -303,3 +303,47 @@ func TestMediaRequestRepository_TrimFinishedKeepsLiveWorkAndNewestHistory(t *tes
 		t.Fatalf("remaining = %+v, want only the live request", requests)
 	}
 }
+
+func TestMediaRequestRepository_ListOrphansIgnoresBackoff(t *testing.T) {
+	db, err := NewDB(":memory:", slog.Default())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	repo := NewMediaRequestRepository(db)
+	ctx := context.Background()
+	now := time.Now()
+
+	if _, err := db.Exec(
+		`INSERT INTO tracks (id, path, title, sort_title, availability, mtime)
+		 VALUES ('track-live', '/music/live.flac', 'Live', 'Live', ?, ?)`,
+		domain.AvailabilityReady, now,
+	); err != nil {
+		t.Fatalf("insert track: %v", err)
+	}
+
+	live := mediaRequest("live", "1", domain.MediaRequestDesiredPromote, now)
+	live.TrackID = "track-live"
+	orphan := mediaRequest("orphan", "2", domain.MediaRequestDesiredPromote, now)
+	orphan.TrackID = "track-gone"
+	empty := mediaRequest("empty", "3", domain.MediaRequestDesiredPromote, now)
+	empty.TrackID = ""
+	for _, request := range []*domain.MediaRequest{live, orphan, empty} {
+		if err := repo.Ensure(ctx, request); err != nil {
+			t.Fatalf("Ensure %s: %v", request.ID, err)
+		}
+		next := now.Add(6 * time.Hour)
+		if err := repo.MarkFailed(ctx, request.ID, "boom", 5, &next, now); err != nil {
+			t.Fatalf("MarkFailed %s: %v", request.ID, err)
+		}
+	}
+
+	orphans, err := repo.ListOrphans(ctx)
+	if err != nil {
+		t.Fatalf("ListOrphans: %v", err)
+	}
+	if len(orphans) != 1 || orphans[0].ID != "orphan" {
+		t.Fatalf("orphans = %+v, want only the stale track row", orphans)
+	}
+}

@@ -10,7 +10,7 @@ import {
   Shuffle,
   Volume2,
   VolumeX,
-  Maximize,
+  Info,
   Music,
   ListMusic,
   Mic2,
@@ -32,7 +32,7 @@ import PlayerQuickSettingsMenu from './player/PlayerQuickSettingsMenu.vue'
 import { useAppStore } from '../stores/app'
 import PlayerFavoriteButton from './player/PlayerFavoriteButton.vue'
 import { useLastFmRadioStore } from '../stores/lastfmRadio'
-import { useDislikeStore } from '../stores/dislike'
+import { DISLIKE_KIND_TRACK, useDislikeStore } from '../stores/dislike'
 
 const { t } = useI18n()
 const store = usePlayerStore()
@@ -94,11 +94,22 @@ async function dislikeCurrent() {
   if (!track) return
   const artist = getTrackDisplayArtist(track)
   const title = getTrackDisplayTitle(track)
+  if (!artist || !title) {
+    await store.next()
+    return
+  }
   try {
-    if (artist && title) await dislikeStore.dislikeTrack({ title, artist })
+    await dislikeStore.requestDislike({
+      kind: DISLIKE_KIND_TRACK,
+      matchKey: '',
+      title,
+      artist,
+      onConfirmed: () => {
+        void store.next()
+      },
+    })
   } catch (error) {
     console.error('Failed to dislike the playing radio track', error)
-  } finally {
     await store.next()
   }
 }
@@ -111,16 +122,23 @@ async function dislikeCurrent() {
     @contextmenu.prevent="openQuickSettingsMenu">
     <!-- Track Info -->
     <div class="flex items-center justify-start gap-3 w-1/4 min-w-[200px]">
-      <div
+      <button
+        type="button"
         data-player-footer-interactive="true"
-        class="footer-artwork w-12 h-12 rounded-lg overflow-hidden flex-shrink-0 shadow-lg ring-1 ring-foreground/10 cursor-pointer"
-        @click="store.openTrackInfo(store.currentTrack)" @contextmenu.prevent="openArtworkContextMenu">
+        data-test="player-footer-artwork"
+        class="footer-artwork h-12 w-12 shrink-0 overflow-hidden rounded-lg shadow-lg ring-1 ring-foreground/10 disabled:pointer-events-none disabled:opacity-40"
+        :aria-label="t('player.fullscreen')"
+        :title="t('player.fullscreen')"
+        :disabled="!store.currentTrack"
+        @click="store.setPlayerMode('fullscreen')"
+        @contextmenu.prevent="openArtworkContextMenu"
+      >
         <LazyImg v-if="store.artworkUrlSm" :src="store.artworkUrlSm" :alt="trackTitle"
           class="w-full h-full object-cover" />
-        <div v-else class="w-full h-full bg-foreground/5 flex items-center justify-center">
+        <div v-else class="w-full h-full bg-foreground/5 flex items-center justify-center" data-test="player-footer-artwork-placeholder">
           <Music class="w-5 h-5 text-dimmer" />
         </div>
-      </div>
+      </button>
       <div class="flex flex-col min-w-0">
         <MarqueeText :text="trackTitle" fade content-class="font-medium text-sm leading-tight" />
         <MarqueeText :text="trackArtist" fade content-class="text-xs text-dim leading-tight mt-0.5" />
@@ -236,9 +254,16 @@ async function dislikeCurrent() {
         @click="WindowService.ToggleMiniPlayer()" :title="t('player.mini_player')">
         <PictureInPicture2 class="w-4 h-4" />
       </button>
-      <button class="text-dim hover:text-subdued transition-colors"
-        @click="store.setPlayerMode('fullscreen')" :title="t('player.fullscreen')">
-        <Maximize class="w-4 h-4" />
+      <button
+        type="button"
+        class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-dim transition-colors hover:bg-foreground/[0.04] hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+        data-test="player-more-info"
+        :aria-label="t('player.more_info')"
+        :title="t('player.more_info')"
+        :disabled="!store.currentTrack"
+        @click="store.openTrackInfo(store.currentTrack)"
+      >
+        <Info class="h-4 w-4" aria-hidden="true" />
       </button>
     </div>
   </div>

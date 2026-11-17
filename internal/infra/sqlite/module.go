@@ -49,6 +49,9 @@ var Module = fx.Module("sqlite",
 		func(db *DB) domain.LastFmDislikeRepository {
 			return NewLastFmDislikeRepository(db)
 		},
+		func(db *DB) domain.LastFmDislikeTracePurger {
+			return NewLastFmDislikePurgeRepository(db)
+		},
 		func(db *DB) domain.RecommendationSeedRepository {
 			return NewRecommendationSeedRepository(db)
 		},

@@ -484,7 +484,18 @@
     "source_disabled": "사용 안 함",
     "source_drag_hint": "손잡이를 끌어 순서를 바꿉니다. 끌 수 없을 때는 화살표 버튼을 사용하세요.",
     "all_sources_disabled": "모든 검색 소스가 꺼져 있습니다. 설정 → 검색 소스에서 하나를 켜세요.",
-    "source_save_failed": "변경 사항을 저장하지 못했습니다. 이전 설정으로 복원했습니다."
+    "source_save_failed": "변경 사항을 저장하지 못했습니다. 이전 설정으로 복원했습니다.",
+    "dislike_purge_files": "싫어요 시 로컬 파일 삭제",
+    "dislike_purge_files_hint": "오디오, 커버, 스트림 캐시, 저장된 가사가 디스크에서 삭제됩니다. 되돌릴 수 없습니다.",
+    "dislike_purge_confirm": "삭제하고 싫어요",
+    "dislike_purge_confirm_artist": "{count}개의 로컬 곡이 삭제됨을 이해합니다",
+    "dislike_purge_count": "{count}개의 로컬 곡이 삭제됩니다.",
+    "dislike_mark_confirm_title": "싫어요로 표시할까요?",
+    "dislike_mark_confirm_body": "추천에서만 숨겨지며 파일은 삭제되지 않습니다.",
+    "dislike_purge_confirm_title": "삭제하고 싫어요로 표시할까요?",
+    "dislike_purge_confirm_body": "로컬 오디오, 커버, 스트림 캐시, 저장된 가사가 삭제됩니다. 되돌릴 수 없습니다.",
+    "dislike_enable_purge_title": "싫어요 시 파일 삭제를 사용할까요?",
+    "dislike_enable_purge_body": "사용하면 싫어요 표시 시 로컬 오디오, 커버, 스트림 캐시, 가사도 삭제됩니다. 되돌릴 수 없습니다."
   },
   "sidebar": {
     "download": "다운로드 및 작업",
@@ -552,7 +563,8 @@
     "secondary_romanization": "로마자",
     "romanization_hint": "오프라인 로마자 표기: 중국어 및 한국어.",
     "romanization_mandarin": "한자만 있는 가사는 기본적으로 중국어 표준어로 처리됩니다. 이름의 발음은 다를 수 있습니다.",
-    "dislike_track": "싫어요 및 건너뛰기"
+    "dislike_track": "싫어요 및 건너뛰기",
+    "more_info": "자세한 정보"
   },
   "home": {
     "title": "홈",
@@ -892,7 +904,8 @@
     "clear_message": "완료 및 오류 기록을 모두 삭제합니다. 진행 중인 작업은 영향을 받지 않습니다.",
     "clear_confirm": "지우기",
     "clear_cancel": "취소",
-    "clear_done": "기록을 지웠습니다"
+    "clear_done": "기록을 지웠습니다",
+    "waiting_retry": "재시도 대기 중"
   },
   "download": {
     "downloading": "다운로드 중…",
@@ -989,6 +1002,12 @@
     "load_more": "더 불러오기",
     "no_more": "더 이상 추천이 없습니다",
     "dislike_track": "이 곡 싫어요",
-    "dislike_artist": "이 아티스트 싫어요"
+    "dislike_artist": "이 아티스트 싫어요",
+    "save_to_library": "라이브러리에 저장",
+    "copy_row": "아티스트와 제목 복사",
+    "column_title": "제목",
+    "column_artist": "아티스트",
+    "column_status": "상태",
+    "column_actions": "작업"
   }
 }

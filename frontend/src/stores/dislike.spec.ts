@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   list: vi.fn(),
   dislike: vi.fn(),
   undislike: vi.fn(),
+  preview: vi.fn(),
   on: vi.fn(),
 }))
 
@@ -13,10 +14,18 @@ vi.mock('../../bindings/airmedy/internal/infra/wails/lastfmservice', () => ({
   ListDislikes: mocks.list,
   Dislike: mocks.dislike,
   Undislike: mocks.undislike,
+  PreviewDislike: mocks.preview,
 }))
 
 vi.mock('@wailsio/runtime', () => ({
   Events: { On: mocks.on },
+  Create: {
+    Nullable: (fn: any) => (v: any) => (v == null ? null : fn(v)),
+    Array: (fn: any) => (arr: any[]) => (arr ?? []).map(fn),
+    Struct: (ctor: any) => (v: any) => (v == null ? null : new ctor(v)),
+    Map: () => (val: any) => val,
+    Any: (val: any) => val,
+  },
 }))
 
 import { useDislikeStore, type DislikeEntry } from './dislike'
@@ -42,7 +51,9 @@ describe('dislike store', () => {
     mocks.on.mockReset()
     mocks.on.mockReturnValue(() => {})
     mocks.list.mockResolvedValue([])
-    mocks.dislike.mockResolvedValue(entry())
+    mocks.dislike.mockResolvedValue({ entry: entry(), deleted_tracks: 0, purge_error: '' })
+    mocks.preview.mockReset()
+    mocks.preview.mockResolvedValue(0)
     mocks.undislike.mockResolvedValue(undefined)
   })
 
@@ -71,9 +82,9 @@ describe('dislike store', () => {
     const store = useDislikeStore()
     const saved = await store.dislikeTrack({ matchKey: 'drop\x00song', title: 'Song', artist: 'Drop' })
 
-    expect(saved.id).toBe('d1')
+    expect(saved?.id).toBe('d1')
     expect(store.items).toHaveLength(1)
-    expect(mocks.dislike).toHaveBeenCalledWith('track', 'drop\x00song', 'Song', 'Drop')
+    expect(mocks.dislike).toHaveBeenCalledWith('track', 'drop\x00song', 'Song', 'Drop', false)
 
     await store.remove('d1')
     expect(mocks.undislike).toHaveBeenCalledWith('d1')
@@ -92,5 +103,65 @@ describe('dislike store', () => {
 
     store.dispose()
     expect(off).toHaveBeenCalled()
+  })
+
+  it('asks for confirmation before purging files', async () => {
+    const { useAppStore } = await import('./app')
+    useAppStore().dislikePurgeFiles = true
+    mocks.preview.mockResolvedValue(3)
+    const store = useDislikeStore()
+
+    await store.requestDislike({
+      kind: 'track', matchKey: 'drop\x00song', title: 'Song', artist: 'Drop',
+    })
+
+    expect(mocks.preview).toHaveBeenCalledWith('track', 'drop\x00song', 'Song', 'Drop')
+    expect(store.pending?.title).toBe('Song')
+    expect(store.pendingCount).toBe(3)
+    expect(mocks.dislike).not.toHaveBeenCalled()
+
+    await store.confirmPending(true)
+    expect(mocks.dislike).toHaveBeenCalledWith('track', 'drop\x00song', 'Song', 'Drop', true)
+    expect(store.pending).toBeNull()
+  })
+
+  it('confirms every dislike, even when files are not purged', async () => {
+    const { useAppStore } = await import('./app')
+    useAppStore().dislikePurgeFiles = false
+    const store = useDislikeStore()
+    const confirmed = vi.fn()
+
+    await store.requestDislike({
+      kind: 'track', matchKey: '', title: 'Song', artist: 'Drop', onConfirmed: confirmed,
+    })
+
+    expect(store.pending?.title).toBe('Song')
+    expect(mocks.preview).not.toHaveBeenCalled()
+    expect(mocks.dislike).not.toHaveBeenCalled()
+
+    await store.confirmPending(false)
+    expect(mocks.dislike).toHaveBeenCalledWith('track', '', 'Song', 'Drop', false)
+    expect(confirmed).toHaveBeenCalled()
+  })
+
+  it('does nothing when the confirmation is dismissed', async () => {
+    const store = useDislikeStore()
+    await store.requestDislike({
+      kind: 'track', matchKey: '', title: 'Song', artist: 'Drop',
+    })
+    store.dismissPending()
+
+    expect(store.pending).toBeNull()
+    expect(mocks.dislike).not.toHaveBeenCalled()
+  })
+
+  it('keeps a partial purge failure on the store', async () => {
+    mocks.dislike.mockResolvedValue({
+      entry: entry(), deleted_tracks: 1, purge_error: 'file is locked',
+    })
+    const store = useDislikeStore()
+    await store.dislikeTrack({ title: 'Song', artist: 'Drop' })
+
+    expect(store.purgeError).toBe('file is locked')
   })
 })

@@ -24,6 +24,13 @@ describe('taskInTab', () => {
     expect(taskInTab(failed, 'done')).toBe(false)
   })
 
+  it('groups a waiting retry with active work, not failures', () => {
+    const waiting = task('request', 'waiting')
+    expect(taskInTab(waiting, 'active')).toBe(true)
+    expect(taskInTab(waiting, 'failed')).toBe(false)
+    expect(taskInTab(waiting, 'done')).toBe(false)
+  })
+
   it('keeps done and active rows where they belong', () => {
     expect(taskInTab(task('cache', 'done'), 'done')).toBe(true)
     expect(taskInTab(task('cache', 'active'), 'active')).toBe(true)

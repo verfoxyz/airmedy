@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { createPinia } from 'pinia'
+import { LASTFM_ROW_GRID } from '@/lib/lastfmRowColumns'
 import { nextTick, reactive } from 'vue'
 import LastFmListView from './LastFmListView.vue'
 import DetailHero from '@/components/DetailHero.vue'
@@ -19,8 +21,7 @@ const mocks = vi.hoisted(() => ({
   save: vi.fn(),
   playTrackIds: vi.fn(),
   startRadio: vi.fn(),
-  dislikeTrack: vi.fn(),
-  dislikeArtist: vi.fn(),
+  dislikeRequest: vi.fn(),
   handlers: new Map<string, (event: { data?: unknown }) => void>(),
   off: vi.fn(),
   route: { name: 'lastfm-list', params: { kind: 'top_tracks' } as { kind?: string } },
@@ -78,12 +79,12 @@ vi.mock('@/stores/lastfmRadio', () => ({
 }))
 
 vi.mock('@/stores/dislike', () => ({
+  DISLIKE_KIND_TRACK: 'track',
   DISLIKE_KIND_ARTIST: 'artist',
   useDislikeStore: () => ({
     items: [],
     isTrackDisliked: () => false,
-    dislikeTrack: mocks.dislikeTrack,
-    dislikeArtist: mocks.dislikeArtist,
+    requestDislike: mocks.dislikeRequest,
   }),
 }))
 
@@ -177,6 +178,7 @@ function list(items: ReturnType<typeof item>[]) {
 async function mountView() {
   const wrapper = mount(LastFmListView, {
     global: {
+      plugins: [createPinia()],
       mocks: { $t: (key: string) => key },
     },
   })
@@ -262,6 +264,25 @@ describe('LastFmListView (one persisted list)', () => {
     expect(rows[2].find('[data-test="top-track-status"]').attributes('data-state')).toBe('matching')
   })
 
+  it('renders the table header in the fixed column order', async () => {
+    mocks.getList.mockResolvedValue(list([item('Hit', 'matched')]))
+    const wrapper = await mountView()
+
+    const header = wrapper.find('[data-test="lastfm-list-header"]')
+    expect(header.exists()).toBe(true)
+    expect(header.text()).toContain('lastfm.column_title')
+    expect(header.text()).toContain('lastfm.column_artist')
+    expect(header.text()).toContain('lastfm.column_status')
+    expect(header.text()).toContain('lastfm.column_actions')
+    expect(header.classes('sticky')).toBe(true)
+    // The @md: column rules only resolve against this container.
+    expect(header.element.parentElement?.classList.contains('@container')).toBe(true)
+    // Header and rows must use the exact same shared template, or they drift.
+    const shared = LASTFM_ROW_GRID.split(' ')
+    expect(header.classes()).toEqual(expect.arrayContaining(shared))
+    expect(wrapper.find('[data-test="top-track-row"]').classes()).toEqual(expect.arrayContaining(shared))
+  })
+
   it('starts a radio from the first playable row', async () => {
     mocks.getList.mockResolvedValue(list([item('Hit', 'matched'), item('Other', 'matched')]))
     const wrapper = await mountView()
@@ -333,7 +354,7 @@ describe('LastFmListView (one persisted list)', () => {
 
     const row = wrapper.find('[data-test="top-track-row"]')
     expect(row.find('[data-test="top-track-status"]').attributes('data-state')).toBe('no-match')
-    expect(row.find('[data-test="top-track-play"]').exists()).toBe(false)
+    expect(row.find('[data-test="top-track-play"]').attributes('disabled')).toBeDefined()
   })
 
   it('plays and saves a matched row through the shared catalogue actions', async () => {
@@ -351,7 +372,6 @@ describe('LastFmListView (one persisted list)', () => {
     await flushPromises()
     expect(mocks.save).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'Hit', provider: 'wy' }),
-      { favorite: true },
     )
   })
 
@@ -756,7 +776,8 @@ describe('LastFmListView (one persisted list)', () => {
     label!.closest('div')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flushPromises()
 
-    expect(mocks.dislikeTrack).toHaveBeenCalledWith({
+    expect(mocks.dislikeRequest).toHaveBeenCalledWith({
+      kind: 'track',
       matchKey: 'artist\u0000hit',
       title: 'Hit',
       artist: 'Artist',
@@ -777,7 +798,12 @@ describe('LastFmListView (one persisted list)', () => {
     label!.closest('div')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flushPromises()
 
-    expect(mocks.dislikeArtist).toHaveBeenCalledWith('Artist')
+    expect(mocks.dislikeRequest).toHaveBeenCalledWith({
+      kind: 'artist',
+      matchKey: '',
+      title: '',
+      artist: 'Artist',
+    })
   })
 
   it('disables the row refresh while the row is already matching', async () => {

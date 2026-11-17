@@ -297,6 +297,13 @@ type Recommender struct {
 	dislikes domain.LastFmDislikeRepository
 	// dislikeCache is the loaded exclusion set; nil means "load on next use".
 	dislikeCache *dislikeSnapshot
+	// dislikeTracePurger removes a disliked identity from the stored lists,
+	// candidate pools and match cache. nil skips that cleanup.
+	dislikeTracePurger domain.LastFmDislikeTracePurger
+	// dislikePurger deletes the on-disk side when the setting allows it.
+	dislikePurger DislikeLocalPurger
+	// dislikeSettings reads the purge toggle. nil means off.
+	dislikeSettings DislikeSettingsReader
 	// seedRepo reads local listening signals for the recommendation seeds. nil
 	// degrades the seed set to Last.fm-only.
 	seedRepo domain.RecommendationSeedRepository

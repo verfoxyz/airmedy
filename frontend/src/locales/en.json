@@ -484,7 +484,18 @@
     "source_disabled": "Disabled",
     "source_drag_hint": "Drag the handle to reorder. Use the arrow buttons when dragging is not available.",
     "all_sources_disabled": "All search sources are turned off. Enable one in Settings → Search sources.",
-    "source_save_failed": "Could not save the change. The previous setting was restored."
+    "source_save_failed": "Could not save the change. The previous setting was restored.",
+    "dislike_purge_files": "Delete local files on dislike",
+    "dislike_purge_files_hint": "Audio, artwork, stream cache and saved lyrics are deleted from disk. This cannot be undone.",
+    "dislike_purge_confirm": "Delete and dislike",
+    "dislike_purge_confirm_artist": "I understand that {count} local tracks will be deleted",
+    "dislike_purge_count": "{count} local tracks will be deleted.",
+    "dislike_mark_confirm_title": "Mark as disliked?",
+    "dislike_mark_confirm_body": "It will only be hidden from recommendations. No files are deleted.",
+    "dislike_purge_confirm_title": "Delete and dislike?",
+    "dislike_purge_confirm_body": "Local audio, artwork, stream cache and saved lyrics will be deleted. This cannot be undone.",
+    "dislike_enable_purge_title": "Enable file deletion on dislike?",
+    "dislike_enable_purge_body": "When enabled, disliking a song or artist also deletes local audio, artwork, stream cache and lyrics. This cannot be undone."
   },
   "sidebar": {
     "download": "Downloads & Tasks",
@@ -552,7 +563,8 @@
     "secondary_romanization": "Romanization",
     "romanization_hint": "Offline romanization: Chinese and Korean.",
     "romanization_mandarin": "Han-only lyrics default to Mandarin. Readings may differ for names.",
-    "dislike_track": "Dislike and skip"
+    "dislike_track": "Dislike and skip",
+    "more_info": "More info"
   },
   "home": {
     "title": "Home",
@@ -892,7 +904,8 @@
     "clear_message": "This deletes every completed and failed record. Tasks in progress are not affected.",
     "clear_confirm": "Clear",
     "clear_cancel": "Cancel",
-    "clear_done": "History cleared"
+    "clear_done": "History cleared",
+    "waiting_retry": "Waiting to retry"
   },
   "download": {
     "downloading": "Downloading…",
@@ -989,6 +1002,12 @@
     "load_more": "Load more",
     "no_more": "No more recommendations",
     "dislike_track": "Don't like this track",
-    "dislike_artist": "Don't like this artist"
+    "dislike_artist": "Don't like this artist",
+    "save_to_library": "Save to library",
+    "copy_row": "Copy artist and title",
+    "column_title": "Title",
+    "column_artist": "Artist",
+    "column_status": "Status",
+    "column_actions": "Actions"
   }
 }

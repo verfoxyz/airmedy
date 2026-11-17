@@ -1,6 +1,6 @@
 # 任务：所有歌单详情改为整体滚动 + 悬浮栏
 
-> 状态：待开工
+> 状态：✅ 已完成（抽出 `StickyDetailBar.vue`（IntersectionObserver + 56px 玻璃 toolbar + 搜索展开 + 更多菜单 + 卸载 disconnect），Last.fm 页改为复用；普通歌单（含收藏虚拟歌单）改为整页滚动：`body-fill-height=false`、TrackTable `virtual-scroll=false auto-height`、标题后哨兵接入悬浮栏；Vue 测试覆盖显隐、动作、搜索、断开与歌单接线）
 > 目的：普通歌单与 Last.fm 歌单行为一致——整页滚动，hero 滚出视口后出现悬浮操作栏
 > 关联：`detail-sticky-bar.md`（Last.fm 已实现）、`list-table-layout.md`、`playlists`
 

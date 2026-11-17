@@ -1,6 +1,6 @@
 # Bug：已入库的曲目仍有一条「进行中」任务（重试永不成功）
 
-> 状态：✅ 已完成（worker 按 identity 复解析 → 本地 title+artist 兜底 → done/canceled，不再重试；合并与删除按 `MediaRequestMatchKey` 收敛同曲其它 identity；任务页新增 `waiting` 状态（等待重试），达到 20 次显示失败；重试清零 attempts/next_attempt_at；Go/Vue 测试覆盖）
+> 状态：✅ 已完成（worker 按 identity 复解析 → 本地 title+artist 兜底 → done/canceled，不再重试；合并与删除按 `MediaRequestMatchKey` 收敛同曲其它 identity；任务页新增 `waiting` 状态（等待重试），达到 20 次显示失败；重试清零 attempts/next_attempt_at；启动扫描用 `ListOrphans` 忽略退避立即收敛 `track_id` 失效的 failed 请求；Go/Vue 测试覆盖）
 > 现象：任务页一直有一条「新·与天齐 / 下载中…」
 > 数据：请求 `kg/91a6ce…` 仍 `failed`、`attempts=5`、`next_attempt_at` 在 6 小时后
 > 关联：`media-request-state-machine.md`、`fix-delete-resets-request.md`、`fix-stale-task-row.md`

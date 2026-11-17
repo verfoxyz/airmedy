@@ -369,15 +369,38 @@ type DislikeDTO struct {
 	CreatedAt string `json:"created_at"`
 }
 
+// DislikeResultDTO is the outcome of one dislike.
+//
+// The mark is always the entry; the file purge is reported separately so a
+// locked file can be shown without pretending the dislike failed.
+type DislikeResultDTO struct {
+	Entry         DislikeDTO `json:"entry"`
+	DeletedTracks int        `json:"deleted_tracks"`
+	PurgeError    string     `json:"purge_error"`
+}
+
+// PreviewDislike reports how many local tracks a dislike would delete. It is
+// zero while the purge setting is off.
+func (s *LastFmService) PreviewDislike(kind, matchKey, title, artist string) (int, error) {
+	return s.recommender.CountDislikeTargets(context.Background(), kind, matchKey, title, artist)
+}
+
 // Dislike excludes a song or an artist from discovery and radio. matchKey may
 // be empty for a track, in which case the identity is rebuilt from the credits;
-// an artist always uses its name.
-func (s *LastFmService) Dislike(kind, matchKey, title, artist string) (DislikeDTO, error) {
-	entry, err := s.recommender.Dislike(context.Background(), kind, matchKey, title, artist)
+// an artist always uses its name. purge also deletes the local files and is
+// only accepted while the setting is on.
+func (s *LastFmService) Dislike(
+	kind, matchKey, title, artist string, purge bool,
+) (DislikeResultDTO, error) {
+	result, err := s.recommender.Dislike(context.Background(), kind, matchKey, title, artist, purge)
 	if err != nil {
-		return DislikeDTO{}, err
+		return DislikeResultDTO{}, err
 	}
-	return toDislikeDTO(entry), nil
+	return DislikeResultDTO{
+		Entry:         toDislikeDTO(result.Entry),
+		DeletedTracks: result.DeletedTracks,
+		PurgeError:    result.PurgeError,
+	}, nil
 }
 
 // Undislike removes one exclusion; the next refresh or refill may return it.

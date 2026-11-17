@@ -23,7 +23,12 @@ const locales = { de, en, es, fr, it: itLocale, ja, ko, pt, ru, th, vi, zh }
 
 const EXPECTED_KEYS = [
   'auto_refresh',
+  'column_actions',
+  'column_artist',
+  'column_status',
+  'column_title',
   'combined',
+  'copy_row',
   'discover',
   'dislike_artist',
   'dislike_track',
@@ -57,6 +62,7 @@ const EXPECTED_KEYS = [
   'refresh_item',
   'refresh_list',
   'save',
+  'save_to_library',
   'search_artist',
   'shuffle',
   'similar_artists',
