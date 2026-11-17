@@ -232,13 +232,14 @@ Refresh is explicit:
 - a failed Last.fm request keeps the stored rows;
 - a refresh bypasses the 30-minute similar-answer cache.
 
-The **Discover** list is rebuilt from seeds that rotate by ISO week: the top ten
-tracks plus ten `user.getTopArtists` entries (`overall` and `6month` alternate).
-Expansion walks `track.getSimilar`, similar artists' top tracks, seed-artist tags
-and finally the site chart inside one 30-request budget shared with the recent-
-scrobble exclusion set (three pages). Local matches, the seed rows, the last
-month's scrobbles and a third row by the same artist are dropped; the list caps at
-100 rows, 20 per page. The unexpanded remainder is the candidate pool stored in
+The **Discover** list is rebuilt from the merged weekly seed set (ten track and
+ten artist seeds, see "Recommendation seeds" below), so a local listening history
+steers it without scrobbles. Expansion walks `track.getSimilar`, similar artists'
+top tracks, seed-artist tags and finally the site chart inside one 30-request
+budget shared with the recent-scrobble exclusion set (three pages). Local
+matches, the seed rows and the last month's scrobbles are dropped, then the
+shared diversity selector enforces the artist/album/adjacency limits; the list
+caps at 100 rows, 20 per page. The unexpanded remainder is the candidate pool stored in
 the list's `payload`; `LoadMoreRecommendationItems(kind)` appends the next 20 and
 re-expands once when the pool runs out. `has_more` is true while the pool is not
 empty.
@@ -251,8 +252,9 @@ reports `prev_from` / `next_from` among completed weeks only.
 
 Building keeps the previous rules for the two older lists: top tracks are one
 `user.getTopTracks` (`overall`, limit 50) request. The **For you** list is built
-seed by seed: the first ten usable top tracks seed `track.getSimilar` (limit 10
-each), and an empty answer falls back to `artist.getSimilar` (limit 3) then each similar artist's
+seed by seed: the merged weekly track seeds (falling back to the first ten usable
+top tracks when none exist) seed `track.getSimilar` (limit 10 each), and an empty
+answer falls back to `artist.getSimilar` (limit 3) then each similar artist's
 `artist.getTopTracks` (limit 5). Each seed's new rows are written to the store and
 emitted as `lastfm:recommendation-items-added` (`{kind, items}`), appended in seed
 order then Last.fm order. A song several seeds recommend is kept once; the list
@@ -271,14 +273,34 @@ lookup is title + artist set (order and separators ignored); duration is a hint
 on that path, because a promoted row keeps its remote identity: the chip must
 read "in library" (the frontend gives `state = in_library` / `local_track_id`
 precedence over `provider`, and hides save). When a merge or a library update
-makes a row local, `track:merged` refreshes every stored list and
-`library:track-updated` refreshes rows on an open page; both rewrite the row to
-`in_library` with the survivor's `local_track_id`, clear the stale per-source
-match cache, and emit one `lastfm:recommendations-matched` event per changed row.
+makes a row local, `track:merged` refreshes every stored list;
+`library:track-updated` drops the shared cache entry for the track's identity,
+resets every stored row with that `match_key` to `matching`, and re-runs matching
+(local-first). Promoted/downloaded rows are additionally rewritten immediately to
+`in_library` with the survivor's `local_track_id`, the stale per-source cache is
+cleared, and one `lastfm:recommendations-matched` event is emitted per changed row.
 Otherwise a worker searches only its own source; a miss puts the row back for the
 other workers, and a per-row tried set guarantees each row/source pair is
-searched once. A row becomes `no_source` only after every source failed. Source
-outcomes are cached for 30 minutes per (list kind + artist + title, source).
+searched once. A row becomes `no_source` only after every source answered
+without a playable row; a page where every source request errored writes no
+answer, so a temporarily unavailable provider cannot poison the cache.
+
+Matching first consults the shared persistent cache (`lastfm_match_cache`, keyed
+by artist + title only, so every list and every restart shares one answer): a
+provider identity for 14 days, an in-library hit for 30 days, `no_source` for 3
+days, and a suspicious local hit for 7 days. A hit is applied without any source
+request. Missing entries fall through to the in-memory per-source cache (30
+minutes per list kind + identity + source). The cache is written when a row
+settles, pruned on write and at startup (expired rows first, newest 5000 kept).
+A manual row refresh, a playback failure, and a library import all delete the
+entry for that identity.
+
+A list rebuild inherits the previous version: rows whose `match_key` is still
+present copy provider / external id / local id / suspicious / source fields and
+cover from the stored row and skip the queue, while only new identities are
+matched. `no_source` is not copied from the stored row; it is re-applied only
+while its cache entry is unexpired, so a source that later lists the track is
+retried.
 
 Rows are updated through `lastfm:recommendations-matched` with `{kind, items,
 done}`, batched every 300–500 ms. `kind` is empty for a combined initial run,
@@ -310,11 +332,11 @@ a search icon that expands to a 220px `Input`); visibility comes from an
 container — no scroll listener. The sticky search shares `searchQuery` with the
 hero search. Because the route name is shared, the view watches the parameter and
 reloads when the user moves between cards. A row's context menu offers **refresh
-this track's source** (`RefreshRecommendationItem(kind, match_key)`): it clears
-that row's cached source results and failed providers, resets it to `matching`,
-persists it and re-queues it through the same workers. Other rows keep their
-caches and no Last.fm content request is made. A row already `matching` disables
-the action.
+this track's source** (`RefreshRecommendationItem(kind, match_key)`): it deletes
+the shared match cache entry, clears that row's cached source results and failed
+providers, resets it to `matching`, persists it and re-queues it through the same
+workers. Other rows keep their caches and no Last.fm content request is made. A
+row already `matching` disables the action.
 
 Cover priority is fixed: a real Last.fm image (`LastFmTrack.ImageURL`, placeholder
 already filtered out by the client) wins, then the matched source's `cover_url`,
@@ -323,6 +345,58 @@ so the backend returns its embedded artwork as `/artwork/<artwork_key>?size=sm`.
 An empty result renders `TopTrackRow`'s music-note placeholder; the row also treats
 the Last.fm star placeholder URL as empty. A failover reset restores the remembered
 Last.fm row, cover included, before the next source is searched.
+
+**Recommendation seeds.** The "For you" and discover builders seed from a merged
+set instead of the raw Last.fm top tracks: local listening time in the last 90
+days (weight 1.0), local `tracks.play_count` (0.9), tracks that appear in a
+playlist (0.7), Last.fm `user.getTopTracks(overall)` (0.6) and
+`user.getTopArtists(6month)` (0.5). Tracks dedupe by normalised artist+title and
+artists by `ArtistSetKey`; the final set is 10 track seeds plus 10 artist seeds.
+When local history exists, Last.fm-only seeds are capped at 40%, so an imported
+library steers recommendations without scrobbles. The set is cached per ISO week
+and a new week keeps half of the previous seeds, so recommendations drift instead
+of jumping. With no local history and no usable Last.fm answer, the library's top
+genres (`GetTagTopTracks`) and the site chart form a "general" fallback.
+
+**Diversity.** Discover rows and radio batches share one selector: at most two
+tracks per artist, at most one per album (album identity is artist+album), no two
+adjacent tracks by the same artist, and — as a consequence of the cap — at least
+three artists in the first ten rows whenever the pool allows it. When the rules
+leave the list short, the album rule relaxes first, then the adjacent-artist
+rule; the per-artist cap stays hard. "Load more" passes the existing per-artist
+counts so the limit stays global.
+
+**Radio.** `useLastFmRadioStore` starts a session from a track (context menu),
+the detail page's radio button, a recommendation card, or a cloud search row
+(the last two pass the matched provider identity so the seed skips a re-search).
+`StartRadio` builds the first 20 tracks: `track.getSimilar`, then the seed's
+similar artists' top tracks, then the artist's tags. Candidates already owned
+locally, heard in the last 30 days, or present in the queue are skipped, and only
+rows that resolve to a playable source are returned (the frontend plays the seed
+plus that batch). The radio then appends 10 tracks whenever fewer than 5 remain,
+using the current track as the new seed; refills are single-flight and retry
+once. `radio:state` drives the closable `RadioTower` marker in the queue drawer,
+queue panel and mini player, and `radio:queue-appended` shows the "N tracks
+added" notice. The session is in-memory: ordinary playback replacing the queue or
+an emptied queue ends it, while next/previous inside the queue keeps it on.
+
+**Dislikes.** A local exclusion list (`dislikes`, kind `track` / `artist`) hides
+an identity from Discover, the recommendation lists and radio without touching
+the library or the Last.fm account. `Dislike(kind, match_key, title, artist)`,
+`Undislike(id)` and `ListDislikes()` back `stores/dislike.ts`, which caches the
+sets for instant filtering; `dislike:updated` carries the full list and refreshes
+that cache. The detail-row menu offers **don't like this track** and **don't
+like this artist**; the settings **Dislikes** category lists both kinds with a
+remove action. While Last.fm radio is on, the player footer's `ThumbsDown`
+button excludes the playing row and immediately advances.
+
+Filtering applies in memory and in persistence: `discoverItems`, the radio
+candidate chain and the seed builders skip the excluded identities,
+`LoadMoreRecommendationItems` drops excluded stored candidates, and every
+`SaveRecommendationList` rewrite filters before writing, so a refresh never
+restores an exclusion. Un-disliking invalidates the seed and discover caches;
+the next refresh or refill may return the song or artist. The frontend hides a
+row from the rendered list immediately, so the page does not wait for a refresh.
 
 A remote row whose audio fails to load reports the failed provider identity to
 the recommender (`PlayerService.AddPlaybackFailureListener`). That provider is
@@ -908,6 +982,7 @@ The mini player controls sit over a CSS glassmorphism panel (`.glass-panel` in `
 - `vue-virtual-sortable` renders only visible rows in track lists (56px or 36px each).
 - Views are lazy-loaded (dynamic `import()` in router) — only the home view loads eagerly.
 - Search is debounced 300ms in `stores/search.ts`; cloud search debounces the same way and fetches 50 merged rows per page.
+- Cloud search source chips and cross-source tie-breaks follow the order saved in Settings → Search sources (`catalog_source_order`). A source can also be switched off there (`catalog_disabled_sources`): its chip disappears and searches skip it, while its row stays in place for re-enabling. A plugin-level disable removes the source from the registry instead; re-enabling then appends it alphabetically. A source's own ranking is unchanged. When every source is off, cloud search shows the actionable `settings.all_sources_disabled` state instead of an error dialog.
 - Track and album results in `SearchView` expose their shared context menus on right-click, matching the actions available on other track and album surfaces.
 - Artwork requests use variants (`_sm`, `_md`) sized appropriately for each context.
 - Fullscreen `PlayerArtwork` can stack outgoing and incoming covers for an automatic audio crossfade; `requestAnimationFrame` applies equal-power `cos(t*pi/2)`/`sin(t*pi/2)` opacity weights over the backend-provided effective fade duration, using `plus-lighter` compositing. Its maximum size is explicitly set by `FullScreenPlayer`: `22rem` without a right column and `20rem` when queue or lyrics is open. Player bars and mini-player artwork do not blend.

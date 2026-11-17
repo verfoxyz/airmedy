@@ -18,6 +18,9 @@ const mocks = vi.hoisted(() => ({
   preparePlayback: vi.fn(),
   save: vi.fn(),
   playTrackIds: vi.fn(),
+  startRadio: vi.fn(),
+  dislikeTrack: vi.fn(),
+  dislikeArtist: vi.fn(),
   handlers: new Map<string, (event: { data?: unknown }) => void>(),
   off: vi.fn(),
   route: { name: 'lastfm-list', params: { kind: 'top_tracks' } as { kind?: string } },
@@ -68,6 +71,20 @@ vi.mock('@/stores/catalog', () => ({
 
 vi.mock('@/stores/player', () => ({
   usePlayerStore: () => ({ playTrackIds: mocks.playTrackIds }),
+}))
+
+vi.mock('@/stores/lastfmRadio', () => ({
+  useLastFmRadioStore: () => ({ start: mocks.startRadio, active: false, appendedCount: 0, stop: vi.fn() }),
+}))
+
+vi.mock('@/stores/dislike', () => ({
+  DISLIKE_KIND_ARTIST: 'artist',
+  useDislikeStore: () => ({
+    items: [],
+    isTrackDisliked: () => false,
+    dislikeTrack: mocks.dislikeTrack,
+    dislikeArtist: mocks.dislikeArtist,
+  }),
 }))
 
 type RowState = 'matching' | 'matched' | 'no_match'
@@ -193,6 +210,7 @@ describe('LastFmListView (one persisted list)', () => {
     mocks.preparePlayback.mockReset()
     mocks.save.mockReset()
     mocks.playTrackIds.mockReset()
+    mocks.startRadio.mockReset()
     mocks.handlers.clear()
     mocks.off.mockReset()
     document.body.innerHTML = ''
@@ -226,6 +244,36 @@ describe('LastFmListView (one persisted list)', () => {
     expect(rows).toHaveLength(2)
     expect(rows[0].find('[data-test="top-track-status"]').attributes('data-state')).toBe('matching')
     expect(rows[1].find('[data-test="top-track-status"]').attributes('data-state')).toBe('matched')
+  })
+
+  it('keeps refreshed rows settled and only shows new rows matching', async () => {
+    // A refresh inherits provider/local/no_source from the previous version, so
+    // only rows with no previous identity may still show the matching state.
+    mocks.getList.mockResolvedValue(list([
+      item('Old', 'matched'),
+      item('Gone', 'no_match'),
+      item('New', 'matching'),
+    ]))
+    const wrapper = await mountView()
+
+    const rows = wrapper.findAll('[data-test="top-track-row"]')
+    expect(rows[0].find('[data-test="top-track-status"]').attributes('data-state')).toBe('matched')
+    expect(rows[1].find('[data-test="top-track-status"]').attributes('data-state')).toBe('no-match')
+    expect(rows[2].find('[data-test="top-track-status"]').attributes('data-state')).toBe('matching')
+  })
+
+  it('starts a radio from the first playable row', async () => {
+    mocks.getList.mockResolvedValue(list([item('Hit', 'matched'), item('Other', 'matched')]))
+    const wrapper = await mountView()
+
+    await wrapper.find('[data-test="lastfm-list-radio"]').trigger('click')
+
+    expect(mocks.startRadio).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Hit',
+      artist: 'Artist',
+      provider: 'wy',
+      externalId: 'wy-Hit',
+    }))
   })
 
   it('builds the header mosaic from the row covers', async () => {
@@ -692,6 +740,44 @@ describe('LastFmListView (one persisted list)', () => {
     await flushPromises()
 
     expect(mocks.refreshItem).toHaveBeenCalledWith('top_tracks', 'artist\u0000hit')
+  })
+
+  it('dislikes the row track from the context menu', async () => {
+    mocks.getList.mockResolvedValue(list([item('Hit', 'matched')]))
+    const wrapper = await mountView()
+
+    await wrapper
+      .find('[data-test="top-track-row"]')
+      .trigger('contextmenu', { clientX: 12, clientY: 18 })
+    const label = [...document.body.querySelectorAll('span')].find((node) =>
+      node.textContent?.includes('lastfm.dislike_track'),
+    )
+    expect(label).toBeDefined()
+    label!.closest('div')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+
+    expect(mocks.dislikeTrack).toHaveBeenCalledWith({
+      matchKey: 'artist\u0000hit',
+      title: 'Hit',
+      artist: 'Artist',
+    })
+  })
+
+  it('dislikes the row artist from the context menu', async () => {
+    mocks.getList.mockResolvedValue(list([item('Hit', 'matched')]))
+    const wrapper = await mountView()
+
+    await wrapper
+      .find('[data-test="top-track-row"]')
+      .trigger('contextmenu', { clientX: 12, clientY: 18 })
+    const label = [...document.body.querySelectorAll('span')].find((node) =>
+      node.textContent?.includes('lastfm.dislike_artist'),
+    )
+    expect(label).toBeDefined()
+    label!.closest('div')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+
+    expect(mocks.dislikeArtist).toHaveBeenCalledWith('Artist')
   })
 
   it('disables the row refresh while the row is already matching', async () => {

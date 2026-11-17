@@ -15,6 +15,8 @@ import { useFavoritesStore } from './stores/favorites'
 import { useDeviceStore } from './stores/device'
 import { usePlaylistsStore } from './stores/playlists'
 import { useMoodRadioStore } from './stores/moodRadio'
+import { useLastFmRadioStore } from './stores/lastfmRadio'
+import { useDislikeStore } from './stores/dislike'
 import { useAppStore } from './stores/app'
 import { useMobilePairingStore } from './stores/mobilePairing'
 import { useDownloadStore } from './stores/download'
@@ -33,6 +35,8 @@ const favoritesStore = useFavoritesStore()
 const deviceStore = useDeviceStore()
 const playlistsStore = usePlaylistsStore()
 const moodRadioStore = useMoodRadioStore()
+const lastfmRadioStore = useLastFmRadioStore()
+const dislikeStore = useDislikeStore()
 const appStore = useAppStore()
 const mobilePairingStore = useMobilePairingStore()
 const downloadStore = useDownloadStore()
@@ -136,6 +140,8 @@ onMounted(async () => {
 
   if (isMiniPlayer.value) {
     moodRadioStore.init(false)
+    lastfmRadioStore.init()
+    dislikeStore.init()
     return
   }
 
@@ -144,6 +150,8 @@ onMounted(async () => {
   deviceStore.checkFullscreen()
   playlistsStore.loadAll()
   moodRadioStore.init()
+  lastfmRadioStore.init()
+  dislikeStore.init()
   mobilePairingStore.init()
   // The sync dialog is global so page switches cannot leave it behind.
   librarySyncStore.init()
@@ -172,6 +180,8 @@ onUnmounted(() => {
   deviceStore.dispose()
   playlistsStore.dispose()
   moodRadioStore.dispose()
+  lastfmRadioStore.dispose()
+  dislikeStore.dispose()
   mobilePairingStore.dispose()
   downloadStore.dispose()
   catalogStore.dispose()

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ListMusic, X, Goal, Radio } from '@lucide/vue'
+import { ListMusic, X, Goal, Radio, RadioTower } from '@lucide/vue'
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { usePlayerStore } from '../../stores/player'
 import { useMoodRadioStore } from '../../stores/moodRadio'
+import { useLastFmRadioStore } from '../../stores/lastfmRadio'
 import TrackTable from '../TrackTable.vue'
 import type { TrackDTO } from '../../../bindings/airmedy/internal/domain/models'
 
@@ -21,6 +22,7 @@ const { t } = useI18n()
 const router = useRouter()
 const playerStore = usePlayerStore()
 const moodRadioStore = useMoodRadioStore()
+const lastfmRadioStore = useLastFmRadioStore()
 const trackTable = ref<InstanceType<typeof TrackTable> | null>(null)
 
 function navigate(path: string) {
@@ -46,6 +48,21 @@ defineExpose({
           <ListMusic class="w-4 h-4" />
           <span class="text-sm font-semibold uppercase tracking-wider">{{ t('player.up_next') }}</span>
           <Radio v-if="moodRadioStore.active" data-test="mood-radio-indicator" class="w-3.5 h-3.5" :title="t('player.mood_radio_active')" />
+          <button
+            v-if="lastfmRadioStore.active"
+            type="button"
+            data-test="lastfm-radio-indicator"
+            class="rounded-full p-0.5 transition-colors hover:text-foreground"
+            :title="t('player.lastfm_radio_stop')"
+            @click="lastfmRadioStore.stop()"
+          >
+            <RadioTower class="w-3.5 h-3.5" />
+          </button>
+          <span
+            v-if="lastfmRadioStore.appendedCount"
+            data-test="lastfm-radio-appended"
+            class="text-[11px] font-normal normal-case tracking-normal text-foreground/60"
+          >{{ t('player.radio_appended', { count: lastfmRadioStore.appendedCount }) }}</span>
         </div>
         <div class="flex items-center gap-1">
           <button @click="trackTable?.scrollToCurrentTrack()"

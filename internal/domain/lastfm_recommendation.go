@@ -108,6 +108,11 @@ type LastFmRecommendationRepository interface {
 	UpdateRecommendationItems(ctx context.Context, items []RecommendationItem) error
 	// PendingRecommendationItems returns every row still waiting for a match.
 	PendingRecommendationItems(ctx context.Context) ([]RecommendationItem, error)
+	// ResetRecommendationMatches clears the match state of every row whose
+	// Last.fm identity is in matchKeys and marks those rows as matching again.
+	// It returns the number of rows reset; a library addition uses it to make a
+	// previously remote match re-resolve into a local hit.
+	ResetRecommendationMatches(ctx context.Context, matchKeys []string) (int, error)
 	// SaveRecommendationCandidates stores the unexpanded candidate pool of one
 	// list (the discover list appends its next page from it).
 	SaveRecommendationCandidates(ctx context.Context, kind string, items []RecommendationItem) error

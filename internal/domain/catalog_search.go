@@ -402,6 +402,11 @@ var (
 	// ErrCatalogSourceUnavailable means no running plugin reported the source.
 	ErrCatalogSourceUnavailable = errors.New("catalog source unavailable")
 	// ErrCatalogNoSources means no plugin reported any searchable source at all,
+	// ErrCatalogAllSourcesDisabled means sources are installed but the user
+	// switched every one of them off. It wraps ErrCatalogNoSources, so a caller
+	// that only knows "no sources" keeps working while the UI can word the
+	// actionable state.
+	ErrCatalogAllSourcesDisabled = fmt.Errorf("%w: every search source is disabled", ErrCatalogNoSources)
 	// which is different from "the query found nothing": the UI explains how to
 	// install one instead of showing an empty list.
 	ErrCatalogNoSources = errors.New("no catalog source is available")

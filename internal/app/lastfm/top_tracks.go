@@ -91,10 +91,14 @@ type TopTrackUpdate struct {
 }
 
 type topTrackState struct {
-	item   TopTrackItem
-	tried  map[string]bool
-	active bool
-	done   bool
+	item  TopTrackItem
+	tried map[string]bool
+	// answered records that at least one source completed without an error, so
+	// "no source" is a real answer and may be cached. A page where every source
+	// errored must not poison the cache.
+	answered bool
+	active   bool
+	done     bool
 }
 
 type cachedSourceMatch struct {
@@ -171,15 +175,19 @@ func (r *Recommender) collectRecommendations(
 
 	if wantTop {
 		collected.topItems = r.buildTopTrackItems(tracks)
+		collected.topItems = r.inheritStoredMatches(
+			ctx, domain.LastFmRecommendationTopTracks, collected.topItems)
 	}
 	if wantSimilar {
 		// "For you" reuses the same top tracks as seeds: track.getSimilar first,
 		// the similar-artist fallback only for the seeds that returned nothing.
 		// Local files are deliberately kept — a recommendation the user already
 		// owns is playable and shows "in library".
-		seeds := usableSeeds(tracks, similarSeedLimit)
+		seeds := r.similarListSeeds(ctx, tracks)
 		similarTracks, similarPartial := r.collectSimilarRecommendations(ctx, seeds, force)
 		collected.similarItems = buildSimilarItems(seeds, similarTracks)
+		collected.similarItems = r.inheritStoredMatches(
+			ctx, domain.LastFmRecommendationSimilar, collected.similarItems)
 		if similarPartial {
 			collected.status = StatusPartial
 		}
@@ -232,8 +240,8 @@ func (r *Recommender) startRecommendationMatching(
 	r.rememberTopRows(collected.topItems, collected.similarItems)
 
 	if combined && collected.wantTop && collected.wantSimilar {
-		topStates := r.seedTopTrackStates(collected.topItems, collected.sources)
-		similarStates := r.seedTopTrackStates(collected.similarItems, collected.sources)
+		topStates := r.seedTopTrackStates(ctx, collected.topItems, collected.sources)
+		similarStates := r.seedTopTrackStates(ctx, collected.similarItems, collected.sources)
 		// Cached hits are resolved before the run starts and would otherwise
 		// stay "matching" in the database forever.
 		r.persistMatchingStates(topStates)
@@ -263,7 +271,7 @@ func (r *Recommender) startRecommendationMatching(
 		if kind == domain.LastFmRecommendationSimilar {
 			items = collected.similarItems
 		}
-		states := r.seedTopTrackStates(items, collected.sources)
+		states := r.seedTopTrackStates(ctx, items, collected.sources)
 		r.persistMatchingStates(states)
 		if anyTopStatePending(states) {
 			r.markMatchingActive(kind, true)
@@ -484,12 +492,36 @@ func recommendationRowKey(kind, matchKey string) string {
 	return kind + "\x00" + matchKey
 }
 
-// seedTopTrackStates applies the per-source match cache and returns the rows a
-// worker still has to handle.
-func (r *Recommender) seedTopTrackStates(items []TopTrackItem, sources []string) []*topTrackState {
+// seedTopTrackStates applies the shared persistent cache, then the in-memory
+// per-source cache, and returns the rows a worker still has to handle.
+func (r *Recommender) seedTopTrackStates(
+	ctx context.Context, items []TopTrackItem, sources []string,
+) []*topTrackState {
+	keys := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.MatchKey != "" {
+			keys = append(keys, item.MatchKey)
+		}
+	}
+	cached := r.liveMatchCache(ctx, keys)
+
 	states := make([]*topTrackState, len(items))
 	for index, item := range items {
 		state := &topTrackState{item: item, tried: make(map[string]bool)}
+		// A refresh inherited a settled row: it is already playable (or already
+		// known to have no source) and must not enter the queue again.
+		if !item.Matching &&
+			(item.Provider != "" || item.LocalTrackID != "" || item.NoSource) {
+			state.done = true
+			states[index] = state
+			continue
+		}
+		if entry, ok := cached[item.MatchKey]; ok {
+			applyMatchCacheEntry(&state.item, entry)
+			state.done = true
+			states[index] = state
+			continue
+		}
 		failed := r.failedTopSources(item.Kind, item.MatchKey)
 		for _, source := range sources {
 			if failed[source] {
@@ -600,14 +632,20 @@ func (r *Recommender) runTopTrackMatching(username string, run queuedTopTrackRun
 	defer r.markMatchingActive(run.kind, false)
 
 	var (
-		bufferMu sync.Mutex
-		buffer   []TopTrackItem
+		bufferMu    sync.Mutex
+		buffer      []TopTrackItem
+		cacheBuffer []domain.LastFmMatchCacheEntry
 	)
 	flush := func(done bool) {
 		bufferMu.Lock()
 		items := append([]TopTrackItem{}, buffer...)
 		buffer = nil
+		entries := append([]domain.LastFmMatchCacheEntry{}, cacheBuffer...)
+		cacheBuffer = nil
 		bufferMu.Unlock()
+		// The cache write is independent of the event batch: a final frame may
+		// carry no rows but still persist answers.
+		r.storeMatchCacheEntries(entries)
 		if len(items) == 0 && !done {
 			return
 		}
@@ -651,6 +689,8 @@ func (r *Recommender) runTopTrackMatching(username string, run queuedTopTrackRun
 			state.item.NoSource = false
 			state.done = true
 			buffer = append(buffer, state.item)
+			cacheBuffer = append(cacheBuffer,
+				r.matchCacheEntryForItem(state.item, false))
 		}
 	}
 
@@ -715,14 +755,20 @@ func (r *Recommender) runTopTrackMatching(username string, run queuedTopTrackRun
 				states[next].active = true
 				mu.Unlock()
 
-				match := r.searchTopTrackSource(states[next].item, source)
+				match, answered := r.searchTopTrackSource(states[next].item, source)
 
 				mu.Lock()
 				states[next].active = false
 				states[next].tried[source] = true
+				if answered {
+					states[next].answered = true
+				}
 				r.storeSourceMatch(states[next].item.Kind, states[next].item.MatchKey, source, match)
 
-				var update *TopTrackItem
+				var (
+					update     *TopTrackItem
+					cacheEntry *domain.LastFmMatchCacheEntry
+				)
 				if match != nil {
 					r.applyTopTrackMatch(&states[next].item, match)
 					states[next].item.Matching = false
@@ -732,6 +778,8 @@ func (r *Recommender) runTopTrackMatching(username string, run queuedTopTrackRun
 					complete++
 					item := states[next].item
 					update = &item
+					entry := r.matchCacheEntryForItem(item, false)
+					cacheEntry = &entry
 				} else if len(states[next].tried) >= len(sources) {
 					states[next].item.Matching = false
 					states[next].item.NoSource = true
@@ -739,6 +787,12 @@ func (r *Recommender) runTopTrackMatching(username string, run queuedTopTrackRun
 					complete++
 					item := states[next].item
 					update = &item
+					// Only a completed source answer may be cached; a page where
+					// every source errored must not record a false "no source".
+					if states[next].answered {
+						entry := r.matchCacheEntryForItem(item, true)
+						cacheEntry = &entry
+					}
 				} else {
 					pending = append(pending, next)
 				}
@@ -748,6 +802,9 @@ func (r *Recommender) runTopTrackMatching(username string, run queuedTopTrackRun
 				if update != nil {
 					bufferMu.Lock()
 					buffer = append(buffer, *update)
+					if cacheEntry != nil {
+						cacheBuffer = append(cacheBuffer, *cacheEntry)
+					}
 					shouldFlush := len(buffer) >= matchEventBatch
 					bufferMu.Unlock()
 					if shouldFlush {
@@ -854,6 +911,10 @@ func (r *Recommender) requeueTopTrack(kind, matchKey, failedProvider string) {
 	}
 	r.mu.Unlock()
 
+	// The cached answer points at the source that just failed to play, so it
+	// must not be handed back on the next list build.
+	r.deleteMatchCacheKeys([]string{matchKey})
+
 	item := resetTopTrackItem(base)
 	r.persistRecommendationItems([]TopTrackItem{item})
 	r.emitTopTrackUpdate([]TopTrackItem{item})
@@ -936,10 +997,14 @@ func (r *Recommender) failedTopSources(kind, matchKey string) map[string]bool {
 }
 
 // searchTopTrackSource asks exactly one source, within the per-candidate budget.
-func (r *Recommender) searchTopTrackSource(item TopTrackItem, source string) *domain.CatalogSearchResult {
+// answered is true when the source completed (with or without a playable row);
+// a failed request is not an answer and must not be cached as "no source".
+func (r *Recommender) searchTopTrackSource(
+	item TopTrackItem, source string,
+) (*domain.CatalogSearchResult, bool) {
 	artist := strings.TrimSpace(item.Artist)
 	if r.matcher == nil || artist == "" || strings.TrimSpace(item.Title) == "" {
-		return nil
+		return nil, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), matchCandidateTimeout)
 	defer cancel()
@@ -948,9 +1013,9 @@ func (r *Recommender) searchTopTrackSource(item TopTrackItem, source string) *do
 	if err != nil {
 		r.logger.Debug("last.fm top tracks: source search failed",
 			"source", source, "artist", artist, "title", item.Title, "error", err)
-		return nil
+		return nil, false
 	}
-	return chooseMatch(ctx, r.streams, rows)
+	return chooseMatch(ctx, r.streams, rows), true
 }
 
 // localMatch returns a catalogue-shaped row for an on-disk copy, or nil.

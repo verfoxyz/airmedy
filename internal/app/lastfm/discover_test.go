@@ -32,7 +32,6 @@ func discoverTitles(list domain.RecommendationList) []string {
 func TestDiscoverSeedsRotateByWeekAndAreStableInsideOne(t *testing.T) {
 	source := connectedSource(nil)
 	source.top[topTrackPeriod] = []LastFmTrack{track("Seed", "One")}
-	source.topArtists["overall"] = []LastFmArtist{{Name: "Overall Artist"}}
 	source.topArtists["6month"] = []LastFmArtist{{Name: "Recent Artist"}}
 	recommender, _, _ := newStoredRecommender(source, sourceMatcher())
 	wednesday := time.Date(2026, 1, 7, 12, 0, 0, 0, time.UTC)
@@ -58,8 +57,10 @@ func TestDiscoverSeedsRotateByWeekAndAreStableInsideOne(t *testing.T) {
 	if source.topArtistCalls != 2 {
 		t.Fatalf("top artist calls = %d, want a new seed set next week", source.topArtistCalls)
 	}
-	if source.topArtistPeriods[0] == source.topArtistPeriods[1] {
-		t.Fatalf("periods = %v, want the artist window to rotate", source.topArtistPeriods)
+	for _, period := range source.topArtistPeriods {
+		if period != "6month" {
+			t.Fatalf("periods = %v, want the six-month artist window", source.topArtistPeriods)
+		}
 	}
 }
 
@@ -103,8 +104,8 @@ func TestDiscoverFiltersLocalRecentSeedsAndCapsPerArtist(t *testing.T) {
 	for _, item := range list.Items {
 		perArtist[item.Artist]++
 	}
-	if perArtist["Artist A"] > discoverPerArtist {
-		t.Fatalf("Artist A rows = %d, want at most %d", perArtist["Artist A"], discoverPerArtist)
+	if perArtist["Artist A"] > diversityArtistLimit {
+		t.Fatalf("Artist A rows = %d, want at most %d", perArtist["Artist A"], diversityArtistLimit)
 	}
 	if len(titles) != 3 {
 		t.Fatalf("discover titles = %v, want the three fresh rows", titles)
@@ -119,8 +120,8 @@ func TestDiscoverStopsAtTheRequestBudget(t *testing.T) {
 	}
 	for index := 0; index < 10; index++ {
 		artist := fmt.Sprintf("Artist %d", index)
-		source.topArtists["overall"] = append(
-			source.topArtists["overall"], LastFmArtist{Name: artist})
+		source.topArtists["6month"] = append(
+			source.topArtists["6month"], LastFmArtist{Name: artist})
 		for neighbour := 0; neighbour < 5; neighbour++ {
 			source.similarArtists[artist] = append(
 				source.similarArtists[artist], LastFmArtist{Name: fmt.Sprintf("%s N%d", artist, neighbour)})

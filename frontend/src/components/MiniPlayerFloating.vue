@@ -6,11 +6,12 @@ import {
   Pin, PinOff, X, Music,
   Shuffle, Repeat, Repeat1,
   Volume2,
-  Mic2, ListMusic, Goal, Radio,
+  Mic2, ListMusic, Goal, Radio, RadioTower,
 } from '@lucide/vue'
 import LazyImg from '@/components/LazyImg.vue'
 import { usePlayerStore } from '@/stores/player'
 import { useMoodRadioStore } from '@/stores/moodRadio'
+import { useLastFmRadioStore } from '@/stores/lastfmRadio'
 import { RepeatMode } from '../../bindings/airmedy/internal/domain/models'
 import { formatTime, getTrackDisplayArtist, hexToRgba, getTrackDisplayTitle } from '@airmedy/utils'
 import { Slider } from '@airmedy/ui'
@@ -28,6 +29,7 @@ import RomanizationToggle from './RomanizationToggle.vue'
 
 const store = usePlayerStore()
 const moodRadioStore = useMoodRadioStore()
+const lastfmRadioStore = useLastFmRadioStore()
 const appStore = useAppStore()
 const { t } = useI18n()
 const artworkCrossfade = computed(() =>
@@ -332,6 +334,21 @@ watch(() => store.theme, (colors) => {
             <span class="text-sm font-semibold">{{ t('player.up_next') }}</span>
             <Radio v-if="moodRadioStore.active" data-test="mini-player-mood-radio" class="w-3.5 h-3.5 text-primary"
               :title="t('player.mood_radio_active')" />
+            <button
+              v-if="lastfmRadioStore.active"
+              type="button"
+              data-test="mini-player-lastfm-radio"
+              class="rounded-full p-0.5 text-primary transition-colors hover:text-foreground"
+              :title="t('player.lastfm_radio_stop')"
+              @click="lastfmRadioStore.stop()"
+            >
+              <RadioTower class="w-3.5 h-3.5" />
+            </button>
+            <span
+              v-if="lastfmRadioStore.appendedCount"
+              data-test="mini-player-lastfm-radio-appended"
+              class="text-[11px] font-normal text-foreground/60"
+            >{{ t('player.radio_appended', { count: lastfmRadioStore.appendedCount }) }}</span>
           </div>
           <button data-test="mini-player-scroll-to-current"
             class="p-1.5 rounded-full text-foreground/70 hover:bg-foreground/[0.04] hover:text-foreground transition-colors"

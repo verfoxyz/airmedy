@@ -16,6 +16,7 @@ import {
   Mic2,
   PictureInPicture2,
   AlertCircle,
+  ThumbsDown,
 } from '@lucide/vue'
 import LazyImg from '@/components/LazyImg.vue'
 import { usePlayerStore } from '../stores/player'
@@ -30,10 +31,14 @@ import PlayerControlButton from './player/PlayerControlButton.vue'
 import PlayerQuickSettingsMenu from './player/PlayerQuickSettingsMenu.vue'
 import { useAppStore } from '../stores/app'
 import PlayerFavoriteButton from './player/PlayerFavoriteButton.vue'
+import { useLastFmRadioStore } from '../stores/lastfmRadio'
+import { useDislikeStore } from '../stores/dislike'
 
 const { t } = useI18n()
 const store = usePlayerStore()
 const appStore = useAppStore()
+const lastfmRadioStore = useLastFmRadioStore()
+const dislikeStore = useDislikeStore()
 const trackContextMenu = ref<InstanceType<typeof TrackContextMenu> | null>(null)
 const quickSettingsMenu = ref<InstanceType<typeof PlayerQuickSettingsMenu> | null>(null)
 
@@ -80,6 +85,24 @@ async function onSeekEnd() {
   isSeeking.value = false
 }
 
+/**
+ * dislikeCurrent excludes the playing radio row and moves on. The skip runs
+ * even when the write fails, so one bad database write cannot stall playback.
+ */
+async function dislikeCurrent() {
+  const track = store.currentTrack
+  if (!track) return
+  const artist = getTrackDisplayArtist(track)
+  const title = getTrackDisplayTitle(track)
+  try {
+    if (artist && title) await dislikeStore.dislikeTrack({ title, artist })
+  } catch (error) {
+    console.error('Failed to dislike the playing radio track', error)
+  } finally {
+    await store.next()
+  }
+}
+
 </script>
 
 <template>
@@ -103,6 +126,17 @@ async function onSeekEnd() {
         <MarqueeText :text="trackArtist" fade content-class="text-xs text-dim leading-tight mt-0.5" />
       </div>
       <PlayerFavoriteButton v-if="appStore.showPlayerFavoriteButton" class="-ml-1" />
+      <button
+        v-if="lastfmRadioStore.active && store.currentTrack"
+        type="button"
+        data-test="player-dislike"
+        class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-foreground opacity-40 transition-opacity duration-300 hover:bg-foreground/[0.04] hover:opacity-70"
+        :aria-label="t('player.dislike_track')"
+        :title="t('player.dislike_track')"
+        @click="dislikeCurrent"
+      >
+        <ThumbsDown class="h-4 w-4" />
+      </button>
     </div>
 
     <!-- Playback Controls -->

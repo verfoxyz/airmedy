@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { ref, watch, onUnmounted } from 'vue'
-import { X, ListMusic, Goal, Radio } from '@lucide/vue'
+import { X, ListMusic, Goal, Radio, RadioTower } from '@lucide/vue'
 import { usePlayerStore } from '../stores/player'
 import { useMoodRadioStore } from '../stores/moodRadio'
+import { useLastFmRadioStore } from '../stores/lastfmRadio'
 import { useI18n } from 'vue-i18n'
 import QueueTrackList from './QueueTrackList.vue'
 
 const { t } = useI18n()
 const store = usePlayerStore()
 const moodRadioStore = useMoodRadioStore()
+const lastfmRadioStore = useLastFmRadioStore()
 const queueTrackList = ref<InstanceType<typeof QueueTrackList> | null>(null)
 
 const scrollToCurrentTrack = () => queueTrackList.value?.scrollToCurrentTrack()
@@ -37,7 +39,22 @@ onUnmounted(() => {
         <ListMusic class="w-4 h-4 text-primary" />
         <span>{{ t('player.queue') }}</span>
         <Radio v-if="moodRadioStore.active" class="w-3.5 h-3.5 text-primary ml-1" :title="t('player.mood_radio_active')" />
-        <span v-else class="text-xs text-muted-foreground font-normal ml-1">({{ store.queue.length }})</span>
+        <button
+          v-if="lastfmRadioStore.active"
+          type="button"
+          data-test="lastfm-radio-indicator"
+          class="ml-1 rounded-full p-0.5 text-primary transition-colors hover:text-foreground"
+          :title="t('player.lastfm_radio_stop')"
+          @click="lastfmRadioStore.stop()"
+        >
+          <RadioTower class="w-3.5 h-3.5" />
+        </button>
+        <span
+          v-if="lastfmRadioStore.appendedCount"
+          data-test="lastfm-radio-appended"
+          class="ml-2 text-xs font-normal text-dim"
+        >{{ t('player.radio_appended', { count: lastfmRadioStore.appendedCount }) }}</span>
+        <span v-else-if="!moodRadioStore.active && !lastfmRadioStore.active" class="text-xs text-muted-foreground font-normal ml-1">({{ store.queue.length }})</span>
       </div>
       <div class="flex items-center gap-1">
         <button

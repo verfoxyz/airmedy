@@ -3,7 +3,7 @@ import { computed, onActivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Events } from '@wailsio/runtime'
-import { ListMusic, MoreHorizontal, Music, Play, Radio, RefreshCw, Shuffle, Timer } from '@lucide/vue'
+import { ListMusic, MoreHorizontal, Music, Play, Radio, RadioTower, RefreshCw, Shuffle, Timer } from '@lucide/vue'
 import { IconButton } from '@airmedy/ui'
 import ContextMenu from '@/components/ContextMenu.vue'
 import LazyImg from '@/components/LazyImg.vue'
@@ -12,11 +12,13 @@ import { useContextMenu } from '@/composables/useContextMenu'
 import {
   formatLastFmDuration,
   formatLastFmWeekRange,
+  isPlayableLastFmRow,
   lastFmCoverClass,
   lastFmCovers,
   planLastFmPlayback,
 } from '@/lib/lastfmTracks'
 import { useCatalogStore } from '@/stores/catalog'
+import { useLastFmRadioStore } from '@/stores/lastfmRadio'
 import { usePlayerStore } from '@/stores/player'
 import * as LastFmService from '../../bindings/airmedy/internal/infra/wails/lastfmservice'
 import type {
@@ -34,6 +36,7 @@ import type {
 const { t } = useI18n()
 const router = useRouter()
 const catalogStore = useCatalogStore()
+const lastfmRadioStore = useLastFmRadioStore()
 const playerStore = usePlayerStore()
 
 const collection = ref<RecommendationListCollectionDTO | null>(null)
@@ -44,6 +47,8 @@ const loadError = ref('')
 const refreshingAll = ref(false)
 const refreshingKinds = ref<Record<string, boolean>>({})
 const busyKind = ref('')
+/** radioBusyKind marks the card whose radio is being seeded. */
+const radioBusyKind = ref('')
 /** playNotice is a machine key (plus count) the template words. */
 const playNoticeKey = ref('')
 const playNoticeCount = ref(0)
@@ -183,6 +188,38 @@ async function playList(list: RecommendationListSummaryDTO, shuffle: boolean) {
     console.error('Failed to play a Last.fm recommendation list', error)
   } finally {
     busyKind.value = ''
+  }
+}
+
+/**
+ * startRadio seeds Last.fm radio from the card's first playable row. The card
+ * only stores a summary, so the list is read once; a matching list with no
+ * resolved row yet reuses the same notice as playback.
+ */
+async function startRadio(list: RecommendationListSummaryDTO) {
+  if (radioBusyKind.value === list.kind || list.track_count === 0) return
+  radioBusyKind.value = list.kind
+  playNoticeKey.value = ''
+  try {
+    const detail = await LastFmService.GetRecommendationList(list.kind)
+    const row = (detail.items ?? []).find(isPlayableLastFmRow)
+    if (!row) {
+      playNoticeKey.value = 'play_unavailable'
+      return
+    }
+    await lastfmRadioStore.start({
+      trackId: row.local_track_id || '',
+      provider: row.provider || '',
+      externalId: row.external_id || '',
+      title: row.title,
+      artist: row.artists?.[0] || row.artist,
+      album: row.album ?? '',
+      duration: row.duration,
+    })
+  } catch (error) {
+    console.error('Failed to start Last.fm radio from a list', error)
+  } finally {
+    radioBusyKind.value = ''
   }
 }
 
@@ -455,6 +492,17 @@ onActivated(() => {
                   @click.stop="playList(card, true)"
                 >
                   <Shuffle class="h-5 w-5" aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  class="flex h-12 w-12 translate-y-4 items-center justify-center rounded-full bg-background text-foreground shadow-xl ring-1 ring-foreground/[0.08] transition-all duration-300 group-hover:translate-y-0 disabled:opacity-40"
+                  data-test="lastfm-card-radio"
+                  :aria-label="$t('lastfm.start_radio')"
+                  :title="$t('lastfm.start_radio')"
+                  :disabled="radioBusyKind === card.kind || card.track_count === 0"
+                  @click.stop="startRadio(card)"
+                >
+                  <RadioTower class="h-5 w-5" aria-hidden="true" />
                 </button>
               </div>
 

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"airmedy/internal/domain"
+
+	"github.com/jmoiron/sqlx"
 )
 
 type lastfmRecommendationRepository struct {
@@ -263,6 +265,36 @@ func (r *lastfmRecommendationRepository) PendingRecommendationItems(
 		items = append(items, item)
 	}
 	return items, nil
+}
+
+// ResetRecommendationMatches clears the match state of the given identities so
+// the rows re-enter the matching queue. A library import uses this to replace a
+// cached remote match with the local copy it now owns.
+func (r *lastfmRecommendationRepository) ResetRecommendationMatches(
+	ctx context.Context, matchKeys []string,
+) (int, error) {
+	matchKeys = uniqueMatchKeys(matchKeys)
+	if len(matchKeys) == 0 {
+		return 0, nil
+	}
+	query, args, err := sqlx.In(
+		`UPDATE lastfm_recommendation_items
+		 SET matching = 1, matched = 0, no_source = 0, provider = '',
+		     external_id = '', state = '', local_track_id = '', blocked_reason = '',
+		     sources = '[]', downloadable = 0, suspicious = 0
+		 WHERE match_key IN (?)`, matchKeys)
+	if err != nil {
+		return 0, fmt.Errorf("lastfm recommendation items: reset matches: %w", err)
+	}
+	result, err := r.db.Ext(ctx).ExecContext(ctx, r.db.Rebind(query), args...)
+	if err != nil {
+		return 0, fmt.Errorf("lastfm recommendation items: reset matches: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, nil
+	}
+	return int(affected), nil
 }
 
 // SaveRecommendationCandidates stores the unexpanded candidate pool in the

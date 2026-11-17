@@ -1,6 +1,6 @@
 # 任务：搜索源顺序可配置（把 kg 放到末尾）
 
-> 状态：待开工
+> 状态：✅ 已完成（`catalog_source_order` 迁移 000111；`selectSources`/`rankMultiSource`/`sourceList` 统一使用配置顺序，`Sources` 与 `Search` 都返回有序源列表；`CatalogService.GetSourceOrder/SaveSourceOrder`；设置页「搜索源」上移/下移即时保存、失败回滚；12 语言；Go/Vue 测试覆盖）
 > 目的：搜索/匹配时按用户设定的源顺序聚合，避免 kg 的 K 歌版本排在最前
 > 关联：`catalog/search`（搜索聚合）、`lastfm/match-cache.md`（匹配优先级）
 

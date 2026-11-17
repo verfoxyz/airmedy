@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   getList: vi.fn(),
   preparePlayback: vi.fn(),
   playTrackIds: vi.fn(),
+  startRadio: vi.fn(),
   handlers: new Map<string, (event: { data?: unknown }) => void>(),
   off: vi.fn(),
 }))
@@ -49,6 +50,10 @@ vi.mock('@/stores/catalog', () => ({
 
 vi.mock('@/stores/player', () => ({
   usePlayerStore: () => ({ playTrackIds: mocks.playTrackIds }),
+}))
+
+vi.mock('@/stores/lastfmRadio', () => ({
+  useLastFmRadioStore: () => ({ start: mocks.startRadio, active: false, appendedCount: 0, stop: vi.fn() }),
 }))
 
 function summary(kind: string, count: number, covers: string[] = [], duration = 0) {
@@ -151,6 +156,7 @@ describe('LastFmView (persisted recommendation cards)', () => {
     mocks.getList.mockReset()
     mocks.preparePlayback.mockReset()
     mocks.playTrackIds.mockReset()
+    mocks.startRadio.mockReset()
     mocks.handlers.clear()
     mocks.off.mockReset()
     document.body.innerHTML = ''
@@ -324,6 +330,28 @@ describe('LastFmView (persisted recommendation cards)', () => {
     expect(mocks.preparePlayback).toHaveBeenCalledTimes(2)
     expect(mocks.playTrackIds).toHaveBeenCalledWith(['id-One', 'id-Two'])
     expect(mocks.push).not.toHaveBeenCalled()
+  })
+
+  it('starts a radio from the first playable card row', async () => {
+    mocks.list.mockResolvedValue(collection())
+    mocks.getList.mockResolvedValue({
+      kind: 'top_tracks',
+      title: 'lastfm.top',
+      items: [trackRow('One'), trackRow('Two')],
+      updated_at: '2026-01-01T00:00:00Z',
+    })
+    const wrapper = await mountView()
+
+    await wrapper.findAll('[data-test="lastfm-card-radio"]')[1].trigger('click')
+    await flushPromises()
+
+    expect(mocks.startRadio).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'One',
+      artist: 'Artist',
+      provider: 'wy',
+      externalId: 'wy-One',
+    }))
+    expect(mocks.playTrackIds).not.toHaveBeenCalled()
   })
 
   it('keeps playing the other rows when one row cannot be prepared', async () => {

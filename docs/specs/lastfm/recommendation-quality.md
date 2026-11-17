@@ -1,6 +1,6 @@
 # 任务：提升个性化推荐质量（本地种子 + 电台模式 + 多样性）
 
-> 状态：待开工
+> 状态：已实现
 > 背景：现有推荐只用 Last.fm 的 `topTracks` 做种子；本地导入的歌大多没有 scrobble，导致推荐只围绕少数几首、且重复
 > 关联：`discovery.md`（发现列表）、`recommendation-lists.md`、`player/`（队列）、`media-request-state-machine.md`
 

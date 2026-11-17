@@ -115,11 +115,13 @@
       "library": "ライブラリ",
       "integrations": "連携",
       "playback": "再生",
+      "dislikes": "低評価",
       "about": "情報",
       "remote": "リモコン",
       "mobile_devices": "モバイル",
       "download": "ダウンロード",
-      "plugins": "プラグイン"
+      "plugins": "プラグイン",
+      "sources": "検索ソース"
     },
     "general": {
       "behavior": "動作",
@@ -466,7 +468,23 @@
         "move_down": "下へ",
         "order_hint": "並び順が優先度です：上のソースから順に試します。"
       }
-    }
+    },
+    "dislikes": {
+      "title": "低評価した曲とアーティスト",
+      "description": "発見と Last.fm ラジオから除外されます。ライブラリと Last.fm アカウントは変更されません。",
+      "empty": "低評価した曲やアーティストはありません。",
+      "kind_artist": "アーティスト",
+      "remove": "低評価を解除"
+    },
+    "source_order": "検索ソースの順序",
+    "source_order_hint": "上にあるソースは、関連度が同じ結果のタイブレークに使われ、先に表示されます。各ソース内の並び順は変わりません。",
+    "move_up": "上へ移動",
+    "move_down": "下へ移動",
+    "source_enabled": "有効",
+    "source_disabled": "無効",
+    "source_drag_hint": "ハンドルをドラッグして並べ替えます。ドラッグできない場合は矢印ボタンを使います。",
+    "all_sources_disabled": "すべての検索ソースが無効です。設定 → 検索ソースで有効にしてください。",
+    "source_save_failed": "変更を保存できませんでした。以前の設定に戻しました。"
   },
   "sidebar": {
     "download": "ダウンロードとタスク",
@@ -505,6 +523,9 @@
     "next": "次へ",
     "repeat": "リピート",
     "mood_radio_active": "ムードラジオ再生中",
+    "lastfm_radio_active": "Last.fm ラジオ実行中",
+    "lastfm_radio_stop": "ラジオをオフ",
+    "radio_appended": "{count} 曲を追加しました",
     "mute": "ミュート",
     "unmute": "ミュート解除",
     "lyrics": "歌詞",
@@ -530,7 +551,8 @@
     "secondary_translation": "翻訳",
     "secondary_romanization": "ローマ字",
     "romanization_hint": "オフラインのローマ字表記: 中国語と韓国語。",
-    "romanization_mandarin": "漢字のみの歌詞は既定で中国語（標準語）として扱います。名前の読み方は異なる場合があります。"
+    "romanization_mandarin": "漢字のみの歌詞は既定で中国語（標準語）として扱います。名前の読み方は異なる場合があります。",
+    "dislike_track": "低評価してスキップ"
   },
   "home": {
     "title": "ホーム",
@@ -637,6 +659,7 @@
     "redownload": "再ダウンロード",
     "remove_from_queue": "キューから削除",
     "export_playlist": "プレイリストをエクスポート",
+    "start_radio": "ラジオを開始",
     "start_mood_radio": "ムードラジオを開始",
     "pin_to_sidebar": "サイドバーにピン留め",
     "unpin_from_sidebar": "サイドバーのピン留めを解除",
@@ -949,6 +972,7 @@
     "refresh_list": "このリストを更新",
     "refresh_all": "すべて更新",
     "refresh_item": "この曲のソースを更新",
+    "start_radio": "このリストからラジオを開始",
     "play_all": "すべて再生",
     "shuffle": "シャッフル",
     "more_actions": "その他の操作",
@@ -963,6 +987,8 @@
     "plays_count": "{count} 回再生",
     "auto_refresh": "新しいおすすめを自動で確認",
     "load_more": "さらに読み込む",
-    "no_more": "これ以上のおすすめはありません"
+    "no_more": "これ以上のおすすめはありません",
+    "dislike_track": "この曲を低評価",
+    "dislike_artist": "このアーティストを低評価"
   }
 }

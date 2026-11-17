@@ -662,6 +662,15 @@ describe('CatalogResults', () => {
     wrapper.unmount()
   })
 
+  it('explains an all-disabled source set with the actionable wording', () => {
+    const wrapper = mountResults({ errorKind: 'sources_disabled' })
+
+    expect(wrapper.find('[data-test="catalog-sources-disabled"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('settings.all_sources_disabled')
+    expect(wrapper.text()).not.toContain('cloud_search.no_sources_title')
+    wrapper.unmount()
+  })
+
   it('shows the empty state when a usable page has no rows', () => {
     const wrapper = mountResults({ sources: SOURCES, rows: [] })
 

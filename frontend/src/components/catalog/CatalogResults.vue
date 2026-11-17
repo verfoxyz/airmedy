@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AlertTriangle, Check, Heart, ListPlus, Loader2, Music, Download, Play } from '@lucide/vue'
+import { AlertTriangle, Check, Heart, ListPlus, Loader2, Music, Download, Play, RadioTower } from '@lucide/vue'
 import ContextMenu from '@/components/ContextMenu.vue'
 import { usePlaylistsStore } from '@/stores/playlists'
 import { useContextMenu } from '@/composables/useContextMenu'
@@ -39,6 +39,7 @@ const emit = defineEmits<{
   (e: 'toggle-source', id: string): void
   (e: 'load-more'): void
   (e: 'play', row: CatalogRowDTO): void
+  (e: 'radio', row: CatalogRowDTO): void
   (e: 'favorite', row: CatalogRowDTO): void
   (e: 'add-to-playlist', row: CatalogRowDTO, playlistId: string): void
   (e: 'force-download', row: CatalogRowDTO): void
@@ -426,7 +427,14 @@ defineExpose({
     </p>
 
     <!-- Page-level states. Each is a machine kind, worded here. -->
-    <div v-if="errorKind === 'no_sources'" class="rounded-xl bg-foreground/[0.03] p-6 ring-1 ring-foreground/[0.05]">
+    <div
+      v-if="errorKind === 'sources_disabled'"
+      class="rounded-xl bg-foreground/[0.03] p-6 ring-1 ring-foreground/[0.05]"
+      data-test="catalog-sources-disabled"
+    >
+      <p class="text-sm font-semibold text-foreground">{{ $t('settings.all_sources_disabled') }}</p>
+    </div>
+    <div v-else-if="errorKind === 'no_sources'" class="rounded-xl bg-foreground/[0.03] p-6 ring-1 ring-foreground/[0.05]">
       <p class="text-sm font-semibold text-foreground">{{ $t('cloud_search.no_sources_title') }}</p>
       <p class="mt-1 text-xs text-dim">{{ $t('cloud_search.no_sources_description') }}</p>
     </div>
@@ -568,6 +576,17 @@ defineExpose({
             @click.stop="emit('play', row)"
           >
             <Play class="h-4 w-4" />
+          </button>
+          <button
+            v-if="row.provider && row.external_id"
+            type="button"
+            class="flex h-8 w-8 items-center justify-center rounded-full text-foreground/60 transition-colors hover:bg-foreground/[0.06] hover:text-foreground/80"
+            data-test="catalog-radio"
+            :aria-label="$t('context_menu.start_radio')"
+            :title="$t('context_menu.start_radio')"
+            @click.stop="emit('radio', row)"
+          >
+            <RadioTower class="h-4 w-4" />
           </button>
           <button
             v-if="canAct(row)"

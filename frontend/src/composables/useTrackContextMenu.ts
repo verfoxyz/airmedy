@@ -1,4 +1,4 @@
-import { Star, StarMinus, ListStart, ListEnd, ListPlus, Disc, User, Pencil, FolderOpen, Info, RefreshCw, ListX, Check, Trash2, Search, Radio, FileDown, Download } from '@lucide/vue'
+import { Star, StarMinus, ListStart, ListEnd, ListPlus, Disc, User, Pencil, FolderOpen, Info, RefreshCw, ListX, Check, Trash2, Search, Radio, RadioTower, FileDown, Download } from '@lucide/vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { usePlaylistsStore } from '@/stores/playlists'
@@ -6,6 +6,7 @@ import { useFavoritesStore } from '@/stores/favorites'
 import { usePlayerStore } from '@/stores/player'
 import { useAppStore } from '@/stores/app'
 import { useMoodRadioStore } from '@/stores/moodRadio'
+import { useLastFmRadioStore } from '@/stores/lastfmRadio'
 import * as DownloadService from '../../bindings/airmedy/internal/infra/wails/downloadservice'
 import { useFindLyricsDialog } from './useFindLyricsDialog'
 import { useDeleteTrackDialog } from './useDeleteTrackDialog'
@@ -34,6 +35,7 @@ export function useTrackContextMenu(onEditMetadata: (track: TrackDTO) => void) {
   const playerStore = usePlayerStore()
   const appStore = useAppStore()
   const moodRadioStore = useMoodRadioStore()
+  const lastfmRadioStore = useLastFmRadioStore()
   const router = useRouter()
   const findLyricsDialog = useFindLyricsDialog()
   const deleteTrackDialog = useDeleteTrackDialog()
@@ -50,6 +52,20 @@ export function useTrackContextMenu(onEditMetadata: (track: TrackDTO) => void) {
     }
 
     const isCurrentTrack = playerStore.currentTrack?.id === track.id
+
+    const startLastFmRadio = () => {
+      const artist = track.artists?.find(current => !!current?.name)?.name
+        ?? track.raw_artist_names
+        ?? ''
+      if (!track.title || !artist) return
+      void lastfmRadioStore.start({
+        trackId: track.id,
+        title: track.title,
+        artist,
+        album: track.album?.title ?? track.raw_album_name ?? '',
+        duration: track.duration,
+      })
+    }
 
     if (options.miniPlayer) {
       if (options.showRemoveFromQueue && !isCurrentTrack) {
@@ -76,6 +92,12 @@ export function useTrackContextMenu(onEditMetadata: (track: TrackDTO) => void) {
         })
       }
       if (items.length) items.push({ separator: true })
+      items.push({
+        label: t('context_menu.start_radio'),
+        icon: RadioTower,
+        action: startLastFmRadio,
+      })
+      items.push({ separator: true })
       const isFavorite = favoritesStore.isFavorite(track)
       items.push({
         label: isFavorite ? t('context_menu.remove_from_favorites') : t('context_menu.add_to_favorites'),
@@ -194,6 +216,13 @@ export function useTrackContextMenu(onEditMetadata: (track: TrackDTO) => void) {
         },
       })
     }
+
+    items.push({ separator: true })
+    items.push({
+      label: t('context_menu.start_radio'),
+      icon: RadioTower,
+      action: startLastFmRadio,
+    })
 
     items.push({ separator: true })
 

@@ -261,10 +261,15 @@ var Module = fx.Module("app",
 				// Wire metadata changes to player state; favorites use their own listener.
 				lib.AddTrackUpdateListener(func(track *domain.TrackDTO) {
 					playerSvc.SyncTrack(track)
+					// A local copy now owns the song: invalidate the shared match
+					// cache and re-resolve every stored list row for its identity,
+					// identity-less imports included. Without this a cached remote
+					// match would survive the import for up to two weeks.
+					if track != nil && !track.IsRemote() {
+						recommender.InvalidateLocalMatch(track)
+					}
 					// A promoted/downloaded row keeps its remote identity, so the
 					// open recommendation page must stop showing "from <provider>".
-					// Identity-less imports are skipped: local-first matching
-					// already covers them on the next page build.
 					if track == nil || track.IsRemote() ||
 						domain.NormalizeProvider(track.Provider) == "" ||
 						strings.TrimSpace(track.ExternalID) == "" {

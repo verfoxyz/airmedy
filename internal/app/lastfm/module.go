@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"airmedy/internal/app/catalog"
 	"airmedy/internal/app/player"
 	"airmedy/internal/domain"
 
@@ -17,7 +18,15 @@ var Module = fx.Module("lastfm",
 		// the aggregation rules are testable with a fake client.
 		func(s *LastFmService) TrackSource { return s },
 		NewRecommender,
+		// Radio drives the player queue and registers matched rows as streamable
+		// tracks; both surfaces stay behind the narrow ports in radio.go.
+		func(queue *player.PlayerService) RadioQueue { return queue },
+		func(svc *catalog.Service) StreamableResolver { return svc },
+		NewRadio,
 	),
+	fx.Invoke(func(radio *Radio, queue RadioQueue) {
+		radio.WireListeners(queue)
+	}),
 	// A remote row that cannot be loaded is a broken source, not a broken song:
 	// the recommendation page retries the same identity against another provider.
 	fx.Invoke(func(playerSvc *player.PlayerService, recommender *Recommender) {
@@ -45,6 +54,32 @@ var Module = fx.Module("lastfm",
 		},
 		fx.ParamTags(``, `optional:"true"`),
 	)),
+	// Local listening signals rank the seeds for an imported library that has
+	// no scrobbles. Optional: without the store the seeds are Last.fm-only.
+	fx.Invoke(fx.Annotate(
+		func(recommender *Recommender, seeds domain.RecommendationSeedRepository) {
+			recommender.SetSeedRepository(seeds)
+		},
+		fx.ParamTags(``, `optional:"true"`),
+	)),
+	// The shared match cache outlives one list and one session, so the same
+	// identity is matched once. Optional: without it the in-memory caches still
+	// apply, they just do not survive a restart.
+	fx.Invoke(fx.Annotate(
+		func(recommender *Recommender, cache domain.LastFmMatchCacheRepository) {
+			recommender.SetMatchCache(cache)
+		},
+		fx.ParamTags(``, `optional:"true"`),
+	)),
+	// Dislikes are local-only: they hide a song or artist from discovery and
+	// radio without touching Last.fm or the library. Optional: without the store
+	// nothing is excluded.
+	fx.Invoke(fx.Annotate(
+		func(recommender *Recommender, dislikes domain.LastFmDislikeRepository) {
+			recommender.SetDislikeStore(dislikes)
+		},
+		fx.ParamTags(``, `optional:"true"`),
+	)),
 	// A merge moves the remote identity onto the local survivor, so the
 	// recommender needs the survivor row to refresh rows that still say "from
 	// <provider>". Optional: without it the lists refresh on their next load.
@@ -54,9 +89,12 @@ var Module = fx.Module("lastfm",
 		},
 		fx.ParamTags(``, `optional:"true"`),
 	)),
-	fx.Invoke(func(lc fx.Lifecycle, s *LastFmService, logger *slog.Logger) {
+	fx.Invoke(func(lc fx.Lifecycle, s *LastFmService, recommender *Recommender, logger *slog.Logger) {
 		lc.Append(fx.Hook{
 			OnStart: func(ctx context.Context) error {
+				// Drop expired and overflow matches once per session; the write
+				// path also prunes, so a running app never grows unbounded.
+				recommender.PruneMatchCache(ctx)
 				// Retry scrobbles from previous sessions before new playback starts.
 				s.StartScrobbleQueue()
 				logger.Info("Last.fm service started")

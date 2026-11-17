@@ -115,11 +115,13 @@
       "library": "Library",
       "integrations": "Integrations",
       "playback": "Playback",
+      "dislikes": "Dislikes",
       "remote": "Remote",
       "about": "About",
       "mobile_devices": "Mobile",
       "download": "Downloads",
-      "plugins": "Plugins"
+      "plugins": "Plugins",
+      "sources": "Search sources"
     },
     "general": {
       "behavior": "Behavior",
@@ -466,7 +468,23 @@
         "move_down": "Move down",
         "order_hint": "Order is priority: the sources above are tried first."
       }
-    }
+    },
+    "dislikes": {
+      "title": "Disliked tracks and artists",
+      "description": "Hidden from Discover and Last.fm radio. Your library and Last.fm account are unchanged.",
+      "empty": "No disliked tracks or artists.",
+      "kind_artist": "Artist",
+      "remove": "Remove dislike"
+    },
+    "source_order": "Search source order",
+    "source_order_hint": "Sources higher in this list win ties between equally relevant results and are shown first. A source's own ranking of its results is unchanged.",
+    "move_up": "Move up",
+    "move_down": "Move down",
+    "source_enabled": "Enabled",
+    "source_disabled": "Disabled",
+    "source_drag_hint": "Drag the handle to reorder. Use the arrow buttons when dragging is not available.",
+    "all_sources_disabled": "All search sources are turned off. Enable one in Settings → Search sources.",
+    "source_save_failed": "Could not save the change. The previous setting was restored."
   },
   "sidebar": {
     "download": "Downloads & Tasks",
@@ -505,6 +523,9 @@
     "next": "Next",
     "repeat": "Repeat",
     "mood_radio_active": "Mood Radio active",
+    "lastfm_radio_active": "Last.fm Radio active",
+    "lastfm_radio_stop": "Turn off radio",
+    "radio_appended": "{count} tracks added",
     "mute": "Mute",
     "unmute": "Unmute",
     "lyrics": "Lyrics",
@@ -530,7 +551,8 @@
     "secondary_translation": "Translation",
     "secondary_romanization": "Romanization",
     "romanization_hint": "Offline romanization: Chinese and Korean.",
-    "romanization_mandarin": "Han-only lyrics default to Mandarin. Readings may differ for names."
+    "romanization_mandarin": "Han-only lyrics default to Mandarin. Readings may differ for names.",
+    "dislike_track": "Dislike and skip"
   },
   "home": {
     "title": "Home",
@@ -639,6 +661,7 @@
     "redownload": "Download again",
     "remove_from_queue": "Remove from Queue",
     "export_playlist": "Export Playlist",
+    "start_radio": "Start Radio",
     "start_mood_radio": "Start Mood Radio",
     "edit_rules": "Edit Rules"
   },
@@ -949,6 +972,7 @@
     "refresh_list": "Refresh this list",
     "refresh_all": "Refresh all",
     "refresh_item": "Refresh this track's source",
+    "start_radio": "Start radio from this list",
     "play_all": "Play all",
     "shuffle": "Shuffle",
     "more_actions": "More actions",
@@ -963,6 +987,8 @@
     "plays_count": "{count} plays",
     "auto_refresh": "Check for new recommendations automatically",
     "load_more": "Load more",
-    "no_more": "No more recommendations"
+    "no_more": "No more recommendations",
+    "dislike_track": "Don't like this track",
+    "dislike_artist": "Don't like this artist"
   }
 }

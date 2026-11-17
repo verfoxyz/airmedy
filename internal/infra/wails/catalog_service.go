@@ -137,6 +137,45 @@ func (s *CatalogService) GetCatalogSources() ([]CatalogSourceDTO, error) {
 	return result, nil
 }
 
+// CatalogSourcePreferenceDTO is the settings page's source list: every
+// installed source (disabled ones included), the order the user arranged, and
+// the disabled set.
+type CatalogSourcePreferenceDTO struct {
+	Order    []string           `json:"order"`
+	Disabled []string           `json:"disabled"`
+	Sources  []CatalogSourceDTO `json:"sources"`
+}
+
+// GetSourcePreferences returns the installed sources with their enable state
+// and order. The search page's GetCatalogSources only lists enabled sources.
+func (s *CatalogService) GetSourcePreferences() (CatalogSourcePreferenceDTO, error) {
+	preferences, err := s.svc.SourcePreferences(context.Background())
+	if err != nil {
+		return CatalogSourcePreferenceDTO{}, err
+	}
+	result := CatalogSourcePreferenceDTO{
+		Order:    append([]string{}, preferences.Order...),
+		Disabled: append([]string{}, preferences.Disabled...),
+		Sources:  make([]CatalogSourceDTO, 0, len(preferences.Sources)),
+	}
+	for _, source := range preferences.Sources {
+		result.Sources = append(result.Sources, CatalogSourceDTO{ID: source.ID, Name: source.Name})
+	}
+	return result, nil
+}
+
+// SetSourceDisabled switches one source off or on without changing its order.
+// It returns the normalized disabled set the settings page should render.
+func (s *CatalogService) SetSourceDisabled(provider string, disabled bool) ([]string, error) {
+	return s.svc.SetSourceDisabled(context.Background(), provider, disabled)
+}
+
+// SaveSourceOrder persists the order and returns the normalized result, so the
+// settings page renders exactly what tie-breaks will use.
+func (s *CatalogService) SaveSourceOrder(order []string) ([]string, error) {
+	return s.svc.SaveSourceOrder(context.Background(), order)
+}
+
 // GetCatalogCovers resolves a batch of search-row covers into local asset URLs.
 //
 // The host downloads and caches the images, so the WebView renders only local
@@ -269,6 +308,8 @@ func catalogErrorKind(err error) string {
 	switch {
 	case err == nil:
 		return ""
+	case errors.Is(err, domain.ErrCatalogAllSourcesDisabled):
+		return "sources_disabled"
 	case errors.Is(err, domain.ErrCatalogNoSources):
 		return "no_sources"
 	case errors.Is(err, domain.ErrCatalogSourceUnavailable):

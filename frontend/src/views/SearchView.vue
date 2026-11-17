@@ -15,6 +15,7 @@ import TrackContextMenu from '@/components/TrackContextMenu.vue'
 import ContextMenu from '@/components/ContextMenu.vue'
 import { useSearchStore } from '@/stores/search'
 import { useCatalogStore } from '@/stores/catalog'
+import { useLastFmRadioStore } from '@/stores/lastfmRadio'
 import { usePlayerStore } from '@/stores/player'
 import { useContextMenu } from '@/composables/useContextMenu'
 import { useAlbumContextMenu } from '@/composables/useAlbumContextMenu'
@@ -27,6 +28,7 @@ const route = useRoute()
 const { t } = useI18n()
 const store = useSearchStore()
 const catalogStore = useCatalogStore()
+const lastfmRadioStore = useLastFmRadioStore()
 const playerStore = usePlayerStore()
 
 const inputValue = ref(store.query)
@@ -91,6 +93,23 @@ async function playResult(
   } catch (e) {
     console.error('Failed to play catalog result', e)
   }
+}
+
+/** Start Last.fm radio from a cloud row's identity. */
+async function startRadioFromResult(
+  row: import('../../bindings/airmedy/internal/infra/wails/models').CatalogRowDTO,
+) {
+  const artist = row.artists?.[0] ?? ''
+  if (!row.title || !artist) return
+  await lastfmRadioStore.start({
+    trackId: row.local_track_id || '',
+    provider: row.provider || '',
+    externalId: row.external_id || '',
+    title: row.title,
+    artist,
+    album: row.album_name ?? '',
+    duration: row.duration,
+  })
 }
 
 // Search results are a stored response, not a live query. A library change only
@@ -334,6 +353,7 @@ const hasResults = () => hasTracks() || hasAlbums() || hasArtists() || hasPlayli
         @toggle-source="catalogStore.toggleSource"
         @load-more="catalogStore.loadMore"
         @play="playResult"
+        @radio="startRadioFromResult"
         @favorite="favoriteResult"
         @add-to-playlist="addResultToPlaylist"
         @force-download="downloadResultAnyway"

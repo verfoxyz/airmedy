@@ -115,11 +115,13 @@
       "library": "Thư viện",
       "integrations": "Tích hợp",
       "playback": "Phát lại",
+      "dislikes": "Không thích",
       "about": "Giới thiệu",
       "remote": "Điều khiển",
       "mobile_devices": "Di động",
       "download": "Tải xuống",
-      "plugins": "Plugin"
+      "plugins": "Plugin",
+      "sources": "Nguồn tìm kiếm"
     },
     "general": {
       "behavior": "Hành vi",
@@ -466,7 +468,23 @@
         "move_down": "Di chuyển xuống",
         "order_hint": "Thứ tự là mức ưu tiên: các nguồn phía trên được thử trước."
       }
-    }
+    },
+    "dislikes": {
+      "title": "Bài hát và nghệ sĩ không thích",
+      "description": "Ẩn khỏi Khám phá và radio Last.fm. Thư viện và tài khoản Last.fm không thay đổi.",
+      "empty": "Chưa có bài hát hay nghệ sĩ nào bị ẩn.",
+      "kind_artist": "Nghệ sĩ",
+      "remove": "Bỏ ẩn"
+    },
+    "source_order": "Thứ tự nguồn tìm kiếm",
+    "source_order_hint": "Nguồn ở trên quyết định thứ tự khi các kết quả có độ liên quan bằng nhau và được hiển thị trước. Thứ tự bên trong mỗi nguồn không đổi.",
+    "move_up": "Di chuyển lên",
+    "move_down": "Di chuyển xuống",
+    "source_enabled": "Bật",
+    "source_disabled": "Tắt",
+    "source_drag_hint": "Kéo tay cầm để sắp xếp. Nếu không kéo được, dùng nút mũi tên.",
+    "all_sources_disabled": "Tất cả nguồn tìm kiếm đang tắt. Bật một nguồn trong Cài đặt → Nguồn tìm kiếm.",
+    "source_save_failed": "Không lưu được thay đổi. Đã khôi phục cài đặt trước đó."
   },
   "sidebar": {
     "download": "Tải xuống & tác vụ",
@@ -505,6 +523,9 @@
     "next": "Tiếp theo",
     "repeat": "Lặp lại",
     "mood_radio_active": "Radio tâm trạng đang phát",
+    "lastfm_radio_active": "Radio Last.fm đang bật",
+    "lastfm_radio_stop": "Tắt radio",
+    "radio_appended": "Đã thêm {count} bài",
     "mute": "Tắt tiếng",
     "unmute": "Bật tiếng",
     "lyrics": "Lời bài hát",
@@ -530,7 +551,8 @@
     "secondary_translation": "Bản dịch",
     "secondary_romanization": "Phiên âm",
     "romanization_hint": "Phiên âm offline: tiếng Trung và Hàn.",
-    "romanization_mandarin": "Lời chỉ có chữ Hán mặc định dùng Mandarin. Tên riêng có thể có cách đọc khác."
+    "romanization_mandarin": "Lời chỉ có chữ Hán mặc định dùng Mandarin. Tên riêng có thể có cách đọc khác.",
+    "dislike_track": "Không thích và bỏ qua"
   },
   "home": {
     "title": "Trang chủ",
@@ -637,6 +659,7 @@
     "redownload": "Tải xuống lại",
     "remove_from_queue": "Xóa khỏi hàng đợi",
     "export_playlist": "Xuất danh sách phát",
+    "start_radio": "Bắt đầu radio",
     "start_mood_radio": "Bắt đầu Radio Tâm trạng",
     "pin_to_sidebar": "Ghim vào thanh bên",
     "unpin_from_sidebar": "Bỏ ghim khỏi thanh bên",
@@ -949,6 +972,7 @@
     "refresh_list": "Làm mới danh sách này",
     "refresh_all": "Làm mới tất cả",
     "refresh_item": "Làm mới nguồn của bài hát này",
+    "start_radio": "Bắt đầu radio từ danh sách này",
     "play_all": "Phát tất cả",
     "shuffle": "Phát ngẫu nhiên",
     "more_actions": "Thao tác khác",
@@ -963,6 +987,8 @@
     "plays_count": "{count} lượt phát",
     "auto_refresh": "Tự động kiểm tra gợi ý mới",
     "load_more": "Tải thêm",
-    "no_more": "Không còn gợi ý nào"
+    "no_more": "Không còn gợi ý nào",
+    "dislike_track": "Không thích bài này",
+    "dislike_artist": "Không thích nghệ sĩ này"
   }
 }

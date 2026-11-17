@@ -3,7 +3,7 @@ import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, watch } f
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Events } from '@wailsio/runtime'
-import { ArrowLeft, ChevronLeft, ChevronRight, MoreVertical, Music, Play, RefreshCw, Shuffle, Clock, Search } from '@lucide/vue'
+import { ArrowLeft, ChevronLeft, ChevronRight, MoreVertical, Music, Play, RadioTower, RefreshCw, Shuffle, Clock, Search, ThumbsDown, UserX } from '@lucide/vue'
 import { DetailsButton, IconButton, Input } from '@airmedy/ui'
 import ContextMenu from '@/components/ContextMenu.vue'
 import DetailPageLayout from '@/components/DetailPageLayout.vue'
@@ -16,11 +16,14 @@ import {
   formatLastFmWeekRange,
   lastFmCoverClass,
   lastFmCovers,
+  isPlayableLastFmRow,
   lastFmRowToCatalogRow,
   lastFmTotalDuration,
   planLastFmPlayback,
 } from '@/lib/lastfmTracks'
 import { useCatalogStore } from '@/stores/catalog'
+import { useLastFmRadioStore } from '@/stores/lastfmRadio'
+import { useDislikeStore } from '@/stores/dislike'
 import { usePlayerStore } from '@/stores/player'
 import * as LastFmService from '../../bindings/airmedy/internal/infra/wails/lastfmservice'
 import type {
@@ -38,6 +41,8 @@ const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const catalogStore = useCatalogStore()
+const lastfmRadioStore = useLastFmRadioStore()
+const dislikeStore = useDislikeStore()
 const playerStore = usePlayerStore()
 
 const kind = computed(() => String(route.params.kind ?? ''))
@@ -99,14 +104,21 @@ const weekRangeLabel = computed(() =>
 const searchQuery = ref('')
 /** filteredItems narrows the loaded rows by title and artist, like album detail. */
 const filteredItems = computed(() => {
-  if (!searchQuery.value) return items.value
-  const query = foldUnicode(searchQuery.value)
-  return items.value.filter((item) => {
-    const artists = [item.artist, ...(item.artists ?? [])].filter(Boolean).join(' ')
-    return (
-      foldUnicode(item.title || '').includes(query) ||
-      foldUnicode(artists).includes(query)
-    )
+  const rows = !searchQuery.value
+    ? items.value
+    : items.value.filter((item) => {
+        const query = foldUnicode(searchQuery.value)
+        const artists = [item.artist, ...(item.artists ?? [])].filter(Boolean).join(' ')
+        return (
+          foldUnicode(item.title || '').includes(query) ||
+          foldUnicode(artists).includes(query)
+        )
+      })
+  // A dislike disappears from the page immediately; the next refresh also
+  // stops persisting it.
+  return rows.filter((item) => {
+    const credits = [item.artist, ...(item.artists ?? [])].filter(Boolean).join('; ')
+    return !dislikeStore.isTrackDisliked(item.match_key, credits)
   })
 })
 
@@ -257,7 +269,54 @@ function onRowContextMenu(event: MouseEvent, item: TopTrackItemDTO) {
         void refreshItem(item)
       },
     },
+    {
+      label: t('lastfm.dislike_track'),
+      icon: ThumbsDown,
+      action: () => {
+        void dislikeRow(item)
+      },
+    },
+    {
+      label: t('lastfm.dislike_artist'),
+      icon: UserX,
+      action: () => {
+        void dislikeArtistRow(item)
+      },
+    },
   ])
+}
+
+/** rowArtist is the credit a dislike is stored under. */
+function rowArtist(item: TopTrackItemDTO): string {
+  return (item.artists?.[0] || item.artist || '').trim()
+}
+
+/** dislikeRow hides one song from every recommendation surface. */
+async function dislikeRow(item: TopTrackItemDTO) {
+  const artist = rowArtist(item)
+  if (!artist) return
+  try {
+    await dislikeStore.dislikeTrack({
+      matchKey: item.match_key,
+      title: item.title,
+      artist,
+    })
+  } catch (error) {
+    console.error('Failed to dislike a Last.fm recommendation', error)
+    loadError.value = 'load_failed'
+  }
+}
+
+/** dislikeArtistRow hides every song of the row's artist. */
+async function dislikeArtistRow(item: TopTrackItemDTO) {
+  const artist = rowArtist(item)
+  if (!artist) return
+  try {
+    await dislikeStore.dislikeArtist(artist)
+  } catch (error) {
+    console.error('Failed to dislike a Last.fm artist', error)
+    loadError.value = 'load_failed'
+  }
 }
 
 /** refreshItem re-runs source matching for one row; other rows keep their data. */
@@ -347,6 +406,21 @@ async function loadMore() {
  * list; only rows with a source identity or a local copy are resolved. A row
  * that fails to resolve is skipped and worded, never silently dropped.
  */
+/** startRadio seeds Last.fm radio from the first playable row of this list. */
+function startRadio() {
+  const row = filteredItems.value.find(item => isPlayableLastFmRow(item))
+  if (!row) return
+  void lastfmRadioStore.start({
+    trackId: row.local_track_id || '',
+    provider: row.provider || '',
+    externalId: row.external_id || '',
+    title: row.title,
+    artist: row.artists?.[0] || row.artist,
+    album: row.album ?? '',
+    duration: row.duration,
+  })
+}
+
 async function playAll(shuffle: boolean) {
   if (playing.value) return
   playing.value = true
@@ -615,6 +689,15 @@ onUnmounted(() => {
           data-test="lastfm-list-shuffle"
           :disabled="playing || filteredItems.length === 0"
           @click="playAll(true)"
+        />
+        <DetailsButton
+          :icon="RadioTower"
+          variant="outline"
+          data-test="lastfm-list-radio"
+          :title="$t('lastfm.start_radio')"
+          :aria-label="$t('lastfm.start_radio')"
+          :disabled="filteredItems.length === 0"
+          @click="startRadio"
         />
         <DetailsButton
           :icon="MoreVertical"

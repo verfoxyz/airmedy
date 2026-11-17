@@ -115,11 +115,13 @@
       "library": "Bibliothèque",
       "integrations": "Intégrations",
       "playback": "Lecture",
+      "dislikes": "Je n'aime pas",
       "about": "À propos",
       "remote": "Télécommande",
       "mobile_devices": "Mobile",
       "download": "Téléchargements",
-      "plugins": "Extensions"
+      "plugins": "Extensions",
+      "sources": "Sources de recherche"
     },
     "general": {
       "behavior": "Comportement",
@@ -466,7 +468,23 @@
         "move_down": "Descendre",
         "order_hint": "L’ordre est la priorité : les sources du haut sont essayées en premier."
       }
-    }
+    },
+    "dislikes": {
+      "title": "Titres et artistes non aimés",
+      "description": "Masqués dans Découvrir et la radio Last.fm. Votre bibliothèque et votre compte Last.fm restent inchangés.",
+      "empty": "Aucun titre ni artiste masqué.",
+      "kind_artist": "Artiste",
+      "remove": "Retirer"
+    },
+    "source_order": "Ordre des sources de recherche",
+    "source_order_hint": "Les sources placées plus haut tranchent les égalités entre résultats de pertinence égale et s'affichent en premier. Le classement interne d'une source reste inchangé.",
+    "move_up": "Monter",
+    "move_down": "Descendre",
+    "source_enabled": "Activée",
+    "source_disabled": "Désactivée",
+    "source_drag_hint": "Faites glisser la poignée pour réordonner. Sans glisser-déposer, utilisez les flèches.",
+    "all_sources_disabled": "Toutes les sources de recherche sont désactivées. Activez-en une dans Paramètres → Sources de recherche.",
+    "source_save_failed": "Impossible d'enregistrer la modification. Le réglage précédent a été rétabli."
   },
   "sidebar": {
     "download": "Téléchargements et tâches",
@@ -505,6 +523,9 @@
     "next": "Suivant",
     "repeat": "Répéter",
     "mood_radio_active": "Radio d'ambiance active",
+    "lastfm_radio_active": "Radio Last.fm active",
+    "lastfm_radio_stop": "Désactiver la radio",
+    "radio_appended": "{count} titres ajoutés",
     "mute": "Muet",
     "unmute": "Désactiver le muet",
     "lyrics": "Paroles",
@@ -530,7 +551,8 @@
     "secondary_translation": "Traduction",
     "secondary_romanization": "Romanisation",
     "romanization_hint": "Romanisation hors ligne : chinois et coréen.",
-    "romanization_mandarin": "Les paroles composées uniquement de caractères Han utilisent le mandarin par défaut. La lecture des noms peut varier."
+    "romanization_mandarin": "Les paroles composées uniquement de caractères Han utilisent le mandarin par défaut. La lecture des noms peut varier.",
+    "dislike_track": "Je n'aime pas et passer"
   },
   "home": {
     "title": "Accueil",
@@ -637,6 +659,7 @@
     "redownload": "Télécharger à nouveau",
     "remove_from_queue": "Retirer de la file d'attente",
     "export_playlist": "Exporter la liste de lecture",
+    "start_radio": "Démarrer la radio",
     "start_mood_radio": "Démarrer la Radio d'Ambiance",
     "pin_to_sidebar": "Épingler à la barre latérale",
     "unpin_from_sidebar": "Détacher de la barre latérale",
@@ -949,6 +972,7 @@
     "refresh_list": "Actualiser cette liste",
     "refresh_all": "Tout actualiser",
     "refresh_item": "Actualiser la source de ce titre",
+    "start_radio": "Démarrer la radio depuis cette liste",
     "play_all": "Tout lire",
     "shuffle": "Lecture aléatoire",
     "more_actions": "Plus d'actions",
@@ -963,6 +987,8 @@
     "plays_count": "{count} écoutes",
     "auto_refresh": "Rechercher automatiquement de nouvelles recommandations",
     "load_more": "Charger plus",
-    "no_more": "Plus de recommandations"
+    "no_more": "Plus de recommandations",
+    "dislike_track": "Je n'aime pas ce titre",
+    "dislike_artist": "Je n'aime pas cet artiste"
   }
 }

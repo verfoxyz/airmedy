@@ -48,10 +48,18 @@ type Service struct {
 	playlists      PlaylistMembership
 	settings       SettingsReader
 	sourceSettings domain.CatalogSourceSettingReader
-	covers         domain.CatalogCoverCache
-	coverAssets    domain.CoverIdentityAssets
-	logger         *slog.Logger
-	sourceTimeout  time.Duration
+	// sourceOrders persists the user's preferred source order. Optional:
+	// without it every list stays alphabetical.
+	sourceOrders domain.CatalogSourceOrderRepository
+	// orderMu guards the one-shot read of the stored preferences. They are two
+	// short provider lists, so they are cached until a write replaces them.
+	orderMu            sync.RWMutex
+	sourcePrefsCache   domain.CatalogSourcePreferences
+	sourcePrefsReady   bool
+	covers           domain.CatalogCoverCache
+	coverAssets      domain.CoverIdentityAssets
+	logger           *slog.Logger
+	sourceTimeout    time.Duration
 
 	// coverMu guards the in-memory cover cache. A search only hands URLs to the
 	// UI; the cache keeps them so an action can still embed artwork after the
@@ -90,6 +98,7 @@ type Deps struct {
 	Playlists      PlaylistMembership
 	Settings       SettingsReader
 	SourceSettings domain.CatalogSourceSettingReader
+	SourceOrders   domain.CatalogSourceOrderRepository
 	Covers         domain.CatalogCoverCache
 	CoverAssets    domain.CoverIdentityAssets
 	Logger         *slog.Logger
@@ -119,6 +128,7 @@ func NewService(deps Deps) *Service {
 		playlists:      deps.Playlists,
 		settings:       deps.Settings,
 		sourceSettings: deps.SourceSettings,
+		sourceOrders:   deps.SourceOrders,
 		covers:         deps.Covers,
 		coverAssets:    deps.CoverAssets,
 		logger:         logger,
@@ -153,12 +163,22 @@ func (s *Service) Search(ctx context.Context, request domain.CatalogSearchReques
 		return domain.CatalogSearchPage{}, domain.ErrCatalogNoSources
 	}
 
-	selected := selectSources(normalised.Sources, available)
+	preferences := s.resolveSourcePreferences(ctx, available)
+	enabled := enabledSourceMap(available, preferences.Disabled)
+	if len(enabled) == 0 {
+		// Sources are installed but every one of them is switched off. The
+		// wrapped error keeps errors.Is(ErrCatalogNoSources) true for callers
+		// that only know "no sources", while the UI words the actionable state.
+		return domain.CatalogSearchPage{Sources: []domain.CatalogSearchSource{}},
+			domain.ErrCatalogAllSourcesDisabled
+	}
+	order := domain.NormalizeCatalogSourceOrder(preferences.Order, sortedSourceNames(enabled))
+	selected := selectSources(normalised.Sources, enabled, order)
 	if len(selected) == 0 {
 		// The caller asked for sources nobody offers. That is a routing miss,
 		// not "no sources at all", so it names what was asked for.
 		return domain.CatalogSearchPage{
-			Sources: sourceList(available),
+			Sources: sourceList(enabled, order),
 		}, fmt.Errorf("%w: requested %v", domain.ErrCatalogSourceUnavailable, normalised.Sources)
 	}
 
@@ -177,7 +197,7 @@ func (s *Service) Search(ctx context.Context, request domain.CatalogSearchReques
 
 	if normalised.Offset >= domain.MaxCatalogSearchPageSize {
 		// The UI stops at the window cap; an out-of-range offset is simply empty.
-		return domain.CatalogSearchPage{Sources: sourceList(available)}, nil
+		return domain.CatalogSearchPage{Sources: sourceList(enabled, order)}, nil
 	}
 	limit := normalised.Limit
 	if remaining := domain.MaxCatalogSearchPageSize - normalised.Offset; limit > remaining {
@@ -199,7 +219,7 @@ func (s *Service) Search(ctx context.Context, request domain.CatalogSearchReques
 	return domain.CatalogSearchPage{
 		Rows:     rows,
 		HasMore:  hasMore,
-		Sources:  sourceList(available),
+		Sources:  sourceList(enabled, order),
 		Failures: outcome.failures,
 	}, errors.Join(outcome.errs...)
 }
@@ -431,7 +451,10 @@ func (s *Service) Sources(ctx context.Context) ([]domain.CatalogSearchSource, er
 	if err != nil {
 		return nil, fmt.Errorf("list catalog sources: %w", err)
 	}
-	return sourceList(available), nil
+	preferences := s.resolveSourcePreferences(ctx, available)
+	enabled := enabledSourceMap(available, preferences.Disabled)
+	order := domain.NormalizeCatalogSourceOrder(preferences.Order, sortedSourceNames(enabled))
+	return sourceList(enabled, order), nil
 }
 
 // availableSources returns the source table every running plugin reported.
@@ -448,28 +471,48 @@ func (s *Service) availableSources(ctx context.Context) (map[string]domain.Catal
 
 // selectSources resolves the caller's filter against what actually exists.
 //
-// An empty filter means "everything" (the UI's 全部). A filtered request keeps
-// only sources that exist and are known, in the declared order, so a source the
-// user disabled simply stops appearing instead of erroring the page.
-func selectSources(filtered []string, available map[string]domain.CatalogSearchSource) []string {
-	selected := make([]string, 0, len(available))
+// An empty filter means "everything" (the UI's 全部): the configured order is
+// returned as-is. A filtered request keeps the same relative order, so a
+// filtered search and the 全部 search agree on which source wins a tie. A source
+// the user disabled simply stops appearing instead of erroring the page.
+func selectSources(
+	filtered []string,
+	available map[string]domain.CatalogSearchSource,
+	order []string,
+) []string {
+	if len(order) == 0 {
+		order = sortedSourceNames(available)
+	}
 	if len(filtered) == 0 {
-		for provider := range available {
-			selected = append(selected, provider)
-		}
-		// The source table is a map; sort it so the fusion tie-break and the
-		// rendered button order are stable across processes.
-		sort.Strings(selected)
-		return selected
+		return append([]string{}, order...)
 	}
 
-	seen := make(map[string]struct{}, len(filtered))
+	allowed := make(map[string]struct{}, len(filtered))
 	for _, provider := range filtered {
 		normalised := domain.NormalizeProvider(provider)
-		if _, duplicate := seen[normalised]; duplicate {
+		if _, known := available[normalised]; !known {
 			continue
 		}
-		if _, known := available[normalised]; !known {
+		allowed[normalised] = struct{}{}
+	}
+
+	selected := make([]string, 0, len(allowed))
+	seen := make(map[string]struct{}, len(allowed))
+	for _, provider := range order {
+		if _, wanted := allowed[provider]; !wanted {
+			continue
+		}
+		seen[provider] = struct{}{}
+		selected = append(selected, provider)
+	}
+	// A provider the order does not know yet (a plugin that appeared between
+	// the read and the search) still answers, in the caller's order.
+	for _, provider := range filtered {
+		normalised := domain.NormalizeProvider(provider)
+		if _, wanted := allowed[normalised]; !wanted {
+			continue
+		}
+		if _, done := seen[normalised]; done {
 			continue
 		}
 		seen[normalised] = struct{}{}
@@ -478,17 +521,164 @@ func selectSources(filtered []string, available map[string]domain.CatalogSearchS
 	return selected
 }
 
-// sourceList turns the source map into the stable list the UI renders.
-func sourceList(available map[string]domain.CatalogSearchSource) []domain.CatalogSearchSource {
-	providers := make([]string, 0, len(available))
-	for provider := range available {
-		providers = append(providers, provider)
-	}
-	sort.Strings(providers)
+// CatalogSourcePreference is the settings page's view of the search sources:
+// every installed source in the user's order, the disabled set, and the order
+// as a plain id list for the drag list.
+type CatalogSourcePreference struct {
+	Order    []string
+	Disabled []string
+	Sources  []domain.CatalogSearchSource
+}
 
-	list := make([]domain.CatalogSearchSource, 0, len(providers))
-	for _, provider := range providers {
-		source := available[provider]
+// resolveSourcePreferences returns the stored preferences normalized against
+// the installed sources: unknown providers dropped, missing order entries
+// appended alphabetically.
+func (s *Service) resolveSourcePreferences(
+	ctx context.Context, available map[string]domain.CatalogSearchSource,
+) domain.CatalogSourcePreferences {
+	names := sortedSourceNames(available)
+	repo := s.sourceOrders
+	if repo == nil {
+		return domain.CatalogSourcePreferences{Order: names}
+	}
+
+	s.orderMu.RLock()
+	cached, ready := s.sourcePrefsCache, s.sourcePrefsReady
+	s.orderMu.RUnlock()
+	if !ready {
+		preferences, err := repo.Load(ctx)
+		if err != nil {
+			// A read failure keeps the defaults; the page still works, and the
+			// next call retries the read.
+			s.logger.Warn("catalog source order: load", "error", err)
+			preferences = domain.CatalogSourcePreferences{}
+		}
+		s.orderMu.Lock()
+		if !s.sourcePrefsReady {
+			s.sourcePrefsCache = preferences
+			s.sourcePrefsReady = true
+		}
+		cached = s.sourcePrefsCache
+		s.orderMu.Unlock()
+	}
+	return domain.CatalogSourcePreferences{
+		Order:    domain.NormalizeCatalogSourceOrder(cached.Order, names),
+		Disabled: domain.NormalizeDisabledSources(cached.Disabled, names),
+	}
+}
+
+// enabledSourceMap drops the sources the user switched off.
+func enabledSourceMap(
+	available map[string]domain.CatalogSearchSource, disabled []string,
+) map[string]domain.CatalogSearchSource {
+	if len(disabled) == 0 {
+		return available
+	}
+	off := make(map[string]struct{}, len(disabled))
+	for _, provider := range disabled {
+		off[provider] = struct{}{}
+	}
+	enabled := make(map[string]domain.CatalogSearchSource, len(available))
+	for provider, source := range available {
+		if _, skipped := off[provider]; skipped {
+			continue
+		}
+		enabled[provider] = source
+	}
+	return enabled
+}
+
+// SourcePreferences returns every installed source with its enable state. The
+// settings page needs the disabled rows too, which Sources deliberately hides
+// from the search page.
+func (s *Service) SourcePreferences(ctx context.Context) (CatalogSourcePreference, error) {
+	available, err := s.availableSources(ctx)
+	if err != nil {
+		return CatalogSourcePreference{}, fmt.Errorf("list catalog sources: %w", err)
+	}
+	preferences := s.resolveSourcePreferences(ctx, available)
+	return CatalogSourcePreference{
+		Order:    preferences.Order,
+		Disabled: preferences.Disabled,
+		Sources:  sourceList(available, preferences.Order),
+	}, nil
+}
+
+// SaveSourceOrder stores the user's order and returns what was persisted after
+// normalization. The disabled set is preserved: ordering never re-enables a
+// source.
+func (s *Service) SaveSourceOrder(ctx context.Context, order []string) ([]string, error) {
+	available, err := s.availableSources(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list catalog sources: %w", err)
+	}
+	// Warm the cache first, so the preserved disabled set is the stored one
+	// rather than an empty placeholder.
+	current := s.resolveSourcePreferences(ctx, available)
+	normalised := domain.NormalizeCatalogSourceOrder(order, sortedSourceNames(available))
+	if s.sourceOrders != nil {
+		if err := s.sourceOrders.SaveOrder(ctx, normalised); err != nil {
+			return nil, err
+		}
+	}
+	s.orderMu.Lock()
+	s.sourcePrefsCache = domain.CatalogSourcePreferences{
+		Order:    normalised,
+		Disabled: current.Disabled,
+	}
+	s.sourcePrefsReady = true
+	s.orderMu.Unlock()
+	return normalised, nil
+}
+
+// SetSourceDisabled switches one installed source off or on and returns the
+// normalized disabled set. A disabled source keeps its order position.
+func (s *Service) SetSourceDisabled(
+	ctx context.Context, provider string, disabled bool,
+) ([]string, error) {
+	available, err := s.availableSources(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list catalog sources: %w", err)
+	}
+	key := domain.NormalizeProvider(provider)
+	if _, known := available[key]; !known {
+		return nil, fmt.Errorf("%w: %q", domain.ErrCatalogSourceUnavailable, key)
+	}
+	if s.sourceOrders != nil {
+		if err := s.sourceOrders.SetDisabled(ctx, key, disabled); err != nil {
+			return nil, err
+		}
+	}
+	s.orderMu.Lock()
+	s.sourcePrefsCache = domain.CatalogSourcePreferences{}
+	s.sourcePrefsReady = false
+	s.orderMu.Unlock()
+	return s.resolveSourcePreferences(ctx, available).Disabled, nil
+}
+
+// sortedSourceNames lists the available providers alphabetically.
+func sortedSourceNames(available map[string]domain.CatalogSearchSource) []string {
+	names := make([]string, 0, len(available))
+	for provider := range available {
+		names = append(names, provider)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// sourceList turns the source map into the stable list the UI renders.
+func sourceList(
+	available map[string]domain.CatalogSearchSource, order []string,
+) []domain.CatalogSearchSource {
+	if len(order) == 0 {
+		order = sortedSourceNames(available)
+	}
+	list := make([]domain.CatalogSearchSource, 0, len(order))
+	for _, provider := range order {
+		source, ok := available[provider]
+		if !ok {
+			continue
+		}
 		if strings.TrimSpace(source.ID) == "" {
 			source.ID = provider
 		}

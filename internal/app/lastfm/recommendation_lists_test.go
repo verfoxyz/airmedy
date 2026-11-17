@@ -124,6 +124,41 @@ func (f *fakeRecommendationStore) UpdateRecommendationItems(
 	return nil
 }
 
+func (f *fakeRecommendationStore) ResetRecommendationMatches(
+	_ context.Context, matchKeys []string,
+) (int, error) {
+	reset := make(map[string]struct{}, len(matchKeys))
+	for _, key := range matchKeys {
+		reset[key] = struct{}{}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	affected := 0
+	for kind, list := range f.lists {
+		for index := range list.Items {
+			if _, ok := reset[list.Items[index].MatchKey]; !ok {
+				continue
+			}
+			item := list.Items[index]
+			item.Matching = true
+			item.Matched = false
+			item.NoSource = false
+			item.Provider = ""
+			item.ExternalID = ""
+			item.State = ""
+			item.LocalTrackID = ""
+			item.BlockedReason = ""
+			item.Sources = []string{}
+			item.Downloadable = false
+			item.Suspicious = false
+			list.Items[index] = item
+			affected++
+		}
+		f.lists[kind] = list
+	}
+	return affected, nil
+}
+
 func (f *fakeRecommendationStore) PendingRecommendationItems(
 	context.Context,
 ) ([]domain.RecommendationItem, error) {

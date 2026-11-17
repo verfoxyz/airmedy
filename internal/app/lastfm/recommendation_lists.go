@@ -379,6 +379,9 @@ func (r *Recommender) RefreshRecommendationItem(
 	r.topRows[rowKey] = base
 	r.mu.Unlock()
 
+	// A manual re-match bypasses the shared cache as well as this row's caches.
+	r.deleteMatchCacheKeys([]string{matchKey})
+
 	item := resetTopTrackItem(base)
 	item.Kind = kind
 	item.MatchKey = matchKey
@@ -453,9 +456,11 @@ func (r *Recommender) buildStoredLists(
 	return nil
 }
 
-// storeTopList replaces the top list and starts its matching.
+// storeTopList replaces the top list and starts its matching. Rows whose
+// identity appeared in the previous list keep their settled match.
 func (r *Recommender) storeTopList(ctx context.Context, tracks []LastFmTrack) error {
-	items := r.buildTopTrackItems(tracks)
+	items := r.filterDislikedItems(ctx, r.buildTopTrackItems(tracks))
+	items = r.inheritStoredMatches(ctx, domain.LastFmRecommendationTopTracks, items)
 	if err := r.saveRecommendationList(ctx, domain.LastFmRecommendationTopTracks, items); err != nil {
 		return err
 	}
@@ -471,19 +476,23 @@ func (r *Recommender) storeTopList(ctx context.Context, tracks []LastFmTrack) er
 func (r *Recommender) streamSimilarList(
 	ctx context.Context, tracks []LastFmTrack,
 ) ([]TopTrackItem, error) {
+	// The previous rows must be read before the list is cleared; they are the
+	// inheritance source for the rows this rebuild shares with them.
+	previous := r.previousRecommendationRows(ctx, domain.LastFmRecommendationSimilar)
 	// Replace the old content only after the seed request succeeded: a total
 	// failure before this point keeps the previous list.
 	if err := r.saveRecommendationList(ctx, domain.LastFmRecommendationSimilar, []TopTrackItem{}); err != nil {
 		return nil, err
 	}
 
-	seeds := usableSeeds(tracks, similarSeedLimit)
+	seeds := r.similarListSeeds(ctx, tracks)
 	seen := make(map[string]struct{}, len(seeds))
 	for _, seed := range seeds {
 		seen[similarRecommendationKey(seed)] = struct{}{}
 	}
 
 	items := make([]TopTrackItem, 0, similarRecommendationTake)
+	dislikes := r.currentDislikes(ctx)
 	for index, seed := range seeds {
 		entries := r.similarSeedTracks(ctx, seed, index)
 		added := make([]TopTrackItem, 0)
@@ -495,6 +504,9 @@ func (r *Recommender) streamSimilarList(
 				continue
 			}
 			key := similarRecommendationKey(track)
+			if dislikes.blocksTrack(key, track.Artist) {
+				continue
+			}
 			if _, duplicate := seen[key]; duplicate {
 				continue
 			}
@@ -509,6 +521,9 @@ func (r *Recommender) streamSimilarList(
 				Kind:     domain.LastFmRecommendationSimilar,
 				Matching: true,
 				MatchKey: candidateKey(track.Artist, track.Title),
+			}
+			if row, ok := previous[item.MatchKey]; ok {
+				applyInheritedMatch(&item, row)
 			}
 			items = append(items, item)
 			added = append(added, item)
@@ -564,7 +579,7 @@ func (r *Recommender) startKindMatching(ctx context.Context, kind string, items 
 		return
 	}
 	sources := r.topTrackSources(ctx)
-	states := r.seedTopTrackStates(items, sources)
+	states := r.seedTopTrackStates(ctx, items, sources)
 	r.persistMatchingStates(states)
 	if anyTopStatePending(states) {
 		r.markMatchingActive(kind, true)
@@ -602,6 +617,9 @@ func (r *Recommender) saveRecommendationList(ctx context.Context, kind string, i
 	if store == nil {
 		return nil
 	}
+	// A dislike hides a row from every recommendation entry point, including
+	// the persisted list a partial refresh rewrites.
+	items = r.filterDislikedItems(ctx, items)
 	var weekFrom, weekTo int64
 	if from, ok := weeklyEchoFrom(kind); ok {
 		weekFrom = from
@@ -897,13 +915,12 @@ func (r *Recommender) resumeRecommendationMatching(ctx context.Context, onlyKind
 		if len(items) == 0 || r.isMatchingActive(kind) {
 			continue
 		}
-		states := make([]*topTrackState, 0, len(items))
-		for _, item := range items {
-			state := &topTrackState{item: item, tried: make(map[string]bool)}
-			for source := range r.failedTopSources(kind, item.MatchKey) {
-				state.tried[source] = true
-			}
-			states = append(states, state)
+		states := r.seedTopTrackStates(ctx, items, sources)
+		// A cache hit resolves the row without a search; persist it or it would
+		// stay "matching" in the database forever.
+		r.persistMatchingStates(states)
+		if !anyTopStatePending(states) {
+			continue
 		}
 		r.markMatchingActive(kind, true)
 		r.enqueueTopTrackRun(username, queuedTopTrackRun{

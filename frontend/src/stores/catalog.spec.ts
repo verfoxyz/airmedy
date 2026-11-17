@@ -113,6 +113,16 @@ describe('catalog store', () => {
     expect(api.SearchCatalog).not.toHaveBeenCalled()
   })
 
+  it('drops selected sources that are no longer available', async () => {
+    api.GetCatalogSources.mockResolvedValue([SOURCES[0]])
+    const store = useCatalogStore()
+    store.activeSources = ['wy', 'kg']
+
+    await store.loadSources()
+
+    expect(store.activeSources).toEqual(['wy'])
+  })
+
   it('restores the loaded page when re-entering with the same keyword', async () => {
     api.SearchCatalog.mockResolvedValue(page([row('1'), row('2')], true))
     const store = useCatalogStore()

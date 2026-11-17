@@ -289,6 +289,20 @@ type Recommender struct {
 	// recommendationStore persists the two lists and their match state. nil in
 	// tests that only exercise the in-memory build.
 	recommendationStore domain.LastFmRecommendationRepository
+	// matchCache is the shared persistent match cache. nil disables it; the
+	// in-memory caches keep working.
+	matchCache domain.LastFmMatchCacheRepository
+	// dislikes is the local recommendation exclusion list. nil disables
+	// filtering, so a deployment without the store behaves as before.
+	dislikes domain.LastFmDislikeRepository
+	// dislikeCache is the loaded exclusion set; nil means "load on next use".
+	dislikeCache *dislikeSnapshot
+	// seedRepo reads local listening signals for the recommendation seeds. nil
+	// degrades the seed set to Last.fm-only.
+	seedRepo domain.RecommendationSeedRepository
+	// seedCache keeps one ISO week's seeds plus the previous week's set for the
+	// half-and-half rotation.
+	seedCache weeklyRecommendationSeedCache
 	// tracks resolves the survivor of a merge, whose inherited identity names
 	// the recommendation rows the merge invalidated. nil disables the refresh.
 	tracks TrackLookup
@@ -436,7 +450,7 @@ func (r *Recommender) GetRecommendations(ctx context.Context, force bool) (Recom
 func (r *Recommender) decorateAndStart(
 	ctx context.Context, cacheKey, username string, page RecommendationPage,
 ) RecommendationPage {
-	page, pending := r.decoratePage(page)
+	page, pending := r.decoratePage(ctx, page)
 	if len(pending) == 0 {
 		return page
 	}
@@ -1104,12 +1118,7 @@ func (r *Recommender) collectSimilarArtists(ctx context.Context, seeds seedSet) 
 			}
 			entry := counts[key]
 			if entry == nil {
-				entry = &aggregate{artist: SimilarArtist{
-					Name:      item.Name,
-					ImageURL:  item.ImageURL,
-					Listeners: item.Listeners,
-					URL:       item.URL,
-				}}
+				entry = &aggregate{artist: SimilarArtist(item)}
 				counts[key] = entry
 			}
 			entry.count++
@@ -1201,11 +1210,26 @@ func sourceRank(id string) int {
 
 // decoratePage applies already-known matches to the raw Last.fm rows and
 // returns the rows that still need a search.
-func (r *Recommender) decoratePage(page RecommendationPage) (RecommendationPage, []RecommendedTrack) {
+func (r *Recommender) decoratePage(ctx context.Context, page RecommendationPage) (RecommendationPage, []RecommendedTrack) {
 	matched := make(map[string]RecommendedTrack)
 	failed := make(map[string]struct{})
 	pendingSeen := make(map[string]struct{})
 	pending := make([]RecommendedTrack, 0)
+
+	// One batch read shares the persistent cache with the recommendation lists.
+	lookupKeys := make([]string, 0, maxMatchCandidates)
+	for _, list := range [][]RecommendedTrack{page.Tracks, page.RecentTracks, page.LovedTracks, page.TopTracks} {
+		for _, row := range list {
+			if row.MatchKey == "" {
+				continue
+			}
+			if _, ok := r.cachedMatch(row.MatchKey); ok {
+				continue
+			}
+			lookupKeys = append(lookupKeys, row.MatchKey)
+		}
+	}
+	persistent := r.liveMatchCache(ctx, lookupKeys)
 
 	for _, list := range [][]RecommendedTrack{page.Tracks, page.RecentTracks, page.LovedTracks, page.TopTracks} {
 		for _, row := range list {
@@ -1224,8 +1248,17 @@ func (r *Recommender) decoratePage(page RecommendationPage) (RecommendationPage,
 			}
 			cached, ok := r.cachedMatch(key)
 			if !ok {
-				pendingSeen[key] = struct{}{}
-				pending = append(pending, row)
+				entry, found := persistent[key]
+				if !found {
+					pendingSeen[key] = struct{}{}
+					pending = append(pending, row)
+					continue
+				}
+				if entry.NoSource {
+					failed[key] = struct{}{}
+					continue
+				}
+				matched[key] = recommendedFromCache(row, entry)
 				continue
 			}
 			if cached == nil {
@@ -1335,7 +1368,11 @@ func (r *Recommender) runMatching(
 		}
 	}()
 
-	var wg sync.WaitGroup
+	var (
+		wg           sync.WaitGroup
+		cacheMu      sync.Mutex
+		cacheEntries []domain.LastFmMatchCacheEntry
+	)
 	slots := make(chan struct{}, matchConcurrency)
 	for _, row := range pending {
 		row := row
@@ -1349,6 +1386,11 @@ func (r *Recommender) runMatching(
 			// A failed search is cached as "no match" too: the page must not
 			// hammer a dead source on every refresh.
 			r.storeMatch(row.MatchKey, match)
+			if entry := r.legacyMatchCacheEntry(row, match, err); entry != nil {
+				cacheMu.Lock()
+				cacheEntries = append(cacheEntries, *entry)
+				cacheMu.Unlock()
+			}
 			if err != nil && match == nil {
 				r.logger.Debug("last.fm recommendations: match failed",
 					"artist", firstArtist(row.Artists), "title", row.Title, "error", err)
@@ -1370,6 +1412,8 @@ func (r *Recommender) runMatching(
 	wg.Wait()
 	close(stop)
 	<-stopped
+	// One cache write per run; the repository prunes on every write.
+	r.storeMatchCacheEntries(cacheEntries)
 	flush(true)
 }
 

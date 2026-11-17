@@ -151,6 +151,7 @@ describe('useTrackContextMenu', () => {
       'context_menu.remove_from_queue',
       'context_menu.play_next',
       'context_menu.start_mood_radio',
+      'context_menu.start_radio',
       'context_menu.add_to_favorites',
     ])
   })

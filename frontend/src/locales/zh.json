@@ -115,11 +115,13 @@
       "library": "媒体库",
       "integrations": "集成",
       "playback": "播放",
+      "dislikes": "不喜欢",
       "about": "关于",
       "remote": "远程",
       "mobile_devices": "移动",
       "download": "下载",
-      "plugins": "插件"
+      "plugins": "插件",
+      "sources": "搜索源"
     },
     "general": {
       "behavior": "行为",
@@ -466,7 +468,23 @@
         "move_down": "下移",
         "order_hint": "顺序即优先级：上面的源会先被尝试。"
       }
-    }
+    },
+    "dislikes": {
+      "title": "不喜欢的曲目与艺人",
+      "description": "从「发现」与 Last.fm 电台中排除；不会修改本地库或 Last.fm 账号。",
+      "empty": "还没有不喜欢的曲目或艺人。",
+      "kind_artist": "艺人",
+      "remove": "移除不喜欢"
+    },
+    "source_order": "搜索源顺序",
+    "source_order_hint": "排序靠前的源在相关度相同的行之间优先，并先显示；源内部的相关度排序不变。",
+    "move_up": "上移",
+    "move_down": "下移",
+    "source_enabled": "已启用",
+    "source_disabled": "已停用",
+    "source_drag_hint": "拖动手柄调整顺序；无法拖拽时使用上下按钮。",
+    "all_sources_disabled": "所有搜索源均已停用，请在 设置 → 搜索源 中启用一个。",
+    "source_save_failed": "保存失败，已恢复之前的设置。"
   },
   "sidebar": {
     "download": "下载/任务",
@@ -505,6 +523,9 @@
     "next": "下一首",
     "repeat": "重复",
     "mood_radio_active": "心情电台播放中",
+    "lastfm_radio_active": "Last.fm 电台已开启",
+    "lastfm_radio_stop": "关闭电台",
+    "radio_appended": "已补充 {count} 首",
     "mute": "静音",
     "unmute": "取消静音",
     "lyrics": "歌词",
@@ -530,7 +551,8 @@
     "secondary_translation": "翻译",
     "secondary_romanization": "罗马化",
     "romanization_hint": "离线罗马化：中文和韩语。",
-    "romanization_mandarin": "仅含汉字的歌词默认按普通话处理。姓名的读音可能不同。"
+    "romanization_mandarin": "仅含汉字的歌词默认按普通话处理。姓名的读音可能不同。",
+    "dislike_track": "不喜欢并跳过"
   },
   "home": {
     "title": "首页",
@@ -637,6 +659,7 @@
     "redownload": "重新下载",
     "remove_from_queue": "从队列中移除",
     "export_playlist": "导出播放列表",
+    "start_radio": "开始电台",
     "start_mood_radio": "开始心情电台",
     "pin_to_sidebar": "固定到侧边栏",
     "unpin_from_sidebar": "取消固定",
@@ -949,6 +972,7 @@
     "refresh_list": "刷新此歌单",
     "refresh_all": "刷新全部",
     "refresh_item": "刷新此曲的源",
+    "start_radio": "以此歌单开始电台",
     "play_all": "播放全部",
     "shuffle": "随机播放",
     "more_actions": "更多操作",
@@ -963,6 +987,8 @@
     "plays_count": "{count} 次播放",
     "auto_refresh": "自动检查新推荐",
     "load_more": "加载更多",
-    "no_more": "没有更多推荐"
+    "no_more": "没有更多推荐",
+    "dislike_track": "不喜欢此曲",
+    "dislike_artist": "不喜欢此艺人"
   }
 }

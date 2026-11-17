@@ -3,7 +3,7 @@ import { ref, computed, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   Folder, Settings,
-  Play, Info, Blocks, Wifi, Smartphone, Download, Puzzle,
+  Play, Info, Blocks, Wifi, Smartphone, Download, Puzzle, ThumbsDown, ArrowUpDown,
 } from '@lucide/vue'
 import { useI18n } from 'vue-i18n'
 import GeneralSettings from '@/components/settings/GeneralSettings.vue'
@@ -16,6 +16,8 @@ import RemoteServerSettings from '@/components/settings/RemoteServerSettings.vue
 import MobileDevicesSettings from '@/components/settings/MobileDevicesSettings.vue'
 import PluginsSettings from '@/components/settings/PluginsSettings.vue'
 import LxSourcesSettings from '@/components/settings/LxSourcesSettings.vue'
+import DislikeSettings from '@/components/settings/DislikeSettings.vue'
+import SourceOrderSettings from '@/components/settings/SourceOrderSettings.vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -51,8 +53,10 @@ const categories = computed(() => [
   { id: 'library', name: t('settings.categories.library'), icon: Folder },
   { id: 'integrations', name: t('settings.categories.integrations', 'Integrations'), icon: Blocks },
   { id: 'playback', name: t('settings.categories.playback'), icon: Play },
+  { id: 'dislikes', name: t('settings.categories.dislikes'), icon: ThumbsDown },
   { id: 'download', name: t('settings.categories.download'), icon: Download },
   { id: 'plugins', name: t('settings.categories.plugins'), icon: Puzzle },
+  { id: 'sources', name: t('settings.categories.sources'), icon: ArrowUpDown },
   { id: 'remote', name: t('settings.categories.remote', 'Remote'), icon: Wifi },
   { id: 'mobile-devices', name: t('settings.categories.mobile_devices'), icon: Smartphone },
   { id: 'about', name: t('settings.categories.about'), icon: Info },
@@ -120,6 +124,9 @@ watch([activeCategory, () => route.query.section], scrollToRequestedSection, { i
         <!-- Playback -->
         <PlaybackSettings v-if="activeCategory === 'playback'" />
 
+        <!-- Dislikes -->
+        <DislikeSettings v-if="activeCategory === 'dislikes'" />
+
         <!-- Downloads -->
         <DownloadSettings v-if="activeCategory === 'download'" />
 
@@ -128,6 +135,9 @@ watch([activeCategory, () => route.query.section], scrollToRequestedSection, { i
           v-if="activeCategory === 'plugins'"
           @open-lx-sources="setCategory(LX_SOURCES_CATEGORY)"
         />
+
+        <!-- Search source order -->
+        <SourceOrderSettings v-if="activeCategory === 'sources'" />
 
         <!-- Plugins → Lx 自定义源 (the Lx plugin's source list) -->
         <LxSourcesSettings

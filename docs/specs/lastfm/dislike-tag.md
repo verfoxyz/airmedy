@@ -1,6 +1,6 @@
 # 任务：「不喜欢」标签（本地过滤与降权）
 
-> 状态：待开工
+> 状态：✅ 已完成（`dislikes` 迁移 000110；发现/电台/种子构建与持久化写入统一过滤；行菜单「不喜欢此曲/此艺人」、电台 footer 不喜欢即跳过、设置页「不喜欢」列表；`dislike:updated` + `dislikeStore` 本地即时过滤；Go/Vue 测试覆盖）
 > 目的：推荐/电台可以排除用户不喜欢的曲目与艺人；Last.fm 无公开的“不喜欢”接口，全部本地实现
 > 关联：`recommendation-quality.md`、`discovery.md`、`recommendation-lists.md`
 

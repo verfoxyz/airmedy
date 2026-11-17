@@ -211,7 +211,8 @@ func (r *Recommender) buildWeeklyEcho(ctx context.Context, week LastFmWeek) ([]T
 		return nil, err
 	}
 	kind := weeklyEchoKind(week.From)
-	items := weeklyEchoItems(tracks, kind, week)
+	items := r.filterDislikedItems(ctx, weeklyEchoItems(tracks, kind, week))
+	items = r.inheritStoredMatches(ctx, kind, items)
 	if err := r.saveRecommendationList(ctx, kind, items); err != nil {
 		return nil, err
 	}

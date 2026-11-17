@@ -2,6 +2,7 @@ package wails
 
 import (
 	"airmedy/internal/app/lastfm"
+	"airmedy/internal/domain"
 	"context"
 	"strconv"
 	"time"
@@ -10,10 +11,13 @@ import (
 type LastFmService struct {
 	svc         *lastfm.LastFmService
 	recommender *lastfm.Recommender
+	radio       *lastfm.Radio
 }
 
-func NewLastFmService(svc *lastfm.LastFmService, recommender *lastfm.Recommender) *LastFmService {
-	return &LastFmService{svc: svc, recommender: recommender}
+func NewLastFmService(
+	svc *lastfm.LastFmService, recommender *lastfm.Recommender, radio *lastfm.Radio,
+) *LastFmService {
+	return &LastFmService{svc: svc, recommender: recommender, radio: radio}
 }
 
 func (s *LastFmService) GetService() *lastfm.LastFmService {
@@ -335,6 +339,78 @@ func (s *LastFmService) RefreshRecommendationItem(kind, matchKey string) error {
 // RefreshAllRecommendationLists rebuilds both lists.
 func (s *LastFmService) RefreshAllRecommendationLists() error {
 	return s.recommender.RefreshAllRecommendationLists(context.Background())
+}
+
+// StartRadio builds the initial Last.fm radio queue from a track or identity.
+func (s *LastFmService) StartRadio(request lastfm.RadioSeedRequest) (lastfm.RadioStartResult, error) {
+	return s.radio.StartRadio(context.Background(), request)
+}
+
+// StopRadio ends the radio session; automatic refills stop immediately.
+func (s *LastFmService) StopRadio() {
+	s.radio.StopRadio()
+}
+
+// GetRadioActive reports whether the radio session is on.
+func (s *LastFmService) GetRadioActive() bool {
+	return s.radio.GetRadioActive()
+}
+
+// DislikeDTO is one locally stored recommendation exclusion.
+//
+// The list lives only in the local database: it never touches Last.fm and
+// never hides a song from the library.
+type DislikeDTO struct {
+	ID        string `json:"id"`
+	Kind      string `json:"kind"`
+	MatchKey  string `json:"match_key"`
+	Title     string `json:"title"`
+	Artist    string `json:"artist"`
+	CreatedAt string `json:"created_at"`
+}
+
+// Dislike excludes a song or an artist from discovery and radio. matchKey may
+// be empty for a track, in which case the identity is rebuilt from the credits;
+// an artist always uses its name.
+func (s *LastFmService) Dislike(kind, matchKey, title, artist string) (DislikeDTO, error) {
+	entry, err := s.recommender.Dislike(context.Background(), kind, matchKey, title, artist)
+	if err != nil {
+		return DislikeDTO{}, err
+	}
+	return toDislikeDTO(entry), nil
+}
+
+// Undislike removes one exclusion; the next refresh or refill may return it.
+func (s *LastFmService) Undislike(id string) error {
+	return s.recommender.Undislike(context.Background(), id)
+}
+
+// ListDislikes returns the settings page's exclusion list.
+func (s *LastFmService) ListDislikes() ([]DislikeDTO, error) {
+	rows, err := s.recommender.ListDislikes(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	return toDislikeDTOs(rows), nil
+}
+
+func toDislikeDTO(entry domain.LastFmDislike) DislikeDTO {
+	return DislikeDTO{
+		ID:        entry.ID,
+		Kind:      entry.Kind,
+		MatchKey:  entry.MatchKey,
+		Title:     entry.Title,
+		Artist:    entry.Artist,
+		CreatedAt: entry.CreatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+func toDislikeDTOs(rows []domain.LastFmDislike) []DislikeDTO {
+	result := make([]DislikeDTO, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, toDislikeDTO(row))
+	}
+	return result
 }
 
 func toTopTrackItemDTOs(items []lastfm.TopTrackItem) []TopTrackItemDTO {

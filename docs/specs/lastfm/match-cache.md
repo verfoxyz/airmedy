@@ -1,6 +1,6 @@
 # 任务：刷新时保留匹配结果 + 匹配数据共享完善
 
-> 状态：待开工
+> 状态：已实现
 > 目的：刷新歌单不再整屏重新匹配；同一首曲目在所有列表与重启后复用匹配结果
 > 关联：`recommendation-lists.md`、`discovery.md`、`recommendation-quality.md`
 

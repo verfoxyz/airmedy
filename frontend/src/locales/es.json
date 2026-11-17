@@ -115,11 +115,13 @@
       "library": "Biblioteca",
       "integrations": "Integraciones",
       "playback": "Reproducción",
+      "dislikes": "No me gusta",
       "about": "Acerca de",
       "remote": "Remoto",
       "mobile_devices": "Móvil",
       "download": "Descargas",
-      "plugins": "Complementos"
+      "plugins": "Complementos",
+      "sources": "Fuentes de búsqueda"
     },
     "general": {
       "behavior": "Comportamiento",
@@ -466,7 +468,23 @@
         "move_down": "Bajar",
         "order_hint": "El orden es la prioridad: las fuentes de arriba se prueban primero."
       }
-    }
+    },
+    "dislikes": {
+      "title": "Canciones y artistas que no te gustan",
+      "description": "Se ocultan en Descubrir y en la radio de Last.fm. Tu biblioteca y tu cuenta de Last.fm no cambian.",
+      "empty": "No hay canciones ni artistas marcados.",
+      "kind_artist": "Artista",
+      "remove": "Quitar"
+    },
+    "source_order": "Orden de las fuentes de búsqueda",
+    "source_order_hint": "Las fuentes más arriba deciden los empates entre resultados igual de relevantes y se muestran primero. La clasificación interna de cada fuente no cambia.",
+    "move_up": "Subir",
+    "move_down": "Bajar",
+    "source_enabled": "Activada",
+    "source_disabled": "Desactivada",
+    "source_drag_hint": "Arrastra el tirador para reordenar. Si no puedes arrastrar, usa las flechas.",
+    "all_sources_disabled": "Todas las fuentes de búsqueda están desactivadas. Activa una en Ajustes → Fuentes de búsqueda.",
+    "source_save_failed": "No se pudo guardar el cambio. Se restauró la configuración anterior."
   },
   "sidebar": {
     "download": "Descargas y tareas",
@@ -505,6 +523,9 @@
     "next": "Siguiente",
     "repeat": "Repetir",
     "mood_radio_active": "Radio de estados de ánimo activa",
+    "lastfm_radio_active": "Radio de Last.fm activa",
+    "lastfm_radio_stop": "Apagar radio",
+    "radio_appended": "{count} pistas añadidas",
     "mute": "Silenciar",
     "unmute": "Activar sonido",
     "lyrics": "Letras",
@@ -530,7 +551,8 @@
     "secondary_translation": "Traducción",
     "secondary_romanization": "Romanización",
     "romanization_hint": "Romanización sin conexión: chino y coreano.",
-    "romanization_mandarin": "Las letras solo con caracteres Han usan mandarín de forma predeterminada. La lectura de los nombres puede variar."
+    "romanization_mandarin": "Las letras solo con caracteres Han usan mandarín de forma predeterminada. La lectura de los nombres puede variar.",
+    "dislike_track": "No me gusta y saltar"
   },
   "home": {
     "title": "Inicio",
@@ -637,6 +659,7 @@
     "redownload": "Volver a descargar",
     "remove_from_queue": "Eliminar de la cola",
     "export_playlist": "Exportar lista de reproducción",
+    "start_radio": "Iniciar radio",
     "start_mood_radio": "Iniciar Radio de Ánimo",
     "pin_to_sidebar": "Anclar a la barra lateral",
     "unpin_from_sidebar": "Desanclar de la barra lateral",
@@ -949,6 +972,7 @@
     "refresh_list": "Actualizar esta lista",
     "refresh_all": "Actualizar todo",
     "refresh_item": "Actualizar la fuente de esta pista",
+    "start_radio": "Iniciar radio desde esta lista",
     "play_all": "Reproducir todo",
     "shuffle": "Aleatorio",
     "more_actions": "Más acciones",
@@ -963,6 +987,8 @@
     "plays_count": "{count} reproducciones",
     "auto_refresh": "Buscar nuevas recomendaciones automáticamente",
     "load_more": "Cargar más",
-    "no_more": "No hay más recomendaciones"
+    "no_more": "No hay más recomendaciones",
+    "dislike_track": "No me gusta esta canción",
+    "dislike_artist": "No me gusta este artista"
   }
 }

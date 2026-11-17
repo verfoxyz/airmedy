@@ -216,6 +216,15 @@ export const useCatalogStore = defineStore('catalog', () => {
     try {
       const list = ((await CatalogService.GetCatalogSources()) ?? []) as CatalogSourceDTO[]
       sources.value = list.filter(Boolean)
+      // A source switched off in Settings disappears from this list. Drop it
+      // from the selection too, so the next search does not ask for a source
+      // that can no longer answer; an empty selection means 全部.
+      const known = new Set(sources.value.map((source) => source.id))
+      const pruned = activeSources.value.filter((id) => known.has(id))
+      if (pruned.length !== activeSources.value.length) {
+        activeSources.value = pruned
+        saveActiveSources(pruned)
+      }
     } catch (e) {
       // The chips fall back to whatever a later search response reports.
       console.error('Catalog: cannot list sources', e)

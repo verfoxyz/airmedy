@@ -115,11 +115,13 @@
       "library": "라이브러리",
       "integrations": "연동",
       "playback": "재생",
+      "dislikes": "싫어요",
       "about": "정보",
       "remote": "원격",
       "mobile_devices": "모바일",
       "download": "다운로드",
-      "plugins": "플러그인"
+      "plugins": "플러그인",
+      "sources": "검색 소스"
     },
     "general": {
       "behavior": "동작",
@@ -466,7 +468,23 @@
         "move_down": "아래로",
         "order_hint": "순서가 우선순위입니다: 위쪽 소스부터 시도합니다."
       }
-    }
+    },
+    "dislikes": {
+      "title": "싫어하는 곡과 아티스트",
+      "description": "둘러보기와 Last.fm 라디오에서 숨겨집니다. 라이브러리와 Last.fm 계정은 변경되지 않습니다.",
+      "empty": "싫어하는 곡이나 아티스트가 없습니다.",
+      "kind_artist": "아티스트",
+      "remove": "싫어요 해제"
+    },
+    "source_order": "검색 소스 순서",
+    "source_order_hint": "위쪽 소스는 관련도가 같은 결과의 우선순위를 결정하며 먼저 표시됩니다. 각 소스 내부의 정렬은 바뀌지 않습니다.",
+    "move_up": "위로 이동",
+    "move_down": "아래로 이동",
+    "source_enabled": "사용",
+    "source_disabled": "사용 안 함",
+    "source_drag_hint": "손잡이를 끌어 순서를 바꿉니다. 끌 수 없을 때는 화살표 버튼을 사용하세요.",
+    "all_sources_disabled": "모든 검색 소스가 꺼져 있습니다. 설정 → 검색 소스에서 하나를 켜세요.",
+    "source_save_failed": "변경 사항을 저장하지 못했습니다. 이전 설정으로 복원했습니다."
   },
   "sidebar": {
     "download": "다운로드 및 작업",
@@ -505,6 +523,9 @@
     "next": "다음",
     "repeat": "반복",
     "mood_radio_active": "무드 라디오 재생 중",
+    "lastfm_radio_active": "Last.fm 라디오 사용 중",
+    "lastfm_radio_stop": "라디오 끄기",
+    "radio_appended": "{count}곡 추가됨",
     "mute": "음소거",
     "unmute": "음소거 해제",
     "lyrics": "가사",
@@ -530,7 +551,8 @@
     "secondary_translation": "번역",
     "secondary_romanization": "로마자",
     "romanization_hint": "오프라인 로마자 표기: 중국어 및 한국어.",
-    "romanization_mandarin": "한자만 있는 가사는 기본적으로 중국어 표준어로 처리됩니다. 이름의 발음은 다를 수 있습니다."
+    "romanization_mandarin": "한자만 있는 가사는 기본적으로 중국어 표준어로 처리됩니다. 이름의 발음은 다를 수 있습니다.",
+    "dislike_track": "싫어요 및 건너뛰기"
   },
   "home": {
     "title": "홈",
@@ -637,6 +659,7 @@
     "redownload": "다시 다운로드",
     "remove_from_queue": "대기열에서 제거",
     "export_playlist": "재생목록 내보내기",
+    "start_radio": "라디오 시작",
     "start_mood_radio": "무드 라디오 시작",
     "pin_to_sidebar": "사이드바에 고정",
     "unpin_from_sidebar": "사이드바 고정 해제",
@@ -949,6 +972,7 @@
     "refresh_list": "이 목록 새로 고침",
     "refresh_all": "모두 새로 고침",
     "refresh_item": "이 곡의 소스 새로 고침",
+    "start_radio": "이 목록에서 라디오 시작",
     "play_all": "모두 재생",
     "shuffle": "셔플",
     "more_actions": "추가 작업",
@@ -963,6 +987,8 @@
     "plays_count": "{count}회 재생",
     "auto_refresh": "새 추천을 자동으로 확인",
     "load_more": "더 불러오기",
-    "no_more": "더 이상 추천이 없습니다"
+    "no_more": "더 이상 추천이 없습니다",
+    "dislike_track": "이 곡 싫어요",
+    "dislike_artist": "이 아티스트 싫어요"
   }
 }

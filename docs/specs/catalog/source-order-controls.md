@@ -1,6 +1,6 @@
 # 任务：搜索源开关 + 拖拽排序
 
-> 状态：待开工
+> 状态：✅ 已完成（`catalog_disabled_sources` 迁移 000112；`Search`/`Sources`/`MatchTrack` 跳过停用源，全部停用返回包装了 `ErrCatalogNoSources` 的 `ErrCatalogAllSourcesDisabled`；`GetSourcePreferences`/`SetSourceDisabled`；设置页开关 + HTML5 拖拽（失败回滚、上移/下移保留）；搜索页「全部停用」空状态；12 语言；Go/Vue 测试覆盖）
 > 目的：在「设置 → 搜索源」里可以单独停用某个源（如 kg 的 K 歌版本），并用拖拽快速调整顺序
 > 关联：`source-order.md`（顺序本身已实现）、`catalog/search`
 

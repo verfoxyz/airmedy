@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls internal/infra/sqlite/migrations | sort | tail -12)",
+      "Bash(sed -n 1,120p internal/infra/sqlite/db.go; sed -n 1,80p internal/infra/sqlite/lastfm_recommendation_repository_test.go; sed -n 1,80p internal/infra/sqlite/migrations.go 2>/dev/null; ls internal/infra/sqlite | head -30)",
+      "Bash(ls internal/infra/sqlite/*.go | grep -i -E \"sqlite|migrat|connect|database\" ; grep -rn \"func NewDB\" internal/infra/sqlite | head; grep -rn \"type DB struct\" internal/infra/sqlite | head)",
+      "Bash(grep -rn \"expires_at\" internal/infra/sqlite/*.go | head -30; grep -rn \"time.Now\\(\\).UTC\\(\\)\\\\|datetime\\('now'\\)\" internal/infra/sqlite/*repository*.go | head -20)",
+      "Bash(grep -rn \"GetRecommendations\\(\" internal frontend/src --include=*.go --include=*.ts --include=*.vue | head -20; grep -rn \"seedTopTrackStates\" internal --include=*.go)",
+      "Bash(tr -d '\\\\000' < .gotmp/test.out | head -20)"
+    ]
+  }
+}

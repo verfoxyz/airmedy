@@ -8,11 +8,13 @@ import { usePlayerStore } from '../stores/player'
 import { useAppStore } from '../stores/app'
 import { PlaybackState, RepeatMode, TrackDTO } from '../../bindings/airmedy/internal/domain/models'
 import { useFavoritesStore } from '../stores/favorites'
+import { useLastFmRadioStore } from '../stores/lastfmRadio'
 import * as LibraryService from '../../bindings/airmedy/internal/infra/wails/libraryservice'
 import { Events } from '@wailsio/runtime'
 
 const mocks = vi.hoisted(() => ({
   quickSettingsOpen: vi.fn(),
+  dislike: vi.fn(),
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -56,6 +58,12 @@ vi.mock('../../bindings/airmedy/internal/infra/wails/libraryservice', () => ({
   ToggleFavorite: vi.fn(),
 }))
 
+vi.mock('../../bindings/airmedy/internal/infra/wails/lastfmservice', () => ({
+  Dislike: mocks.dislike,
+  Undislike: vi.fn().mockResolvedValue(undefined),
+  ListDislikes: vi.fn().mockResolvedValue([]),
+}))
+
 // The footer hosts the download queue panel, which lists the queue when it opens.
 vi.mock('../../bindings/airmedy/internal/infra/wails/downloadservice', () => ({
   ListDownloads: vi.fn().mockResolvedValue([]),
@@ -79,6 +87,10 @@ vi.mock('./player/PlayerQuickSettingsMenu.vue', () => ({
 describe('PlayerFooter', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.dislike.mockResolvedValue({
+      id: 'd1', kind: 'track', match_key: '', title: 'Hit', artist: 'Artist',
+      created_at: '2026-11-17T00:00:00Z',
+    })
   })
 
   function mountFooter(storeState = {}, showFavoriteButton = true) {
@@ -362,6 +374,34 @@ describe('PlayerFooter', () => {
     await wrapper.find('[data-test="playback-retry"]').trigger('click')
     expect(store.retryPlayback).toHaveBeenCalledOnce()
 
+    wrapper.unmount()
+  })
+
+  it('offers a dislike-and-skip action only while Last.fm radio is active', async () => {
+    const wrapper = mountFooter()
+    const player = usePlayerStore()
+    player.currentTrack = {
+      id: 't1',
+      title: 'Hit',
+      raw_artist_names: 'Artist',
+      artists: [{ name: 'Artist' }],
+    } as unknown as TrackDTO
+    const radio = useLastFmRadioStore()
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="player-dislike"]').exists()).toBe(false)
+
+    radio.active = true
+    await flushPromises()
+    const button = wrapper.find('[data-test="player-dislike"]')
+    expect(button.exists()).toBe(true)
+
+    const next = vi.spyOn(player, 'next').mockResolvedValue(undefined)
+    await button.trigger('click')
+    await flushPromises()
+
+    expect(mocks.dislike).toHaveBeenCalledWith('track', '', 'Hit', 'Artist')
+    expect(next).toHaveBeenCalledOnce()
     wrapper.unmount()
   })
 })

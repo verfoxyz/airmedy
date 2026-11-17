@@ -35,8 +35,6 @@ const (
 	discoverPageSize    = 20
 	// discoverTake caps the list, so a rebuild cannot grow without bound.
 	discoverTake = 100
-	// discoverPerArtist bounds one artist's share of the list.
-	discoverPerArtist = 2
 )
 
 // discoverSeedSet is the weekly-rotating input of one expansion.
@@ -71,8 +69,9 @@ type discoverCandidate struct {
 	score float64
 }
 
-// discoverSeeds returns this week's seeds. The artist window alternates between
-// all-time and six-month so consecutive weeks do not repeat the same input.
+// discoverSeeds returns this week's seeds. They come from the merged local and
+// Last.fm seed set, so an imported library steers discovery even without
+// scrobbles; the weekly cache keeps the page stable inside one ISO week.
 func (r *Recommender) discoverSeeds(
 	ctx context.Context, topTracks []LastFmTrack, budget *discoverBudget,
 ) discoverSeedSet {
@@ -88,35 +87,34 @@ func (r *Recommender) discoverSeeds(
 		return cached.seeds
 	}
 
-	period := "overall"
-	if week%2 == 1 {
-		period = "6month"
-	}
-
-	var artists []LastFmArtist
+	// The merged builder makes its own Last.fm calls, so it is charged one
+	// unit of the discovery budget.
 	if budget.take() {
-		items, err := r.client.GetUserTopArtists(ctx, period, discoverSeedArtists)
-		if err != nil {
-			r.logger.Debug("last.fm discover: top artists failed", "error", err)
-		} else {
-			artists = items
+		set := r.weeklyRecommendationSeeds(ctx, topTracks)
+		tracks := seedSetTracks(set, discoverSeedTracks)
+		artists := seedSetArtists(set)
+		seeds := discoverSeedSet{
+			tracks:  dedupeTracks(tracks, discoverSeedTracks),
+			artists: dedupeArtists(artists, discoverSeedArtists),
+		}
+		r.mu.Lock()
+		r.discoverCache = cachedDiscoverSeeds{username: username, week: weekKey, seeds: seeds}
+		r.mu.Unlock()
+		if len(seeds.tracks) > 0 || len(seeds.artists) > 0 {
+			return seeds
 		}
 	}
 
-	tracks := usableSeeds(topTracks, discoverSeedTracks)
+	tracks := r.filterDislikedTracks(ctx, usableSeeds(topTracks, discoverSeedTracks))
 	if len(tracks) == 0 && budget.take() {
 		items, err := r.client.GetTopTracks(ctx, topTrackPeriod, discoverSeedTracks)
 		if err != nil {
 			r.logger.Debug("last.fm discover: top tracks failed", "error", err)
 		} else {
-			tracks = usableSeeds(items, discoverSeedTracks)
+			tracks = r.filterDislikedTracks(ctx, usableSeeds(items, discoverSeedTracks))
 		}
 	}
-
-	seeds := discoverSeedSet{
-		tracks:  dedupeTracks(tracks, discoverSeedTracks),
-		artists: dedupeArtists(artists, discoverSeedArtists),
-	}
+	seeds := discoverSeedSet{tracks: dedupeTracks(tracks, discoverSeedTracks)}
 	r.mu.Lock()
 	r.discoverCache = cachedDiscoverSeeds{username: username, week: weekKey, seeds: seeds}
 	r.mu.Unlock()
@@ -306,18 +304,15 @@ func (r *Recommender) discoverItems(
 	for _, seed := range seeds.tracks {
 		seedKeys[candidateKey(seed.Artist, seed.Title)] = struct{}{}
 	}
+	dislikes := r.currentDislikes(ctx)
 
-	perArtist := make(map[string]int, len(initial))
-	for key, count := range initial {
-		perArtist[key] = count
-	}
-	items := make([]TopTrackItem, 0, limit)
+	eligible := make([]LastFmTrack, 0, len(candidates))
 	for _, entry := range candidates {
-		if len(items) >= limit {
-			break
-		}
 		track := entry.track
 		key := candidateKey(track.Artist, track.Title)
+		if dislikes.blocksTrack(key, track.Artist) {
+			continue
+		}
 		if _, isSeed := seedKeys[key]; isSeed {
 			continue
 		}
@@ -327,14 +322,15 @@ func (r *Recommender) discoverItems(
 		if _, skip := excluded[key]; skip {
 			continue
 		}
-		artistKey := domain.NormalizationKey(track.Artist)
-		if perArtist[artistKey] >= discoverPerArtist {
-			continue
-		}
 		if r.localTrackExists(ctx, track) {
 			continue
 		}
-		perArtist[artistKey]++
+		eligible = append(eligible, track)
+	}
+	selected := selectDiverseTracks(eligible, limit, initial)
+
+	items := make([]TopTrackItem, 0, len(selected))
+	for _, track := range selected {
 		items = append(items, TopTrackItem{
 			Title:    track.Title,
 			Artist:   track.Artist,
@@ -344,7 +340,7 @@ func (r *Recommender) discoverItems(
 			CoverURL: track.ImageURL,
 			Kind:     domain.LastFmRecommendationDiscover,
 			Matching: true,
-			MatchKey: key,
+			MatchKey: candidateKey(track.Artist, track.Title),
 		})
 	}
 	return items
@@ -383,6 +379,7 @@ func (r *Recommender) buildDiscoverList(ctx context.Context, topTracks []LastFmT
 		firstPage = len(ranked)
 	}
 	items := ranked[:firstPage]
+	items = r.inheritStoredMatches(ctx, domain.LastFmRecommendationDiscover, items)
 	pool := ranked[firstPage:]
 
 	if err := r.saveRecommendationList(ctx, domain.LastFmRecommendationDiscover, items); err != nil {
@@ -484,6 +481,8 @@ func (r *Recommender) LoadMoreRecommendationItems(
 			return RecommendationList{}, err
 		}
 	}
+	// The pool may predate a dislike; never append an excluded row.
+	pool = r.filterDislikedRows(ctx, pool)
 
 	room := discoverTake - len(list.Items)
 	if room < 0 {
