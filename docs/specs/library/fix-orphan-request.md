@@ -1,6 +1,6 @@
 # Bug：已入库的曲目仍有一条「进行中」任务（重试永不成功）
 
-> 状态：待开工
+> 状态：✅ 已完成（worker 按 identity 复解析 → 本地 title+artist 兜底 → done/canceled，不再重试；合并与删除按 `MediaRequestMatchKey` 收敛同曲其它 identity；任务页新增 `waiting` 状态（等待重试），达到 20 次显示失败；重试清零 attempts/next_attempt_at；Go/Vue 测试覆盖）
 > 现象：任务页一直有一条「新·与天齐 / 下载中…」
 > 数据：请求 `kg/91a6ce…` 仍 `failed`、`attempts=5`、`next_attempt_at` 在 6 小时后
 > 关联：`media-request-state-machine.md`、`fix-delete-resets-request.md`、`fix-stale-task-row.md`
@@ -41,6 +41,17 @@ media_requests:
    - 没有本地行 → 置 `canceled`（原因 `track row removed`），不重试；
 3. 永远不要因为“行不存在”反复重试。
 
+### 3.1.1 启动扫描：失效行不等退避
+
+`track_id` 已失效属于**不可恢复错误**，不能按退避时间挂着：
+
+- worker 启动时的扫描，除“到期的 failed”外，还要包括
+  **`track_id` 指向的行不存在的所有 failed 请求**（忽略 `next_attempt_at`）；
+- 对它们立即按 §3.1 解析：有本地行 → `done`，否则 `canceled`；
+- 目的：避免用户看到一条“等待重试”挂到几小时后才自动消失；
+- 实现建议：`ListActive` 之外新增 `ListOrphans`（`state='failed' AND track_id NOT IN (SELECT id FROM tracks)`），
+  或把该条件并入启动扫描查询。
+
 ### 3.2 合并/删除联动
 
 - 合并（`track:merged`）或删除文件时：把**同一 match_key** 的其它活动请求一起收敛：
@@ -62,7 +73,8 @@ media_requests:
 - identity 查不到、match_key 有本地行 → done；
 - 都查不到 → canceled，不再调度重试；
 - 合并后同 match_key 的活动请求被收敛；
-- 达到最大尝试次数后不再自动重试（显示失败）。
+- 达到最大尝试次数后不再自动重试（显示失败）；
+- 启动扫描会立即收敛 `track_id` 失效的 failed 请求（不等 `next_attempt_at`）。
 
 **前端**
 
