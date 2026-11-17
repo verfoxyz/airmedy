@@ -1,6 +1,6 @@
 # 任务：底栏封面与全屏入口互换（左下改「更多信息」）
 
-> 状态：待开工
+> 状态：✅ 已完成（左下改为 Info「更多信息」打开歌曲信息；48×48 封面移到右下并成为唯一全屏入口，保留右键曲目菜单与 hover 缩放；无曲目时两者禁用，无封面显示可点占位；新增 `player.more_info` 12 语言；Vue 测试覆盖点击、禁用、占位与回归）
 > 目的：左下角不再放封面，改为「更多信息」入口；封面缩略图移到右下角，点击进入全屏
 > 关联：`catalog/ui`、`player`（PlayerFooter）
 
@@ -12,33 +12,33 @@
 [🎵 更多信息]  歌曲标题 / 艺人 …                  控制区 …   [封面]
 ```
 
-| 位置 | 现状 | 目标 |
+| 位置 | 控件 | 左键行为 |
 |---|---|---|
-| 左下 | 封面缩略图（点击打开歌曲信息） | **图标按钮**（Info 类，点击打开歌曲信息） |
-| 右下 | 全屏按钮（Maximize，点击进全屏） | **封面缩略图**（点击进全屏） |
+| 左下 | **封面缩略图**（48×48） | **进入全屏** |
+| 右下 | **信息图标按钮**（Info 类） | **打开歌曲信息抽屉** |
 
-- 只交换两者的**左键点击逻辑与视觉位置**；
-- 右键行为保持不变（封面右键仍打开封面菜单，若右移后仍适用则跟随）；
-- 图标：左下使用 `Info`（或 `PanelLeft` 风格的信息标识），不再使用 `Maximize`；
-- 封面尺寸保持 48×48、`rounded-lg`、与文字垂直居中。
+- 只交换两个控件的**左键功能**，位置回到“封面在左、按钮在右”；
+- 封面右键菜单保持原样（打开封面菜单）；
+- 右侧图标用 `Info`，不再用 `Maximize`；
+- 右下不再显示封面。
 
 ## 2. 交互细节
 
 | 控件 | 左键 | 提示文案 |
 |---|---|---|
-| 左下信息图标 | 打开歌曲信息抽屉（`store.openTrackInfo`） | `player.more_info` |
-| 右下封面 | 进入全屏播放（`store.setPlayerMode('fullscreen')`） | `player.fullscreen` |
+| 左下封面 | 进入全屏播放（`store.setPlayerMode('fullscreen')`） | `player.fullscreen` |
+| 右下信息图标 | 打开歌曲信息抽屉（`store.openTrackInfo`） | `player.more_info` |
 
 - 无当前曲目时两者禁用；
-- 封面加载失败/无封面 → 占位音符图标，仍可点击；
+- 封面加载失败/无封面 → 占位音符图标，仍可点击（点击仍进全屏）；
 - 全屏入口仅此一个即可（右侧控制组里的 Maximize 移除或合并，避免重复）。
 
 ## 3. 实现
 
 - `PlayerFooter.vue`：
-  - 左侧把 `.footer-artwork` 的 `div` 换成图标按钮；
-  - 右侧在控制组末尾放封面缩略图按钮，`@click` 走全屏；
-  - 移除原 `Maximize` 按钮（或改为仅快捷方式，不重复）；
+  - 左侧保留 `.footer-artwork` 封面，`@click` 改为 `setPlayerMode('fullscreen')`；
+  - 右侧在控制组末尾放 Info 图标按钮，`@click` 走 `openTrackInfo`；
+  - 移除右侧的 `Maximize` 按钮（底栏只保留一个全屏入口）；
 - 保留 `data-player-footer-interactive="true"` 与 hover 缩放动画；
 - i18n 新增 `player.more_info`（12 语言）。
 
@@ -46,8 +46,8 @@
 
 **前端**
 
-- 左下按钮点击调用 `openTrackInfo`；
-- 右下封面点击调用 `setPlayerMode('fullscreen')`；
+- 左下封面点击调用 `setPlayerMode('fullscreen')`；
+- 右下信息按钮点击调用 `openTrackInfo`；
 - 无当前曲目时两者禁用；
 - 无封面时显示占位图标且可点击；
 - 现有 footer 测试（收藏、按钮布局）回归。
